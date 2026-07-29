@@ -1,0 +1,42 @@
+{
+  "$schema": "../schemas/azd-gui.catalog.schema.json",
+  "schemaVersion": "1.0",
+  "id": "bundled",
+  "title": "Vetted deployments",
+  "entries": [
+    {
+      "id": "myworkid",
+      "title": "MyWorkID",
+      "summary": "Discover and secure identities that can access Microsoft 365 and Azure.",
+      "description": "A cross-platform deployment with conditional collection, reporting, and Microsoft Graph options.",
+      "repository": "https://github.com/nathanmcnulty/azd-myworkid",
+      "commit": "913be87ebf9a569349846c3a6d9be7f4d2fdcd49",
+      "tags": ["Identity", "Microsoft Graph", "App Service"],
+      "platforms": ["windows", "macos", "linux"],
+      "manifest": "manifests/myworkid.json"
+    },
+    {
+      "id": "maester-automation",
+      "title": "Maester — Automation Account",
+      "summary": "Schedule Maester security tests with Azure Automation.",
+      "description": "A pinned deployment choice from the automation-account subdirectory.",
+      "repository": "https://github.com/nathanmcnulty/azd-maester",
+      "commit": "21b45a1599522ff05e0bdee337caaac71dfe3e24",
+      "subdirectory": "automation-account",
+      "tags": ["Maester", "Security", "Automation"],
+      "platforms": ["windows", "macos", "linux"],
+      "manifest": "manifests/maester-automation.json"
+    },
+    {
+      "id": "entra-health-monitoring",
+      "title": "Entra Health Monitoring",
+      "summary": "Deploy tenant health collection and reporting resources.",
+      "description": "A Windows-specific deployment using Azure CLI for Microsoft Graph setup.",
+      "repository": "https://github.com/nathanmcnulty/azd-entra-health-monitoring",
+      "commit": "d197df8357b74326e88f9861cd2011d8d33f20e9",
+      "tags": ["Entra", "Health", "Monitoring"],
+      "platforms": ["windows"],
+      "manifest": "manifests/entra-health-monitoring.json"
+    }
+  ]
+}

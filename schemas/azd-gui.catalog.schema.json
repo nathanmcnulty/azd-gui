@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.azd-gui.dev/v1/azd-gui.catalog.schema.json",
+  "title": "Azure Deployment Studio catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "title", "entries"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "1.0" },
+    "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+    "title": { "type": "string", "minLength": 1 },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "summary", "description", "repository", "commit", "tags", "platforms"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+        "title": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "repository": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "commit": { "type": "string", "pattern": "^[a-fA-F0-9]{40}$" },
+        "subdirectory": { "type": "string", "pattern": "^(?![\\\\/]|.*\\.\\.).+$" },
+        "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "platforms": {
+          "type": "array",
+          "items": { "enum": ["windows", "macos", "linux"] },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "manifest": { "type": "string", "pattern": "^(?![\\\\/]|.*\\.\\.).+\\.json$" }
+      }
+    }
+  }
+}

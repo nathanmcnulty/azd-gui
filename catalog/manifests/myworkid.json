@@ -1,0 +1,82 @@
+{
+  "$schema": "../../schemas/azd-gui.schema.json",
+  "schemaVersion": "1.0",
+  "minimumAzdVersion": "1.23.7",
+  "prerequisites": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "kind": "tool",
+      "minimumVersion": "1.23.7",
+      "required": true,
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
+    },
+    {
+      "id": "pwsh",
+      "name": "PowerShell",
+      "kind": "tool",
+      "minimumVersion": "7.4.0",
+      "required": true,
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
+    }
+  ],
+  "connections": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "required": true,
+      "scopes": ["https://management.azure.com/.default", "https://graph.microsoft.com/.default"],
+      "reason": "Provision Azure resources and perform Graph-backed identity discovery."
+    }
+  ],
+  "configuration": {
+    "groups": [
+      {
+        "id": "collection",
+        "title": "Identity collection",
+        "description": "Choose the identity data included in this environment.",
+        "fields": [
+          {
+            "id": "includeGuests",
+            "environmentVariable": "MYWORKID_INCLUDE_GUESTS",
+            "label": "Include guest accounts",
+            "type": "boolean",
+            "default": true
+          },
+          {
+            "id": "enableGraphExport",
+            "environmentVariable": "MYWORKID_ENABLE_GRAPH_EXPORT",
+            "label": "Publish Microsoft Graph export",
+            "type": "boolean",
+            "default": false
+          }
+        ]
+      },
+      {
+        "id": "graphExport",
+        "title": "Graph export",
+        "condition": { "field": "enableGraphExport", "equals": true },
+        "fields": [
+          {
+            "id": "graphTenant",
+            "environmentVariable": "MYWORKID_GRAPH_TENANT_ID",
+            "label": "Graph tenant",
+            "type": "tenant",
+            "required": true
+          }
+        ]
+      }
+    ]
+  },
+  "permissionChecks": [
+    {
+      "id": "azure-subscription-access",
+      "name": "Azure subscription access",
+      "provider": "azure",
+      "required": true,
+      "description": "Can deploy resources in the selected subscription."
+    }
+  ]
+}

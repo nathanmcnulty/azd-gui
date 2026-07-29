@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.azd-gui.dev/v1/azd-gui.schema.json",
+  "title": "Azure Deployment Studio template manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "prerequisites", "connections", "configuration"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "1.0" },
+    "minimumAzdVersion": { "type": "string" },
+    "prerequisites": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/prerequisite" }
+    },
+    "connections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/connection" }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groups"],
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/group" }
+        }
+      }
+    },
+    "permissionChecks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/permissionCheck" }
+    }
+  },
+  "$defs": {
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field"],
+      "properties": {
+        "field": { "type": "string" },
+        "equals": { "type": ["string", "boolean"] },
+        "notEquals": { "type": ["string", "boolean"] },
+        "includes": { "type": "string" }
+      },
+      "oneOf": [
+        { "required": ["equals"], "properties": { "equals": {} } },
+        { "required": ["notEquals"], "properties": { "notEquals": {} } },
+        { "required": ["includes"], "properties": { "includes": {} } }
+      ]
+    },
+    "prerequisite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "kind", "required"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "kind": { "enum": ["tool", "powershellModule"] },
+        "minimumVersion": { "type": "string" },
+        "required": { "type": "boolean" },
+        "installProvider": { "enum": ["azdTool", "psResource", "manual"] },
+        "installId": { "type": "string" },
+        "documentationUrl": { "type": "string", "format": "uri", "pattern": "^https://" }
+      }
+    },
+    "connection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "required", "reason"],
+      "properties": {
+        "id": { "enum": ["azd", "azureCli", "azPowerShell", "graphPowerShell"] },
+        "name": { "type": "string" },
+        "required": { "type": "boolean" },
+        "reason": { "type": "string" },
+        "scopes": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "value"],
+      "properties": {
+        "label": { "type": "string" },
+        "value": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "environmentVariable", "label", "type"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
+        "environmentVariable": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "label": { "type": "string" },
+        "type": {
+          "enum": [
+            "text",
+            "secret",
+            "boolean",
+            "select",
+            "multiselect",
+            "tenant",
+            "subscription",
+            "location",
+            "resourceGroup",
+            "entraObject"
+          ]
+        },
+        "required": { "type": "boolean" },
+        "sensitive": { "type": "boolean" },
+        "help": { "type": "string" },
+        "placeholder": { "type": "string" },
+        "default": { "type": ["string", "boolean", "array"], "items": { "type": "string" } },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/option" } },
+        "pattern": { "type": "string" },
+        "condition": { "$ref": "#/$defs/condition" }
+      }
+    },
+    "group": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "fields"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "condition": { "$ref": "#/$defs/condition" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/field" }, "minItems": 1 }
+      }
+    },
+    "permissionCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "provider", "required", "description"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "provider": { "enum": ["azure", "graph"] },
+        "required": { "type": "boolean" },
+        "description": { "type": "string" }
+      }
+    }
+  }
+}

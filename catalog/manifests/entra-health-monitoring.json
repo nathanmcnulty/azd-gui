@@ -1,0 +1,73 @@
+{
+  "$schema": "../../schemas/azd-gui.schema.json",
+  "schemaVersion": "1.0",
+  "minimumAzdVersion": "1.23.0",
+  "prerequisites": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "kind": "tool",
+      "minimumVersion": "1.23.0",
+      "required": true,
+      "installProvider": "manual"
+    },
+    {
+      "id": "az-cli",
+      "name": "Azure CLI",
+      "kind": "tool",
+      "minimumVersion": "2.60.0",
+      "required": true,
+      "installProvider": "azdTool",
+      "installId": "az-cli",
+      "documentationUrl": "https://learn.microsoft.com/cli/azure/install-azure-cli"
+    }
+  ],
+  "connections": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "required": true,
+      "reason": "Provision monitoring infrastructure."
+    },
+    {
+      "id": "azureCli",
+      "name": "Azure CLI",
+      "required": true,
+      "scopes": ["https://graph.microsoft.com/.default"],
+      "reason": "Allow setup hooks to configure Microsoft Graph resources."
+    }
+  ],
+  "configuration": {
+    "groups": [
+      {
+        "id": "tenant",
+        "title": "Tenant monitoring",
+        "fields": [
+          {
+            "id": "targetTenant",
+            "environmentVariable": "ENTRA_HEALTH_TARGET_TENANT_ID",
+            "label": "Tenant to monitor",
+            "type": "tenant",
+            "required": true
+          },
+          {
+            "id": "enableTeams",
+            "environmentVariable": "ENTRA_HEALTH_ENABLE_TEAMS",
+            "label": "Send Teams notifications",
+            "type": "boolean",
+            "default": false
+          },
+          {
+            "id": "teamsWebhook",
+            "environmentVariable": "ENTRA_HEALTH_TEAMS_WEBHOOK",
+            "label": "Teams webhook",
+            "type": "secret",
+            "required": true,
+            "sensitive": true,
+            "condition": { "field": "enableTeams", "equals": true }
+          }
+        ]
+      }
+    ]
+  }
+}

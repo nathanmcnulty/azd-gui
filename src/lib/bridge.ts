@@ -1,0 +1,198 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
+import { mockBootstrap } from "./mock-data";
+import type {
+  BootstrapData,
+  Catalog,
+  CatalogSource,
+  ConnectionStatus,
+  OperationEvent,
+  ProjectSummary,
+  PrepareDeploymentRequest,
+  TemplateInspection,
+  ToolStatus
+} from "./types";
+
+export async function bootstrap(): Promise<BootstrapData> {
+  if (!isTauri()) return structuredClone(mockBootstrap);
+  return invoke<BootstrapData>("bootstrap");
+}
+
+export async function chooseFolder(): Promise<string | null> {
+  if (!isTauri()) return "C:\\GitHub\\sample-azd-project";
+  const selected = await open({ directory: true, multiple: false, title: "Select an azd project or template" });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function inspectLocalTemplate(path: string): Promise<TemplateInspection> {
+  if (!isTauri()) {
+    const entry = structuredClone(mockBootstrap.catalog.entries[0]);
+    entry.source = "local";
+    entry.trusted = false;
+    return {
+      entry,
+      sourcePath: path,
+      azureYamlFound: true,
+      manifestSource: "inferred",
+      interactiveHooks: false,
+      warnings: ["Local templates are unvetted. Review hooks before deploying."]
+    };
+  }
+  return invoke<TemplateInspection>("inspect_local_template", { path });
+}
+
+export async function inspectGitHubTemplate(url: string): Promise<TemplateInspection> {
+  if (!isTauri()) {
+    const entry = structuredClone(mockBootstrap.catalog.entries[0]);
+    entry.id = "github-template";
+    entry.title = url.split("/").filter(Boolean).at(-1) ?? "GitHub template";
+    entry.repository = url;
+    entry.commit = "0123456789abcdef0123456789abcdef01234567";
+    entry.source = "external";
+    entry.trusted = false;
+    return {
+      entry,
+      azureYamlFound: true,
+      manifestSource: "inferred",
+      interactiveHooks: false,
+      warnings: ["This repository is unvetted. Review the pinned revision before deployment."]
+    };
+  }
+  return invoke<TemplateInspection>("inspect_github_template", { url });
+}
+
+export async function previewExternalCatalog(url: string): Promise<Catalog> {
+  if (!isTauri()) {
+    const catalog = structuredClone(mockBootstrap.catalog);
+    catalog.id = "external-preview";
+    catalog.title = "External catalog preview";
+    catalog.entries = catalog.entries.map((entry) => ({
+      ...entry,
+      source: "external",
+      trusted: false
+    }));
+    return catalog;
+  }
+  return invoke<Catalog>("preview_external_catalog", { url });
+}
+
+export async function saveCatalogSource(source: CatalogSource): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("save_catalog_source", { source });
+}
+
+export async function refreshTools(): Promise<ToolStatus[]> {
+  if (!isTauri()) return structuredClone(mockBootstrap.tools);
+  return invoke<ToolStatus[]>("check_tools");
+}
+
+export async function installTool(id: string): Promise<string> {
+  if (!isTauri()) return `mock-install-${id}`;
+  return invoke<string>("install_tool", { id });
+}
+
+export async function refreshConnections(): Promise<ConnectionStatus[]> {
+  if (!isTauri()) return structuredClone(mockBootstrap.connections);
+  return invoke<ConnectionStatus[]>("check_connections");
+}
+
+export async function login(
+  providerId: ConnectionStatus["id"],
+  scopes: string[] = [],
+  deviceCode = false
+): Promise<string> {
+  if (!isTauri()) return `mock-login-${providerId}`;
+  return invoke<string>("start_login", { providerId, scopes, deviceCode });
+}
+
+export async function startAzdOperation(
+  action: string,
+  projectPath: string,
+  environment?: string
+): Promise<string> {
+  if (!isTauri()) return `mock-${action}-${Date.now()}`;
+  return invoke<string>("start_azd_operation", { action, projectPath, environment });
+}
+
+export async function prepareDeployment(request: PrepareDeploymentRequest): Promise<ProjectSummary> {
+  if (!isTauri()) {
+    return {
+      id: `${request.templateId}-${request.environment}`,
+      name: request.templateId,
+      path: request.destination || "C:\\Deployments\\preview",
+      environment: request.environment,
+      templateId: request.templateId,
+      revision: "preview",
+      lastOperation: "Just now",
+      state: "ready"
+    };
+  }
+  return invoke<ProjectSummary>("prepare_deployment", { request });
+}
+
+export async function saveWizardDraft(
+  templateId: string,
+  values: Record<string, string | boolean | string[] | undefined>
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("save_wizard_draft", { templateId, values });
+}
+
+export async function loadWizardDraft(
+  templateId: string
+): Promise<Record<string, string | boolean | string[]> | null> {
+  if (!isTauri()) return null;
+  return invoke("load_wizard_draft", { templateId });
+}
+
+export async function getProjectState(
+  projectPath: string,
+  environment?: string
+): Promise<Record<string, unknown>> {
+  if (!isTauri()) {
+    return {
+      name: projectPath.split(/[\\/]/).filter(Boolean).at(-1),
+      services: [
+        {
+          name: "web",
+          endpoint: "https://preview.example.azurewebsites.net"
+        }
+      ],
+      environment: environment ?? "dev"
+    };
+  }
+  return invoke("get_project_state", { projectPath, environment });
+}
+
+export async function listProjectEnvironments(
+  projectPath: string
+): Promise<Record<string, unknown>> {
+  if (!isTauri()) {
+    return {
+      environments: [
+        { name: "dev", isDefault: true },
+        { name: "test", isDefault: false }
+      ]
+    };
+  }
+  return invoke("list_project_environments", { projectPath });
+}
+
+export async function recordOperation(
+  event: OperationEvent,
+  projectPath: string
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("record_operation", { event, projectPath });
+}
+
+export async function cancelOperation(operationId: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("cancel_operation", { operationId });
+}
+
+export async function onOperationEvent(handler: (event: OperationEvent) => void): Promise<UnlistenFn> {
+  if (!isTauri()) return () => undefined;
+  return listen<OperationEvent>("operation-event", ({ payload }) => handler(payload));
+}
