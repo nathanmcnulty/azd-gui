@@ -19,6 +19,8 @@ pub enum Executable {
     AzureCli,
     PowerShell,
     Git,
+    #[cfg(test)]
+    Test(&'static str),
 }
 
 impl Executable {
@@ -28,6 +30,8 @@ impl Executable {
             Self::AzureCli => "az",
             Self::PowerShell => "pwsh",
             Self::Git => "git",
+            #[cfg(test)]
+            Self::Test(command) => command,
         }
     }
 }
@@ -115,6 +119,7 @@ impl OperationManager {
     }
 }
 
+#[derive(Debug)]
 pub struct CapturedOutput {
     pub stdout: String,
     pub stderr: String,
@@ -370,4 +375,60 @@ pub fn spawn_operation(
     });
 
     Ok(result_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{capture, CommandSpec, Executable};
+    use crate::error::AppError;
+    use std::time::Duration;
+
+    #[cfg(windows)]
+    fn shell(command: &'static str) -> CommandSpec {
+        CommandSpec::new(Executable::Test("cmd"), ["/D", "/S", "/C", command])
+    }
+
+    #[cfg(not(windows))]
+    fn shell(command: &'static str) -> CommandSpec {
+        CommandSpec::new(Executable::Test("sh"), ["-c", command])
+    }
+
+    #[tokio::test]
+    async fn fake_executable_captures_and_redacts_output() {
+        let output = capture(
+            shell("echo Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("[REDACTED]"));
+        assert!(!output.stdout.contains("abcdefghijklmnopqrstuvwxyz012345"));
+    }
+
+    #[tokio::test]
+    async fn fake_executable_timeout_is_reported() {
+        #[cfg(windows)]
+        let spec = shell("ping -n 3 127.0.0.1 >NUL");
+        #[cfg(not(windows))]
+        let spec = shell("sleep 1");
+
+        let error = capture(spec, Duration::from_millis(10)).await.unwrap_err();
+        assert!(matches!(error, AppError::Timeout(_)));
+    }
+
+    #[tokio::test]
+    async fn missing_fake_executable_is_reported() {
+        let error = capture(
+            CommandSpec::new(
+                Executable::Test("azd-gui-executable-that-does-not-exist"),
+                std::iter::empty::<&str>(),
+            ),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, AppError::MissingExecutable(_)));
+    }
 }

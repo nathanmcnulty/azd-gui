@@ -120,3 +120,13 @@ export function valuesRemovedByPlan(previous: WizardPlan, next: WizardPlan): str
     .filter((page) => page.kind === "configuration" && !nextIds.has(page.id))
     .flatMap((page) => page.group?.fields.map((field) => field.id) ?? []);
 }
+
+export function environmentValuesForPlan(plan: WizardPlan, values: WizardValues) {
+  return Object.fromEntries(
+    plan.pages
+      .filter((page) => page.kind === "configuration")
+      .flatMap((page) => page.group?.fields ?? [])
+      .filter((field) => values[field.id] !== undefined && values[field.id] !== "")
+      .map((field) => [field.environmentVariable, values[field.id]])
+  );
+}

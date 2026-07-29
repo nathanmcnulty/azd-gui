@@ -1,24 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { bundledCatalog } from "./mock-data";
-import { calculateWizardPlan, validateField, valuesRemovedByPlan, visibleFields } from "./wizard";
+import {
+  calculateWizardPlan,
+  environmentValuesForPlan,
+  validateField,
+  valuesRemovedByPlan,
+  visibleFields
+} from "./wizard";
 
 describe("wizard planning", () => {
   it("adds conditional pages when their controlling value is enabled", () => {
     const entry = bundledCatalog.entries[0];
-    const first = calculateWizardPlan(entry, { enableGraphExport: false });
-    const next = calculateWizardPlan(entry, { enableGraphExport: true }, first);
+    const first = calculateWizardPlan(entry, { deploymentMode: "sourceBuild" });
+    const next = calculateWizardPlan(entry, { deploymentMode: "releaseZip" }, first);
 
-    expect(first.pages.some((page) => page.id === "configuration:graphExport")).toBe(false);
-    expect(next.pages.some((page) => page.id === "configuration:graphExport")).toBe(true);
+    expect(first.pages.some((page) => page.id === "configuration:release")).toBe(false);
+    expect(next.pages.some((page) => page.id === "configuration:release")).toBe(true);
     expect(next.revision).toBe(2);
   });
 
   it("reports values from removed conditional pages", () => {
     const entry = bundledCatalog.entries[0];
-    const first = calculateWizardPlan(entry, { enableGraphExport: true });
-    const next = calculateWizardPlan(entry, { enableGraphExport: false }, first);
+    const first = calculateWizardPlan(entry, {
+      deploymentMode: "releaseZip",
+      releaseVersion: "latest"
+    });
+    const next = calculateWizardPlan(entry, { deploymentMode: "sourceBuild" }, first);
 
-    expect(valuesRemovedByPlan(first, next)).toContain("graphTenant");
+    expect(valuesRemovedByPlan(first, next)).toContain("releaseVersion");
+    expect(
+      environmentValuesForPlan(next, {
+        deploymentMode: "sourceBuild",
+        releaseVersion: "latest"
+      })
+    ).toEqual({ MYWORKID_DEPLOY_MODE: "sourceBuild" });
   });
 
   it("filters conditional fields and validates required values", () => {

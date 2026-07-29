@@ -104,7 +104,8 @@ impl AzdClient for SystemAzdClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{AzdClient, SystemAzdClient};
+    use super::{json_command, AzdClient, SystemAzdClient};
+    use crate::command_runner::{CommandSpec, Executable};
     use std::path::Path;
 
     #[test]
@@ -116,5 +117,18 @@ mod tests {
         assert!(client
             .lifecycle_command("arbitrary-shell", Path::new("C:\\"), None)
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_json_from_a_fake_cli() {
+        #[cfg(windows)]
+        let spec = CommandSpec::new(
+            Executable::Test("cmd"),
+            ["/D", "/S", "/C", "echo this-is-not-json"],
+        );
+        #[cfg(not(windows))]
+        let spec = CommandSpec::new(Executable::Test("sh"), ["-c", "printf 'this-is-not-json'"]);
+
+        assert!(json_command(spec).await.is_err());
     }
 }

@@ -36,7 +36,11 @@
     WizardPlan,
     WizardValues
   } from "./lib/types";
-  import { calculateWizardPlan, valuesRemovedByPlan } from "./lib/wizard";
+  import {
+    calculateWizardPlan,
+    environmentValuesForPlan,
+    valuesRemovedByPlan
+  } from "./lib/wizard";
 
   type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
   type IconName = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
@@ -100,15 +104,23 @@
   $: requiredTools =
     selectedEntry?.manifest?.prerequisites.map((required) => {
       const status = data.tools.find((tool) => tool.id === required.id);
-      return status ? { ...required, ...status } : ({ ...required, state: "unknown" } as ToolStatus);
+      return status ? { ...status, ...required } : ({ ...required, state: "unknown" } as ToolStatus);
     }) ?? [];
   $: requiredConnections =
     selectedEntry?.manifest?.connections.map((required) => {
       const status = data.connections.find((connection) => connection.id === required.id);
       return status
-        ? { ...required, ...status }
+        ? { ...status, ...required }
         : ({ ...required, state: "unknown" } as ConnectionStatus);
     }) ?? [];
+  $: requiredToolsReady = requiredTools
+    .filter((tool) => tool.required)
+    .every((tool) => tool.state === "ready");
+  $: requiredConnectionsReady = requiredConnections
+    .filter((connection) => connection.required)
+    .every((connection) => connection.state === "connected");
+  $: selectedPlatformSupported =
+    !selectedEntry || selectedEntry.platforms.includes(data.platform);
   $: activeNavigationLabel = navigation.find((item) => item.id === activeNav)?.label ?? "Home";
   $: tenantMismatch =
     new Set(
@@ -230,6 +242,9 @@
     if (page.kind === "environment") {
       return Boolean(wizardValues.environmentName && wizardValues.location);
     }
+    if (page.kind === "overview") return selectedPlatformSupported;
+    if (page.kind === "prerequisites") return requiredToolsReady;
+    if (page.kind === "connections") return requiredConnectionsReady && !tenantMismatch;
     if (page.kind === "configuration") return page.blockingIssues.length === 0;
     if (page.kind === "preflight") return preflightRan;
     return true;
@@ -391,6 +406,24 @@
     if (!selectedEntry || activeOperationId) return;
     preflightRan = false;
     outputOpen = true;
+    if (!selectedPlatformSupported) {
+      addSystemLog(`This template does not support ${data.platform}.`, "error");
+      return;
+    }
+    if (!requiredToolsReady) {
+      addSystemLog("Install or update every required tool before preflight.", "error");
+      return;
+    }
+    if (!requiredConnectionsReady || tenantMismatch) {
+      addSystemLog("Connect the required providers to one tenant before preflight.", "error");
+      return;
+    }
+    const configurationIssues =
+      wizardPlan?.pages.flatMap((page) => page.blockingIssues) ?? [];
+    if (configurationIssues.length > 0) {
+      configurationIssues.forEach((issue) => addSystemLog(issue, "error"));
+      return;
+    }
     addSystemLog("Validated template manifest and pinned source revision.", "success");
     addSystemLog("Checked required tools, connection state, and environment inputs.", "success");
     try {
@@ -416,12 +449,8 @@
     let projectPath = String(wizardValues.projectPath || "");
     if (!projectPrepared) {
       addSystemLog("Materializing the pinned template and applying environment values.", "info");
-      const environmentValues = Object.fromEntries(
-        (selectedEntry.manifest?.configuration.groups ?? [])
-          .flatMap((group) => group.fields)
-          .filter((field) => wizardValues[field.id] !== undefined)
-          .map((field) => [field.environmentVariable, wizardValues[field.id]])
-      );
+      if (!wizardPlan) throw new Error("The deployment plan is not available.");
+      const environmentValues = environmentValuesForPlan(wizardPlan, wizardValues);
       const project = await prepareDeployment({
         templateId: selectedEntry.id,
         sourceMode: String(wizardValues.sourceMode ?? "catalog"),
@@ -429,8 +458,10 @@
         sourceRevision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit,
         destination: projectPath,
         environment: String(wizardValues.environmentName || "dev"),
+        tenant: String(wizardValues.tenantId || "") || undefined,
         subscription: String(wizardValues.subscriptionId || "") || undefined,
         location: String(wizardValues.location || "westus2"),
+        resourceGroup: String(wizardValues.resourceGroup || "") || undefined,
         environmentValues
       });
       projectPath = project.path;
@@ -760,6 +791,7 @@
             <button
               class:active={activeStep === index}
               class:complete={index < activeStep || page.complete}
+              disabled={index > activeStep}
               on:click={() => (activeStep = index)}
               aria-current={activeStep === index ? "step" : undefined}
             >
@@ -993,11 +1025,8 @@
               </label>
               <label class="field full">
                 <span>Subscription</span>
-                <select value={String(wizardValues.subscriptionId ?? "")} on:change={(e) => setWizardValue("subscriptionId", e.currentTarget.value)}>
-                  <option value="">Choose after connection check</option>
-                  <option value="00000000-0000-0000-0000-000000000001">Visual Studio Enterprise</option>
-                  <option value="00000000-0000-0000-0000-000000000002">Development Subscription</option>
-                </select>
+                <input value={String(wizardValues.subscriptionId ?? "")} on:input={(e) => setWizardValue("subscriptionId", e.currentTarget.value)} placeholder="Subscription ID" />
+                <small>Use the subscription connected to azd. Subscription discovery will replace this field in the next milestone.</small>
               </label>
               <label class="field">
                 <span>Azure region <em>Required</em></span>
@@ -1061,7 +1090,7 @@
                 {#if preflightRan}<Icon name="check" size={34} />{:else}<Icon name="cloud" size={34} />{/if}
               </div>
               <h2>{preflightRan ? "Ready to deploy" : "No Azure changes yet"}</h2>
-              <p>{preflightRan ? "Manifest, tools, connections, permissions, and environment inputs passed." : "Run checks and generate an infrastructure preview before materializing the project."}</p>
+              <p>{preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview passed." : "Run checks and generate an infrastructure preview before materializing the project."}</p>
               <button class="primary large" on:click={runPreflight}><Icon name="play" size={16} /> {preflightRan ? "Run again" : "Run preflight"}</button>
             </div>
             <div class="check-grid">

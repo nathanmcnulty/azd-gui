@@ -301,8 +301,12 @@ pub struct PrepareDeploymentRequest {
     pub destination: String,
     pub environment: String,
     #[serde(default)]
+    pub tenant: Option<String>,
+    #[serde(default)]
     pub subscription: Option<String>,
     pub location: String,
+    #[serde(default)]
+    pub resource_group: Option<String>,
     #[serde(default)]
     pub environment_values: HashMap<String, serde_json::Value>,
 }

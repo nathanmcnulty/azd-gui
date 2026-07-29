@@ -212,8 +212,10 @@ export interface PrepareDeploymentRequest {
   sourceRevision?: string;
   destination: string;
   environment: string;
+  tenant?: string;
   subscription?: string;
   location: string;
+  resourceGroup?: string;
   environmentValues: Record<string, string | boolean | string[] | undefined>;
 }
 

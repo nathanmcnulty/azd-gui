@@ -46,46 +46,106 @@ export const bundledCatalog: Catalog = {
             name: "Azure Developer CLI",
             required: true,
             scopes: ["https://management.azure.com/.default", "https://graph.microsoft.com/.default"],
-            reason: "Provision Azure resources and perform Graph-backed identity discovery."
+            reason:
+              "Provision Azure resources and let the template's vetted hooks configure Microsoft Entra through azd-owned credentials."
           }
         ],
         configuration: {
           groups: [
             {
-              id: "collection",
-              title: "Identity collection",
-              description: "Choose the identity data included in this environment.",
+              id: "deployment",
+              title: "Deployment package",
+              description: "Use a published MyWorkID release or build the checked-in source.",
               fields: [
                 {
-                  id: "includeGuests",
-                  environmentVariable: "MYWORKID_INCLUDE_GUESTS",
-                  label: "Include guest accounts",
-                  type: "boolean",
-                  default: true,
-                  help: "Include B2B guest identities in collection and reporting."
-                },
-                {
-                  id: "enableGraphExport",
-                  environmentVariable: "MYWORKID_ENABLE_GRAPH_EXPORT",
-                  label: "Publish Microsoft Graph export",
-                  type: "boolean",
-                  default: false
+                  id: "deploymentMode",
+                  environmentVariable: "MYWORKID_DEPLOY_MODE",
+                  label: "Deployment mode",
+                  type: "select",
+                  required: true,
+                  default: "releaseZip",
+                  options: [
+                    {
+                      label: "Published release",
+                      value: "releaseZip",
+                      description: "Download the upstream binaries without requiring .NET or Node.js."
+                    },
+                    {
+                      label: "Build source locally",
+                      value: "sourceBuild",
+                      description: "Build the checked-in client and server; requires .NET 8, Node.js, and npm."
+                    }
+                  ]
                 }
               ]
             },
             {
-              id: "graphExport",
-              title: "Graph export",
-              description: "Configure the optional Graph export destination.",
-              condition: { field: "enableGraphExport", equals: true },
+              id: "release",
+              title: "Published release",
+              description: "Choose the upstream MyWorkID package used by the default deployment mode.",
+              condition: { field: "deploymentMode", equals: "releaseZip" },
               fields: [
                 {
-                  id: "graphTenant",
-                  environmentVariable: "MYWORKID_GRAPH_TENANT_ID",
-                  label: "Graph tenant",
-                  type: "tenant",
+                  id: "releaseVersion",
+                  environmentVariable: "MYWORKID_RELEASE_VERSION",
+                  label: "Release version",
+                  type: "text",
                   required: true,
-                  placeholder: "00000000-0000-0000-0000-000000000000"
+                  default: "latest",
+                  help: "Use latest or an upstream MyWorkID release tag."
+                }
+              ]
+            },
+            {
+              id: "applications",
+              title: "Microsoft Entra applications",
+              description:
+                "Name the app registrations created by the template and optionally allow local development redirects.",
+              fields: [
+                {
+                  id: "backendApplicationName",
+                  environmentVariable: "MYWORKID_BACKED_APPREG_NAME",
+                  label: "Backend app registration",
+                  type: "text",
+                  required: true,
+                  default: "ar-MyWorkID-backend"
+                },
+                {
+                  id: "frontendApplicationName",
+                  environmentVariable: "MYWORKID_FRONTEND_APPREG_NAME",
+                  label: "Frontend app registration",
+                  type: "text",
+                  required: true,
+                  default: "ar-MyWorkID-frontend"
+                },
+                {
+                  id: "developerRedirectUris",
+                  environmentVariable: "MYWORKID_DEV_REDIRECT_URLS",
+                  label: "Developer redirect URIs",
+                  type: "text",
+                  help: "Optional comma-separated HTTPS or localhost redirect URIs."
+                }
+              ]
+            },
+            {
+              id: "customDomains",
+              title: "Custom domains",
+              description:
+                "Optionally configure CNAME-based App Service domains. DNS completion requires a later provision pass.",
+              fields: [
+                {
+                  id: "customDomains",
+                  environmentVariable: "MYWORKID_CUSTOM_DOMAINS",
+                  label: "Custom domain names",
+                  type: "text",
+                  help: "Optional comma-separated host names. Apex/root domains require manual setup."
+                },
+                {
+                  id: "managedCertificate",
+                  environmentVariable: "MYWORKID_ENABLE_APP_SERVICE_MANAGED_CERTIFICATE",
+                  label: "Request App Service managed certificates",
+                  type: "boolean",
+                  default: true
                 }
               ]
             }
@@ -98,6 +158,14 @@ export const bundledCatalog: Catalog = {
             provider: "azure",
             required: true,
             description: "Can enumerate and deploy resources in the selected subscription."
+          },
+          {
+            id: "entra-directory-access",
+            name: "Microsoft Entra directory access",
+            provider: "graph",
+            required: true,
+            description:
+              "Can create application objects, service principals, groups, grants, and the directory assignments required by the default template flow."
           }
         ]
       }
@@ -286,6 +354,16 @@ export const mockTools: ToolStatus[] = [
     state: "ready",
     installProvider: "azdTool",
     canInstall: true
+  },
+  {
+    id: "pwsh",
+    name: "PowerShell",
+    kind: "tool",
+    minimumVersion: "7.4.0",
+    installedVersion: "7.5.2",
+    required: false,
+    state: "ready",
+    installProvider: "manual"
   },
   {
     id: "Microsoft.Graph",

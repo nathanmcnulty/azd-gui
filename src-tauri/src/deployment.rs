@@ -7,6 +7,7 @@ use crate::{
 };
 use chrono::Utc;
 use std::{
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -38,6 +39,37 @@ fn validate_location(value: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_optional_guid(label: &str, value: Option<&str>) -> AppResult<()> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let parsed = Uuid::parse_str(value)
+        .map_err(|_| AppError::Invalid(format!("{label} must be a valid UUID.")))?;
+    if parsed.is_nil() {
+        return Err(AppError::Invalid(format!(
+            "{label} cannot be the all-zero UUID."
+        )));
+    }
+    Ok(())
+}
+
+fn validate_resource_group(value: Option<&str>) -> AppResult<()> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    if value.len() > 90
+        || value.ends_with('.')
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "-_.()".contains(character))
+    {
+        return Err(AppError::Invalid(
+            "Invalid Azure resource group name.".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_template_id(value: &str) -> AppResult<()> {
     if value.is_empty()
         || value.len() > 128
@@ -49,6 +81,104 @@ fn validate_template_id(value: &str) -> AppResult<()> {
         return Err(AppError::Invalid("Invalid template ID.".into()));
     }
     Ok(())
+}
+
+fn valid_environment_variable_name(value: &str) -> bool {
+    let mut characters = value.chars();
+    !value.is_empty()
+        && value.len() <= 128
+        && characters
+            .next()
+            .is_some_and(|character| character.is_ascii_uppercase())
+        && characters.all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+fn environment_value_as_string(
+    environment_variable: &str,
+    value: &serde_json::Value,
+) -> AppResult<Option<String>> {
+    let value = match value {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Bool(value) => value.to_string(),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
+        _ => {
+            return Err(AppError::Invalid(format!(
+                "Unsupported environment value type: {environment_variable}"
+            )))
+        }
+    };
+    if value.len() > 32_768 {
+        return Err(AppError::Invalid(format!(
+            "Environment value is too large: {environment_variable}"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn environment_assignments(
+    request: &PrepareDeploymentRequest,
+    entry: Option<&crate::models::CatalogEntry>,
+) -> AppResult<Vec<(String, String)>> {
+    let allowed = entry.map(|entry| {
+        entry
+            .manifest
+            .iter()
+            .flat_map(|manifest| &manifest.configuration.groups)
+            .flat_map(|group| &group.fields)
+            .map(|field| field.environment_variable.as_str())
+            .collect::<HashSet<_>>()
+    });
+    let mut assignments = BTreeMap::new();
+    assignments.insert("AZURE_LOCATION".into(), request.location.clone());
+    if let Some(tenant) = request.tenant.as_deref().filter(|value| !value.is_empty()) {
+        assignments.insert("AZURE_TENANT_ID".into(), tenant.into());
+    }
+    if let Some(subscription) = request
+        .subscription
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        assignments.insert("AZURE_SUBSCRIPTION_ID".into(), subscription.into());
+    }
+    if let Some(resource_group) = request
+        .resource_group
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        assignments.insert("AZURE_RESOURCE_GROUP".into(), resource_group.into());
+    }
+
+    for (environment_variable, value) in &request.environment_values {
+        if !valid_environment_variable_name(environment_variable) {
+            return Err(AppError::Invalid(format!(
+                "Invalid environment variable name: {environment_variable}"
+            )));
+        }
+        if environment_variable.starts_with("AZURE_") {
+            return Err(AppError::Invalid(format!(
+                "Standard azd environment values must use their dedicated fields: {environment_variable}"
+            )));
+        }
+        if allowed
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(environment_variable.as_str()))
+        {
+            return Err(AppError::Invalid(format!(
+                "Catalog manifest does not declare environment variable: {environment_variable}"
+            )));
+        }
+        if let Some(value) = environment_value_as_string(environment_variable, value)? {
+            assignments.insert(environment_variable.clone(), value);
+        }
+    }
+    Ok(assignments.into_iter().collect())
 }
 
 async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppResult<String> {
@@ -186,8 +316,10 @@ pub async fn prepare(
     validate_template_id(&request.template_id)?;
     validate_environment_name(&request.environment)?;
     validate_location(&request.location)?;
+    validate_optional_guid("Tenant ID", request.tenant.as_deref())?;
+    validate_optional_guid("Subscription ID", request.subscription.as_deref())?;
+    validate_resource_group(request.resource_group.as_deref())?;
     let existing_project = request.source_mode == "existingProject";
-    let destination = ensure_destination(&request.destination, existing_project)?;
 
     let entry = match request.source_mode.as_str() {
         "catalog" => Some(entry_by_id(&request.template_id)?),
@@ -202,6 +334,8 @@ pub async fn prepare(
         ),
         _ => None,
     };
+    let environment_assignments = environment_assignments(&request, entry.as_ref())?;
+    let destination = ensure_destination(&request.destination, existing_project)?;
 
     if !existing_project {
         let source = match request.source_mode.as_str() {
@@ -335,46 +469,14 @@ pub async fn prepare(
         .await?;
     }
 
-    for (environment_variable, value) in &request.environment_values {
-        let mut characters = environment_variable.chars();
-        if environment_variable.is_empty()
-            || environment_variable.len() > 128
-            || !characters
-                .next()
-                .is_some_and(|character| character.is_ascii_uppercase())
-            || !characters.all(|character| {
-                character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
-            })
-        {
-            return Err(AppError::Invalid(format!(
-                "Invalid environment variable name: {environment_variable}"
-            )));
-        }
-        if value.is_null() {
-            continue;
-        }
-        let value = match value {
-            serde_json::Value::String(value) => value.clone(),
-            serde_json::Value::Bool(value) => value.to_string(),
-            serde_json::Value::Array(values) => values
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .collect::<Vec<_>>()
-                .join(","),
-            _ => continue,
-        };
-        if value.len() > 32_768 {
-            return Err(AppError::Invalid(format!(
-                "Environment value is too large: {environment_variable}"
-            )));
-        }
+    for (environment_variable, value) in environment_assignments {
         run_checked(
             CommandSpec::new(
                 Executable::Azd,
                 [
                     "env",
                     "set",
-                    environment_variable,
+                    &environment_variable,
                     &value,
                     "--environment",
                     &request.environment,
@@ -405,4 +507,98 @@ pub async fn prepare(
     };
     database.upsert_project(&project)?;
     Ok(project)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{environment_assignments, validate_optional_guid, validate_resource_group};
+    use crate::{catalog::entry_by_id, models::PrepareDeploymentRequest};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn myworkid_request() -> PrepareDeploymentRequest {
+        PrepareDeploymentRequest {
+            template_id: "myworkid".into(),
+            source_mode: "catalog".into(),
+            source_path: None,
+            source_revision: None,
+            destination: "/tmp/myworkid".into(),
+            environment: "dev".into(),
+            tenant: Some("11111111-1111-1111-1111-111111111111".into()),
+            subscription: Some("22222222-2222-2222-2222-222222222222".into()),
+            location: "westus2".into(),
+            resource_group: Some("rg-myworkid-dev".into()),
+            environment_values: HashMap::from([
+                ("MYWORKID_DEPLOY_MODE".into(), json!("releaseZip")),
+                ("MYWORKID_RELEASE_VERSION".into(), json!("latest")),
+                (
+                    "MYWORKID_ENABLE_APP_SERVICE_MANAGED_CERTIFICATE".into(),
+                    json!(true),
+                ),
+            ]),
+        }
+    }
+
+    #[test]
+    fn materializes_standard_and_manifest_declared_values() {
+        let entry = entry_by_id("myworkid").unwrap();
+        let assignments = environment_assignments(&myworkid_request(), Some(&entry)).unwrap();
+        let assignments = assignments.into_iter().collect::<HashMap<_, _>>();
+
+        assert_eq!(assignments["AZURE_LOCATION"], "westus2");
+        assert_eq!(
+            assignments["AZURE_TENANT_ID"],
+            "11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(
+            assignments["AZURE_SUBSCRIPTION_ID"],
+            "22222222-2222-2222-2222-222222222222"
+        );
+        assert_eq!(assignments["AZURE_RESOURCE_GROUP"], "rg-myworkid-dev");
+        assert_eq!(assignments["MYWORKID_DEPLOY_MODE"], "releaseZip");
+        assert_eq!(
+            assignments["MYWORKID_ENABLE_APP_SERVICE_MANAGED_CERTIFICATE"],
+            "true"
+        );
+    }
+
+    #[test]
+    fn rejects_undeclared_catalog_environment_values() {
+        let entry = entry_by_id("myworkid").unwrap();
+        let mut request = myworkid_request();
+        request
+            .environment_values
+            .insert("MYWORKID_ENABLE_GRAPH_EXPORT".into(), json!(true));
+
+        let error = environment_assignments(&request, Some(&entry))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("does not declare"));
+    }
+
+    #[test]
+    fn reserves_standard_azd_values_for_typed_fields() {
+        let entry = entry_by_id("myworkid").unwrap();
+        let mut request = myworkid_request();
+        request.environment_values.insert(
+            "AZURE_SUBSCRIPTION_ID".into(),
+            json!("33333333-3333-3333-3333-333333333333"),
+        );
+
+        let error = environment_assignments(&request, Some(&entry))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("dedicated fields"));
+    }
+
+    #[test]
+    fn validates_azure_identifiers_before_materialization() {
+        assert!(validate_optional_guid("Tenant ID", Some("not-a-guid")).is_err());
+        assert!(
+            validate_optional_guid("Tenant ID", Some("00000000-0000-0000-0000-000000000000"))
+                .is_err()
+        );
+        assert!(validate_resource_group(Some("invalid.")).is_err());
+        assert!(validate_resource_group(Some("rg-valid_(dev)")).is_ok());
+    }
 }
