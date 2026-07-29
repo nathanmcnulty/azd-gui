@@ -1,0 +1,370 @@
+import type { BootstrapData, Catalog, ConnectionStatus, ProjectSummary, ToolStatus } from "./types";
+
+export const bundledCatalog: Catalog = {
+  schemaVersion: "1.0",
+  id: "bundled",
+  title: "Vetted deployments",
+  entries: [
+    {
+      id: "myworkid",
+      title: "MyWorkID",
+      summary: "Discover and secure identities that can access Microsoft 365 and Azure.",
+      description:
+        "A cross-platform Azure deployment with conditional collection, reporting, and Microsoft Graph options.",
+      repository: "https://github.com/nathanmcnulty/azd-myworkid",
+      commit: "913be87ebf9a569349846c3a6d9be7f4d2fdcd49",
+      tags: ["Identity", "Microsoft Graph", "App Service"],
+      platforms: ["windows", "macos", "linux"],
+      source: "bundled",
+      trusted: true,
+      manifest: {
+        schemaVersion: "1.0",
+        minimumAzdVersion: "1.23.7",
+        prerequisites: [
+          {
+            id: "azd",
+            name: "Azure Developer CLI",
+            kind: "tool",
+            minimumVersion: "1.23.7",
+            required: true,
+            installProvider: "manual",
+            documentationUrl: "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
+          },
+          {
+            id: "pwsh",
+            name: "PowerShell",
+            kind: "tool",
+            minimumVersion: "7.4.0",
+            required: true,
+            installProvider: "manual",
+            documentationUrl: "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
+          }
+        ],
+        connections: [
+          {
+            id: "azd",
+            name: "Azure Developer CLI",
+            required: true,
+            scopes: ["https://management.azure.com/.default", "https://graph.microsoft.com/.default"],
+            reason: "Provision Azure resources and perform Graph-backed identity discovery."
+          }
+        ],
+        configuration: {
+          groups: [
+            {
+              id: "collection",
+              title: "Identity collection",
+              description: "Choose the identity data included in this environment.",
+              fields: [
+                {
+                  id: "includeGuests",
+                  environmentVariable: "MYWORKID_INCLUDE_GUESTS",
+                  label: "Include guest accounts",
+                  type: "boolean",
+                  default: true,
+                  help: "Include B2B guest identities in collection and reporting."
+                },
+                {
+                  id: "enableGraphExport",
+                  environmentVariable: "MYWORKID_ENABLE_GRAPH_EXPORT",
+                  label: "Publish Microsoft Graph export",
+                  type: "boolean",
+                  default: false
+                }
+              ]
+            },
+            {
+              id: "graphExport",
+              title: "Graph export",
+              description: "Configure the optional Graph export destination.",
+              condition: { field: "enableGraphExport", equals: true },
+              fields: [
+                {
+                  id: "graphTenant",
+                  environmentVariable: "MYWORKID_GRAPH_TENANT_ID",
+                  label: "Graph tenant",
+                  type: "tenant",
+                  required: true,
+                  placeholder: "00000000-0000-0000-0000-000000000000"
+                }
+              ]
+            }
+          ]
+        },
+        permissionChecks: [
+          {
+            id: "azure-subscription-access",
+            name: "Azure subscription access",
+            provider: "azure",
+            required: true,
+            description: "Can enumerate and deploy resources in the selected subscription."
+          }
+        ]
+      }
+    },
+    {
+      id: "maester-automation",
+      title: "Maester — Automation Account",
+      summary: "Schedule Maester security tests with Azure Automation.",
+      description:
+        "One of several deployment choices in the Maester repository, pinned to the automation-account subdirectory.",
+      repository: "https://github.com/nathanmcnulty/azd-maester",
+      commit: "21b45a1599522ff05e0bdee337caaac71dfe3e24",
+      subdirectory: "automation-account",
+      tags: ["Maester", "Security", "Automation"],
+      platforms: ["windows", "macos", "linux"],
+      source: "bundled",
+      trusted: true,
+      manifest: {
+        schemaVersion: "1.0",
+        minimumAzdVersion: "1.23.0",
+        prerequisites: [
+          {
+            id: "azd",
+            name: "Azure Developer CLI",
+            kind: "tool",
+            minimumVersion: "1.23.0",
+            required: true,
+            installProvider: "manual"
+          },
+          {
+            id: "Microsoft.Graph",
+            name: "Microsoft Graph PowerShell",
+            kind: "powershellModule",
+            minimumVersion: "2.0.0",
+            required: true,
+            installProvider: "psResource",
+            installId: "Microsoft.Graph"
+          }
+        ],
+        connections: [
+          {
+            id: "azd",
+            name: "Azure Developer CLI",
+            required: true,
+            reason: "Provision the Automation Account and supporting resources."
+          },
+          {
+            id: "graphPowerShell",
+            name: "Microsoft Graph PowerShell",
+            required: true,
+            scopes: ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"],
+            reason: "Create and grant the identity used for scheduled Maester tests."
+          }
+        ],
+        configuration: {
+          groups: [
+            {
+              id: "schedule",
+              title: "Test schedule",
+              fields: [
+                {
+                  id: "schedule",
+                  environmentVariable: "MAESTER_SCHEDULE",
+                  label: "Run frequency",
+                  type: "select",
+                  required: true,
+                  default: "daily",
+                  options: [
+                    { label: "Daily", value: "daily" },
+                    { label: "Every 12 hours", value: "12h" },
+                    { label: "Weekly", value: "weekly" }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      id: "entra-health-monitoring",
+      title: "Entra Health Monitoring",
+      summary: "Deploy tenant health collection and reporting resources.",
+      description:
+        "A Windows-specific deployment that uses Azure CLI to obtain Microsoft Graph access for setup hooks.",
+      repository: "https://github.com/nathanmcnulty/azd-entra-health-monitoring",
+      commit: "d197df8357b74326e88f9861cd2011d8d33f20e9",
+      tags: ["Entra", "Health", "Monitoring"],
+      platforms: ["windows"],
+      source: "bundled",
+      trusted: true,
+      manifest: {
+        schemaVersion: "1.0",
+        minimumAzdVersion: "1.23.0",
+        prerequisites: [
+          {
+            id: "azd",
+            name: "Azure Developer CLI",
+            kind: "tool",
+            minimumVersion: "1.23.0",
+            required: true,
+            installProvider: "manual"
+          },
+          {
+            id: "az-cli",
+            name: "Azure CLI",
+            kind: "tool",
+            minimumVersion: "2.60.0",
+            required: true,
+            installProvider: "azdTool",
+            installId: "az-cli",
+            documentationUrl: "https://learn.microsoft.com/cli/azure/install-azure-cli"
+          }
+        ],
+        connections: [
+          {
+            id: "azd",
+            name: "Azure Developer CLI",
+            required: true,
+            reason: "Provision monitoring infrastructure."
+          },
+          {
+            id: "azureCli",
+            name: "Azure CLI",
+            required: true,
+            scopes: ["https://graph.microsoft.com/.default"],
+            reason: "Allow setup hooks to configure Microsoft Graph resources."
+          }
+        ],
+        configuration: {
+          groups: [
+            {
+              id: "tenant",
+              title: "Tenant monitoring",
+              fields: [
+                {
+                  id: "targetTenant",
+                  environmentVariable: "ENTRA_HEALTH_TARGET_TENANT_ID",
+                  label: "Tenant to monitor",
+                  type: "tenant",
+                  required: true
+                },
+                {
+                  id: "enableTeams",
+                  environmentVariable: "ENTRA_HEALTH_ENABLE_TEAMS",
+                  label: "Send Teams notifications",
+                  type: "boolean",
+                  default: false
+                },
+                {
+                  id: "teamsWebhook",
+                  environmentVariable: "ENTRA_HEALTH_TEAMS_WEBHOOK",
+                  label: "Teams webhook",
+                  type: "secret",
+                  required: true,
+                  sensitive: true,
+                  condition: { field: "enableTeams", equals: true }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+};
+
+export const mockTools: ToolStatus[] = [
+  {
+    id: "azd",
+    name: "Azure Developer CLI",
+    kind: "tool",
+    minimumVersion: "1.23.7",
+    installedVersion: "1.23.16",
+    required: true,
+    state: "ready",
+    installProvider: "manual"
+  },
+  {
+    id: "az-cli",
+    name: "Azure CLI",
+    kind: "tool",
+    minimumVersion: "2.60.0",
+    installedVersion: "2.88.0",
+    required: false,
+    state: "ready",
+    installProvider: "azdTool",
+    canInstall: true
+  },
+  {
+    id: "Microsoft.Graph",
+    name: "Microsoft Graph PowerShell",
+    kind: "powershellModule",
+    minimumVersion: "2.0.0",
+    required: false,
+    state: "missing",
+    installProvider: "psResource",
+    installId: "Microsoft.Graph",
+    canInstall: true,
+    installCommand: "Install-PSResource Microsoft.Graph -Scope CurrentUser -TrustRepository"
+  }
+];
+
+export const mockConnections: ConnectionStatus[] = [
+  {
+    id: "azd",
+    name: "Azure Developer CLI",
+    required: true,
+    reason: "Deploy Azure resources.",
+    state: "connected",
+    account: "nathan@example.com",
+    tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47"
+  },
+  {
+    id: "azureCli",
+    name: "Azure CLI",
+    required: false,
+    reason: "Template-specific Azure operations.",
+    state: "connected",
+    account: "nathan@example.com",
+    tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47"
+  },
+  {
+    id: "azPowerShell",
+    name: "Azure PowerShell",
+    required: false,
+    reason: "Template-specific PowerShell operations.",
+    state: "disconnected"
+  },
+  {
+    id: "graphPowerShell",
+    name: "Microsoft Graph PowerShell",
+    required: false,
+    reason: "Template-specific Graph operations.",
+    state: "disconnected"
+  }
+];
+
+export const mockProjects: ProjectSummary[] = [
+  {
+    id: "myworkid-dev",
+    name: "myworkid",
+    path: "C:\\GitHub\\azd-myworkid",
+    environment: "dev",
+    templateId: "myworkid",
+    revision: "913be87",
+    lastOperation: "2 hours ago",
+    state: "ready"
+  },
+  {
+    id: "maester-lab",
+    name: "maester-automation",
+    path: "C:\\Deployments\\maester-lab",
+    environment: "lab",
+    templateId: "maester-automation",
+    revision: "21b45a1",
+    lastOperation: "Yesterday",
+    state: "attention"
+  }
+];
+
+export const mockBootstrap: BootstrapData = {
+  catalog: bundledCatalog,
+  tools: mockTools,
+  connections: mockConnections,
+  projects: mockProjects,
+  platform: "windows",
+  appVersion: "0.1.0",
+  isNative: false
+};

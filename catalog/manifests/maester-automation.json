@@ -1,0 +1,62 @@
+{
+  "$schema": "../../schemas/azd-gui.schema.json",
+  "schemaVersion": "1.0",
+  "minimumAzdVersion": "1.23.0",
+  "prerequisites": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "kind": "tool",
+      "minimumVersion": "1.23.0",
+      "required": true,
+      "installProvider": "manual"
+    },
+    {
+      "id": "Microsoft.Graph",
+      "name": "Microsoft Graph PowerShell",
+      "kind": "powershellModule",
+      "minimumVersion": "2.0.0",
+      "required": true,
+      "installProvider": "psResource",
+      "installId": "Microsoft.Graph"
+    }
+  ],
+  "connections": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "required": true,
+      "reason": "Provision the Automation Account and supporting resources."
+    },
+    {
+      "id": "graphPowerShell",
+      "name": "Microsoft Graph PowerShell",
+      "required": true,
+      "scopes": ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"],
+      "reason": "Create and grant the identity used for scheduled Maester tests."
+    }
+  ],
+  "configuration": {
+    "groups": [
+      {
+        "id": "schedule",
+        "title": "Test schedule",
+        "fields": [
+          {
+            "id": "schedule",
+            "environmentVariable": "MAESTER_SCHEDULE",
+            "label": "Run frequency",
+            "type": "select",
+            "required": true,
+            "default": "daily",
+            "options": [
+              { "label": "Daily", "value": "daily" },
+              { "label": "Every 12 hours", "value": "12h" },
+              { "label": "Weekly", "value": "weekly" }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
