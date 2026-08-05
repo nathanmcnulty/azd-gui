@@ -22,7 +22,8 @@
     saveWizardDraft,
     getProjectState,
     listProjectEnvironments,
-    recordOperation
+    recordOperation,
+    runPermissionChecks
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
   import type {
@@ -33,6 +34,7 @@
     ConfigurationField,
     ConnectionStatus,
     OperationEvent,
+    PermissionCheckResult,
     ToolStatus,
     WizardPage,
     WizardPlan,
@@ -70,6 +72,8 @@
   let activeStep = 0;
   let removedValueWarning: string[] = [];
   let preflightRan = false;
+  let permissionChecksRunning = false;
+  let permissionCheckResults: PermissionCheckResult[] = [];
   let preflightOperationId: string | null = null;
   let activeOperationId: string | null = null;
   let operationEvents: OperationEvent[] = [];
@@ -215,6 +219,8 @@
     activeStep = 0;
     removedValueWarning = [];
     preflightRan = false;
+    permissionChecksRunning = false;
+    permissionCheckResults = [];
     operationEvents = [];
     operationState = "idle";
     projectPrepared = false;
@@ -231,6 +237,8 @@
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
     wizardValues = { ...wizardValues, [id]: value };
+    preflightRan = false;
+    permissionCheckResults = [];
     if (!selectedEntry || !wizardPlan) return;
     const nextPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan);
     const removed = valuesRemovedByPlan(wizardPlan, nextPlan);
@@ -540,6 +548,42 @@
     if (configurationIssues.length > 0) {
       configurationIssues.forEach((issue) => addSystemLog(issue, "error"));
       return;
+    }
+    const checks = selectedEntry.manifest?.permissionChecks ?? [];
+    permissionCheckResults = [];
+    if (checks.length > 0) {
+      permissionChecksRunning = true;
+      addSystemLog(`Running ${checks.length} registered permission check${checks.length === 1 ? "" : "s"}.`, "info");
+      try {
+        const requiredGraphScopes = Array.from(
+          new Set(
+            (selectedEntry.manifest?.connections ?? [])
+              .filter((connection) => connection.id === "graphPowerShell")
+              .flatMap((connection) => connection.scopes ?? [])
+          )
+        );
+        permissionCheckResults = await runPermissionChecks({
+          checks,
+          tenantId: String(wizardValues.tenantId),
+          subscriptionId: String(wizardValues.subscriptionId),
+          requiredGraphScopes
+        });
+        for (const result of permissionCheckResults) {
+          addSystemLog(
+            `${result.name}: ${result.detail}`,
+            result.state === "failed" ? "error" : result.state === "warning" ? "warning" : "success"
+          );
+        }
+        if (permissionCheckResults.some((result) => result.blocking)) {
+          addSystemLog("Resolve the required permission failures before infrastructure preview.", "error");
+          return;
+        }
+      } catch (error) {
+        addSystemLog(`Permission checks failed: ${String(error)}`, "error");
+        return;
+      } finally {
+        permissionChecksRunning = false;
+      }
     }
     addSystemLog("Validated template manifest and pinned source revision.", "success");
     addSystemLog("Checked required tools, connection state, and environment inputs.", "success");
@@ -1269,13 +1313,30 @@
               </div>
               <h2>{preflightRan ? "Ready to deploy" : "No Azure changes yet"}</h2>
               <p>{preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview passed." : "Run checks and generate an infrastructure preview before materializing the project."}</p>
-              <button class="primary large" on:click={runPreflight}><Icon name="play" size={16} /> {preflightRan ? "Run again" : "Run preflight"}</button>
+              <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run preflight"}</button>
             </div>
             <div class="check-grid">
-              {#each ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Infrastructure preview"] as check}
+              {#each ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Registered permissions", "Infrastructure preview"] as check}
                 <div class:complete={preflightRan} class="check-item"><Icon name={preflightRan ? "check" : "chevron"} size={15} /><span>{check}</span></div>
               {/each}
             </div>
+            {#if permissionCheckResults.length > 0}
+              <section class="permission-results" aria-label="Permission check results">
+                {#each permissionCheckResults as result}
+                  <article class={`permission-result ${result.state}`}>
+                    <Icon name={result.state === "passed" ? "check" : "warning"} size={17} />
+                    <div>
+                      <strong>{result.name}</strong>
+                      <span>{result.detail}</span>
+                    </div>
+                    <StatusPill
+                      tone={result.state === "passed" ? "success" : result.state === "failed" ? "danger" : "warning"}
+                      label={result.state}
+                    />
+                  </article>
+                {/each}
+              </section>
+            {/if}
           {:else if activePage.kind === "review"}
             <div class="review-grid">
               <section>

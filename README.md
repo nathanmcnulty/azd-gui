@@ -14,6 +14,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 - Local existing-project and copy-as-template workflows.
 - Detection for azd, Azure CLI, PowerShell, Az PowerShell, and Microsoft Graph PowerShell.
 - Native login orchestration for azd, Azure CLI, Az PowerShell, and Graph PowerShell, including device-code fallback.
+- Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
 - Exact-commit template caching, `azd init`, environment value application, preflight preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, and local operation/project persistence.
 - Browser preview mode for UI development without Rust or Azure credentials.

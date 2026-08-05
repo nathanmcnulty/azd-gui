@@ -58,5 +58,14 @@
         ]
       }
     ]
-  }
+  },
+  "permissionChecks": [
+    {
+      "id": "graph-delegated-scopes",
+      "name": "Microsoft Graph delegated scopes",
+      "provider": "graph",
+      "required": true,
+      "description": "The Microsoft Graph PowerShell session includes every delegated scope requested by this template."
+    }
+  ]
 }

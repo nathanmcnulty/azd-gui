@@ -9,6 +9,8 @@ import type {
   CatalogSource,
   ConnectionStatus,
   OperationEvent,
+  PermissionCheckRequest,
+  PermissionCheckResult,
   ProjectSummary,
   PrepareDeploymentRequest,
   TemplateInspection,
@@ -118,6 +120,27 @@ export async function discoverAzureScope(
     return discovery;
   }
   return invoke<AzureDiscovery>("discover_azure_scope", { subscriptionId, refresh });
+}
+
+export async function runPermissionChecks(
+  request: PermissionCheckRequest
+): Promise<PermissionCheckResult[]> {
+  if (!isTauri()) {
+    return request.checks.map((check) => ({
+      ...check,
+      state: check.id === "entra-directory-access" ? "warning" : "passed",
+      detail:
+        check.id === "azure-subscription-access"
+          ? "Azure CLI completed a live ARM read of the selected enabled subscription in the selected tenant."
+          : check.id === "graph-delegated-scopes"
+            ? "Microsoft Graph PowerShell has every manifest-requested delegated scope."
+            : check.id === "entra-directory-access"
+              ? "Baseline directory access is available. Write privileges cannot be verified safely without changing the directory."
+              : "Azure CLI can query Microsoft Graph for the selected tenant.",
+      blocking: false
+    }));
+  }
+  return invoke<PermissionCheckResult[]>("run_permission_checks", { request });
 }
 
 export async function login(

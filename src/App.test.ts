@@ -55,6 +55,38 @@ describe("desktop experience", () => {
     expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
   });
 
+  it("runs registered permission checks before infrastructure preview", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\entra-health-permissions" }
+    });
+
+    for (let step = 0; step < 4; step += 1) {
+      await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    }
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /subscription/i })).toHaveValue(
+        "11111111-1111-1111-1111-111111111111"
+      );
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.input(screen.getByLabelText(/tenant to monitor/i), {
+      target: { value: "22222222-2222-2222-2222-222222222222" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: "Run preflight" }));
+
+    const results = await screen.findByRole("region", { name: /permission check results/i });
+    expect(within(results).getByText("Azure subscription access")).toBeInTheDocument();
+    expect(within(results).getByText("Microsoft Graph directory access")).toBeInTheDocument();
+    expect(within(results).getAllByText("passed")).toHaveLength(2);
+  });
+
   it("opens the command palette from the keyboard", async () => {
     render(App);
     await fireEvent.keyDown(document, { key: "p", ctrlKey: true });

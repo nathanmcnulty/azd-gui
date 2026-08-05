@@ -249,7 +249,17 @@ export const bundledCatalog: Catalog = {
               ]
             }
           ]
-        }
+        },
+        permissionChecks: [
+          {
+            id: "graph-delegated-scopes",
+            name: "Microsoft Graph delegated scopes",
+            provider: "graph",
+            required: true,
+            description:
+              "The Microsoft Graph PowerShell session includes every delegated scope requested by this template."
+          }
+        ]
       }
     },
     {
@@ -334,7 +344,25 @@ export const bundledCatalog: Catalog = {
               ]
             }
           ]
-        }
+        },
+        permissionChecks: [
+          {
+            id: "azure-subscription-access",
+            name: "Azure subscription access",
+            provider: "azure",
+            required: true,
+            description:
+              "Azure CLI can complete a live ARM read of the selected enabled subscription in the selected tenant."
+          },
+          {
+            id: "graph-directory-read",
+            name: "Microsoft Graph directory access",
+            provider: "graph",
+            required: true,
+            description:
+              "Azure CLI can query Microsoft Graph for the selected tenant before setup hooks run."
+          }
+        ]
       }
     }
   ]
