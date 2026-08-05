@@ -6,6 +6,7 @@
     bootstrap,
     cancelOperation,
     chooseFolder,
+    discoverAzureScope,
     inspectGitHubTemplate,
     inspectLocalTemplate,
     installTool,
@@ -25,6 +26,7 @@
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
   import type {
+    AzureDiscovery,
     BootstrapData,
     Catalog,
     CatalogEntry,
@@ -85,6 +87,10 @@
   let catalogPreview: Catalog | null = null;
   let catalogSourceError = "";
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
+  let azureDiscovery: AzureDiscovery | null = null;
+  let azureDiscoveryLoading = false;
+  let azureDiscoveryError = "";
+  let manualAzureScope = false;
   const operationResolvers = new Map<
     string,
     { resolve: (event: OperationEvent) => void; reject: (error: Error) => void }
@@ -126,8 +132,27 @@
     new Set(
       data.connections
         .filter((connection) => connection.state === "connected" && connection.tenantId)
-        .map((connection) => connection.tenantId)
+        .map((connection) => connection.tenantId?.toLowerCase())
     ).size > 1;
+  $: requiredTenantMismatch =
+    new Set(
+      requiredConnections
+        .filter(
+          (connection) => connection.required && connection.state === "connected" && connection.tenantId
+        )
+        .map((connection) => connection.tenantId?.toLowerCase())
+    ).size > 1;
+  $: selectedTenantMismatch = Boolean(
+    wizardValues.tenantId &&
+      requiredConnections
+        .filter(
+          (connection) => connection.required && connection.state === "connected" && connection.tenantId
+        )
+        .some(
+          (connection) =>
+            connection.tenantId?.toLowerCase() !== String(wizardValues.tenantId).toLowerCase()
+        )
+  );
 
   onMount(() => {
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -193,6 +218,10 @@
     operationEvents = [];
     operationState = "idle";
     projectPrepared = false;
+    azureDiscovery = null;
+    azureDiscoveryLoading = false;
+    azureDiscoveryError = "";
+    manualAzureScope = false;
     void loadWizardDraft(entry.id).then((draft) => {
       if (!draft || selectedEntry?.id !== entry.id) return;
       wizardValues = { ...wizardValues, ...draft };
@@ -240,11 +269,17 @@
       return Boolean(wizardValues.projectPath);
     }
     if (page.kind === "environment") {
-      return Boolean(wizardValues.environmentName && wizardValues.location);
+      return Boolean(
+        wizardValues.environmentName &&
+          wizardValues.tenantId &&
+          wizardValues.subscriptionId &&
+          wizardValues.location &&
+          !selectedTenantMismatch
+      );
     }
     if (page.kind === "overview") return selectedPlatformSupported;
     if (page.kind === "prerequisites") return requiredToolsReady;
-    if (page.kind === "connections") return requiredConnectionsReady && !tenantMismatch;
+    if (page.kind === "connections") return requiredConnectionsReady && !requiredTenantMismatch;
     if (page.kind === "configuration") return page.blockingIssues.length === 0;
     if (page.kind === "preflight") return preflightRan;
     return true;
@@ -287,6 +322,79 @@
       }
     }
     activeStep = Math.min(activeStep + 1, wizardPlan.pages.length - 1);
+    if (wizardPlan.pages[activeStep]?.kind === "environment" && !azureDiscovery && !manualAzureScope) {
+      void loadAzureDiscovery();
+    }
+  }
+
+  async function loadAzureDiscovery(subscriptionId?: string, refresh = false) {
+    if (azureDiscoveryLoading) return;
+    azureDiscoveryLoading = true;
+    azureDiscoveryError = "";
+    try {
+      let result = await discoverAzureScope(subscriptionId, refresh);
+      if (!subscriptionId) {
+        const current = result.subscriptions.find(
+          (subscription) => subscription.id.toLowerCase() === String(wizardValues.subscriptionId).toLowerCase()
+        );
+        const preferred = current ?? result.subscriptions.find((subscription) => subscription.isDefault) ?? result.subscriptions[0];
+        if (preferred) {
+          setWizardValue("subscriptionId", preferred.id);
+          setWizardValue("tenantId", preferred.tenantId);
+          result = await discoverAzureScope(preferred.id);
+        }
+      }
+      azureDiscovery = result;
+      const selected = result.subscriptions.find(
+        (subscription) =>
+          subscription.id.toLowerCase() ===
+          String(result.selectedSubscriptionId ?? wizardValues.subscriptionId).toLowerCase()
+      );
+      if (selected) {
+        setWizardValue("subscriptionId", selected.id);
+        setWizardValue("tenantId", selected.tenantId);
+      }
+      if (
+        result.locations.length > 0 &&
+        !result.locations.some((location) => location.name === wizardValues.location)
+      ) {
+        setWizardValue("location", result.locations[0].name);
+      }
+      result.warnings.forEach((warning) => addSystemLog(warning, "warning"));
+    } catch (error) {
+      azureDiscoveryError = String(error);
+      if (!azureDiscovery) manualAzureScope = true;
+    } finally {
+      azureDiscoveryLoading = false;
+    }
+  }
+
+  function selectAzureSubscription(subscriptionId: string) {
+    const selected = azureDiscovery?.subscriptions.find(
+      (subscription) => subscription.id.toLowerCase() === subscriptionId.toLowerCase()
+    );
+    setWizardValue("subscriptionId", subscriptionId);
+    if (selected) setWizardValue("tenantId", selected.tenantId);
+    void loadAzureDiscovery(subscriptionId);
+  }
+
+  function selectAzureTenant(tenantId: string) {
+    setWizardValue("tenantId", tenantId);
+    const candidates = azureDiscovery?.subscriptions.filter(
+      (subscription) => subscription.tenantId.toLowerCase() === tenantId.toLowerCase()
+    ) ?? [];
+    const currentIsValid = candidates.some(
+      (subscription) => subscription.id.toLowerCase() === String(wizardValues.subscriptionId).toLowerCase()
+    );
+    if (!currentIsValid) {
+      const preferred = candidates.find((subscription) => subscription.isDefault) ?? candidates[0];
+      if (preferred) selectAzureSubscription(preferred.id);
+    }
+  }
+
+  function toggleManualAzureScope() {
+    manualAzureScope = !manualAzureScope;
+    if (!manualAzureScope && !azureDiscovery) void loadAzureDiscovery();
   }
 
   function previousStep() {
@@ -357,6 +465,7 @@
   }
 
   async function checkConnections() {
+    azureDiscovery = null;
     data = {
       ...data,
       connections: data.connections.map((connection) => ({ ...connection, state: "checking" }))
@@ -414,8 +523,16 @@
       addSystemLog("Install or update every required tool before preflight.", "error");
       return;
     }
-    if (!requiredConnectionsReady || tenantMismatch) {
+    if (!requiredConnectionsReady || requiredTenantMismatch) {
       addSystemLog("Connect the required providers to one tenant before preflight.", "error");
+      return;
+    }
+    if (!wizardValues.tenantId || !wizardValues.subscriptionId) {
+      addSystemLog("Select an Azure tenant and subscription before preflight.", "error");
+      return;
+    }
+    if (selectedTenantMismatch) {
+      addSystemLog("The selected subscription tenant does not match every required connection.", "error");
       return;
     }
     const configurationIssues =
@@ -988,7 +1105,7 @@
               <input type="checkbox" bind:checked={deviceCode} />
               <span><strong>Use device code</strong><small>Use when a browser or broker cannot complete sign-in.</small></span>
             </label>
-            {#if tenantMismatch}
+            {#if requiredTenantMismatch}
               <div class="callout warning">
                 <Icon name="warning" size={18} />
                 <div><strong>Connected tenants do not match</strong><p>Reconnect the affected tools to the same target tenant before deploying.</p></div>
@@ -1003,7 +1120,7 @@
                   <div class="data-primary">
                     <strong>{connection.name}</strong>
                     <span>{connection.reason}</span>
-                    {#if connection.account}<small>{connection.account} · {connection.tenantId}</small>{/if}
+                    {#if connection.account}<small>{connection.account} · {connection.tenantId}{connection.subscriptionName ? ` · ${connection.subscriptionName}` : ""}</small>{/if}
                   </div>
                   <StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} />
                   <button class="secondary" on:click={() => connect(connection)}>
@@ -1013,35 +1130,96 @@
               {/each}
             </div>
           {:else if activePage.kind === "environment"}
+            <div class="section-toolbar">
+              <div><h2>Azure environment</h2><p>Choose from the subscriptions available to the signed-in Azure CLI account.</p></div>
+              <div class="scope-actions">
+                <button
+                  class="secondary"
+                  disabled={azureDiscoveryLoading}
+                  on:click={() => {
+                    manualAzureScope = false;
+                    void loadAzureDiscovery(undefined, true);
+                  }}
+                ><Icon name="refresh" size={15} /> Refresh</button>
+                <button class="text-button" on:click={toggleManualAzureScope}>
+                  {manualAzureScope ? "Use Azure CLI discovery" : "Enter IDs manually"}
+                </button>
+              </div>
+            </div>
+            {#if azureDiscoveryLoading}
+              <div class="project-loading"><span class="spinner large"></span><span>Loading Azure subscriptions and deployment locations…</span></div>
+            {/if}
+            {#if azureDiscoveryError}
+              <div class="callout warning">
+                <Icon name="warning" size={18} />
+                <div><strong>Azure CLI discovery is unavailable</strong><p>{azureDiscoveryError} You can still enter the tenant and subscription IDs manually.</p></div>
+              </div>
+            {/if}
+            {#if selectedTenantMismatch}
+              <div class="callout warning">
+                <Icon name="warning" size={18} />
+                <div><strong>Selected tenant does not match</strong><p>Reconnect the required tools to this tenant or choose a subscription in their connected tenant.</p></div>
+              </div>
+            {/if}
             <div class="form-grid">
               <label class="field">
                 <span>Environment name <em>Required</em></span>
                 <input value={String(wizardValues.environmentName ?? "")} on:input={(e) => setWizardValue("environmentName", e.currentTarget.value)} placeholder="dev" />
                 <small>Stored by azd under the project’s .azure folder.</small>
               </label>
-              <label class="field">
-                <span>Tenant</span>
-                <input value={String(wizardValues.tenantId ?? "")} on:input={(e) => setWizardValue("tenantId", e.currentTarget.value)} placeholder="Use connected tenant" />
-              </label>
-              <label class="field full">
-                <span>Subscription</span>
-                <input value={String(wizardValues.subscriptionId ?? "")} on:input={(e) => setWizardValue("subscriptionId", e.currentTarget.value)} placeholder="Subscription ID" />
-                <small>Use the subscription connected to azd. Subscription discovery will replace this field in the next milestone.</small>
-              </label>
+              {#if manualAzureScope || !azureDiscovery}
+                <label class="field">
+                  <span>Tenant</span>
+                  <input value={String(wizardValues.tenantId ?? "")} on:input={(e) => setWizardValue("tenantId", e.currentTarget.value)} placeholder="Tenant ID" />
+                </label>
+                <label class="field full">
+                  <span>Subscription <em>Required</em></span>
+                  <input value={String(wizardValues.subscriptionId ?? "")} on:input={(e) => setWizardValue("subscriptionId", e.currentTarget.value)} placeholder="Subscription ID" />
+                  <small>Manual entry remains available when Azure CLI is not installed or signed in.</small>
+                </label>
+              {:else}
+                <label class="field">
+                  <span>Tenant</span>
+                  <select value={String(wizardValues.tenantId ?? "")} on:change={(e) => selectAzureTenant(e.currentTarget.value)}>
+                    {#each azureDiscovery.tenants as tenant}
+                      <option value={tenant.tenantId}>{tenant.displayName ?? tenant.defaultDomain ?? tenant.tenantId}</option>
+                    {/each}
+                  </select>
+                </label>
+                <label class="field full">
+                  <span>Subscription <em>Required</em></span>
+                  <select value={String(wizardValues.subscriptionId ?? "")} on:change={(e) => selectAzureSubscription(e.currentTarget.value)}>
+                    {#each azureDiscovery.subscriptions.filter((subscription) => subscription.tenantId.toLowerCase() === String(wizardValues.tenantId).toLowerCase()) as subscription}
+                      <option value={subscription.id}>{subscription.name}{subscription.isDefault ? " (current)" : ""}</option>
+                    {/each}
+                  </select>
+                  <small>{wizardValues.subscriptionId}</small>
+                </label>
+              {/if}
               <label class="field">
                 <span>Azure region <em>Required</em></span>
                 <select value={String(wizardValues.location ?? "")} on:change={(e) => setWizardValue("location", e.currentTarget.value)}>
-                  <option value="westus2">West US 2</option>
-                  <option value="eastus">East US</option>
-                  <option value="centralus">Central US</option>
-                  <option value="westeurope">West Europe</option>
+                  {#if !manualAzureScope && azureDiscovery?.locations.length}
+                    {#each azureDiscovery.locations as location}
+                      <option value={location.name}>{location.regionalDisplayName ?? location.displayName}</option>
+                    {/each}
+                  {:else}
+                    <option value="westus2">West US 2</option>
+                    <option value="eastus">East US</option>
+                    <option value="centralus">Central US</option>
+                    <option value="westeurope">West Europe</option>
+                  {/if}
                 </select>
               </label>
               <label class="field">
                 <span>Resource group</span>
-                <input value={String(wizardValues.resourceGroup ?? "")} on:input={(e) => setWizardValue("resourceGroup", e.currentTarget.value)} placeholder="Created from environment name" />
+                <input list="azure-resource-groups" value={String(wizardValues.resourceGroup ?? "")} on:input={(e) => setWizardValue("resourceGroup", e.currentTarget.value)} placeholder="Created from environment name" />
+                <small>Choose an existing group or enter a new name.</small>
               </label>
             </div>
+            <datalist id="azure-resource-groups">
+              {#each azureDiscovery?.resourceGroups ?? [] as group}<option value={group.name}>{group.location}</option>{/each}
+            </datalist>
           {:else if activePage.kind === "configuration" && activePage.group}
             <div class="form-grid">
               {#each activePage.group.fields as field}
@@ -1305,7 +1483,7 @@
               <div class={`connection-icon ${connection.state}`}><Icon name="connections" size={21} /></div>
               <div class="row"><h2>{connection.name}</h2><StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} /></div>
               <p>{connection.account ?? "No active account detected"}</p>
-              <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div></dl>
+              <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div></dl>
               <button class="secondary full-width" on:click={() => connect(connection)}>{connection.state === "connected" ? "Reconnect" : "Connect"}</button>
             </article>
           {/each}
