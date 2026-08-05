@@ -38,7 +38,7 @@ describe("structured operation results", () => {
   it("warns about possible partial changes and retries the registered action", async () => {
     render(App);
 
-    await fireEvent.click(screen.getAllByRole("button", { name: "Projects" })[0]);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
 
