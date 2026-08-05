@@ -32,7 +32,7 @@ The hidden `azd vs-server` protocol is intentionally not used.
 
 Permission-check IDs are an application-owned registry. Catalogs can select a registered ID but cannot provide a command, script, URL, or executable argument. V1 can perform a live ARM subscription read, a Microsoft Graph organization read, and a Microsoft Graph PowerShell delegated-scope comparison. These checks do not capture tokens and do not mutate Azure or Microsoft Entra resources.
 
-Only one process operation is represented by an operation ID. Cancellation first requests child termination; Azure-side work already accepted by the service may continue and is reported as such by azd.
+Only one process operation is represented by an operation ID. Terminal lifecycle events include a structured resource state: `changed`, `unchanged`, `possiblyModified`, or `unknown`. Failed or cancelled mutating operations are conservatively marked `possiblyModified` because Azure-side work already accepted by the service may continue after the local child process stops. The UI presents that guidance and can retry only the same registered lifecycle action; templates cannot inject retry commands or arguments.
 
 ## Authentication
 
@@ -49,6 +49,6 @@ Future app-owned MSAL authentication can be introduced behind the same provider 
 
 ## Persistence
 
-SQLite is stored in the Tauri application-data directory. It contains project metadata, catalog sources and trust decisions, non-sensitive wizard drafts, and operation history. azd continues to own `.azure` environment files.
+SQLite is stored in the Tauri application-data directory. It contains project metadata, catalog sources and trust decisions, non-sensitive wizard drafts, and operation history, including structured terminal outcomes. A failed or cancelled operation marks its matching project as needing attention across restarts. azd continues to own `.azure` environment files.
 
 The template cache is content-addressed by template ID and commit. A cached Git checkout must resolve to the catalog commit before it is used.

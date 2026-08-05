@@ -1102,7 +1102,7 @@ kbd {
   display: grid;
   min-height: 53px;
   padding: 8px 13px;
-  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 10px;
   border-bottom: 1px solid var(--border-soft);
@@ -1121,6 +1121,20 @@ kbd {
 
 .operation-row time {
   color: var(--faint);
+  font-size: 10px;
+}
+
+.operation-row small {
+  display: block;
+  max-width: 680px;
+  margin-top: 4px;
+  color: var(--warning);
+  line-height: 1.4;
+}
+
+button.compact {
+  min-height: 26px;
+  padding: 3px 9px;
   font-size: 10px;
 }
 
@@ -1821,6 +1835,13 @@ kbd {
   background: var(--success-bg);
 }
 
+.deployment-orb.failed,
+.deployment-orb.cancelled {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning), transparent 55%);
+  background: color-mix(in srgb, var(--warning), transparent 90%);
+}
+
 .check-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1919,6 +1940,35 @@ kbd {
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--panel);
+}
+
+.operation-outcome {
+  display: grid;
+  width: min(620px, 100%);
+  margin: -14px auto 12px;
+  padding: 13px 15px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 13px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+}
+
+.operation-outcome.possiblyModified {
+  border-color: color-mix(in srgb, var(--warning), transparent 55%);
+  background: color-mix(in srgb, var(--warning), transparent 94%);
+}
+
+.operation-outcome strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.operation-outcome p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .deployment-progress .progress-track {
