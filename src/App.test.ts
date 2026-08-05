@@ -112,6 +112,11 @@ describe("desktop experience", () => {
       expect(screen.getByText(/active environment/i)).toBeInTheDocument();
     });
 
+    await fireEvent.click(screen.getByRole("button", { name: "operations" }));
+    expect(screen.getByText(/lifecycle history/i)).toBeInTheDocument();
+    expect(screen.getByText("Deployment completed successfully.")).toBeInTheDocument();
+    expect(screen.getByText(/3 recorded/i)).toBeInTheDocument();
+
     await fireEvent.click(screen.getByRole("button", { name: "resources" }));
     expect(screen.getByText(/structured azd state/i)).toBeInTheDocument();
   });

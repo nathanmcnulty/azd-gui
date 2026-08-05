@@ -22,6 +22,7 @@ vi.mock("./lib/bridge", async (importOriginal) => {
       operationHarness.starts.push(action);
       return `native-${action}-${operationHarness.starts.length}`;
     },
+    getOperationHistory: async () => [],
     recordOperation: async () => undefined
   };
 });

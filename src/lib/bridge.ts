@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { mockAzureDiscovery, mockBootstrap } from "./mock-data";
+import { mockAzureDiscovery, mockBootstrap, mockOperationHistory } from "./mock-data";
 import type {
   AzureDiscovery,
   BootstrapData,
@@ -231,6 +231,11 @@ export async function recordOperation(
 ): Promise<void> {
   if (!isTauri()) return;
   await invoke("record_operation", { event, projectPath });
+}
+
+export async function getOperationHistory(projectPath: string): Promise<OperationEvent[]> {
+  if (!isTauri()) return structuredClone(mockOperationHistory);
+  return invoke<OperationEvent[]>("get_operation_history", { projectPath });
 }
 
 export async function cancelOperation(operationId: string): Promise<void> {
