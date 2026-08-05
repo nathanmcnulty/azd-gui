@@ -21,6 +21,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
+    getOperationHistory,
     listProjectEnvironments,
     recordOperation,
     runPermissionChecks
@@ -86,6 +87,8 @@
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: Record<string, unknown> | null = null;
   let projectEnvironments: Record<string, unknown> | null = null;
+  let projectOperationHistory: OperationEvent[] = [];
+  let projectOperations: OperationEvent[] = [];
   let projectLoading = false;
   let catalogSourceOpen = false;
   let catalogSourceUrl = "";
@@ -101,8 +104,25 @@
     { resolve: (event: OperationEvent) => void; reject: (error: Error) => void }
   >();
   const completedOperations = new Map<string, OperationEvent>();
+  const operationProjectPaths = new Map<string, string>();
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
+  $: {
+    const mergedOperations = new Map(
+      projectOperationHistory.map((event) => [event.operationId, event])
+    );
+    for (const event of operationEvents) {
+      if (
+        event.kind !== "system" &&
+        selectedProject?.path === operationProjectPaths.get(event.operationId)
+      ) {
+        mergedOperations.set(event.operationId, event);
+      }
+    }
+    projectOperations = [...mergedOperations.values()].sort(
+      (left, right) => Date.parse(right.timestamp) - Date.parse(left.timestamp)
+    );
+  }
   $: filteredCatalog = data.catalog.entries.filter((entry) => {
     const query = catalogQuery.trim().toLowerCase();
     return (
@@ -613,6 +633,7 @@
         String(wizardValues.environmentName || "dev")
       );
       preflightOperationId = operationId;
+      operationProjectPaths.set(operationId, projectPath);
       activeOperationId = operationId;
       operationState = "running";
       if (!data.isNative) simulateOperation(operationId, "preview");
@@ -666,6 +687,7 @@
         projectPath,
         String(wizardValues.environmentName || "dev")
       );
+      operationProjectPaths.set(operationId, projectPath);
       activeOperationId = operationId;
       if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
@@ -735,7 +757,10 @@
         if (event.state === "succeeded") waiter.resolve(event);
         else waiter.reject(new Error(event.message));
       }
-      const projectPath = selectedProject?.path || String(wizardValues.projectPath || "");
+      const projectPath =
+        operationProjectPaths.get(event.operationId) ||
+        selectedProject?.path ||
+        String(wizardValues.projectPath || "");
       if (
         projectPath &&
         ["up", "provision", "preview", "deploy", "refresh", "show", "down"].includes(event.kind)
@@ -756,8 +781,13 @@
             state: projectState,
             lastOperation: event.timestamp
           };
+          projectOperationHistory = [
+            event,
+            ...projectOperationHistory.filter((item) => item.operationId !== event.operationId)
+          ];
         }
       }
+      operationProjectPaths.delete(event.operationId);
     }
     if (
       preflightOperationId === event.operationId &&
@@ -846,17 +876,26 @@
     activeNav = "projects";
     projectTab = "overview";
     projectLoading = true;
-    try {
-      [projectState, projectEnvironments] = await Promise.all([
-        getProjectState(project.path, project.environment),
-        listProjectEnvironments(project.path)
-      ]);
-    } catch (error) {
-      addSystemLog(`Could not refresh project state: ${String(error)}`, "warning");
+    const [stateResult, environmentsResult, historyResult] = await Promise.allSettled([
+      getProjectState(project.path, project.environment),
+      listProjectEnvironments(project.path),
+      getOperationHistory(project.path)
+    ]);
+    projectState = stateResult.status === "fulfilled" ? stateResult.value : null;
+    projectEnvironments =
+      environmentsResult.status === "fulfilled" ? environmentsResult.value : null;
+    projectOperationHistory = historyResult.status === "fulfilled" ? historyResult.value : [];
+    const failures = [stateResult, environmentsResult, historyResult].filter(
+      (result) => result.status === "rejected"
+    );
+    if (failures.length > 0) {
+      addSystemLog(
+        `Could not refresh ${failures.length} project data source${failures.length === 1 ? "" : "s"}.`,
+        "warning"
+      );
       outputOpen = true;
-    } finally {
-      projectLoading = false;
     }
+    projectLoading = false;
   }
 
   function refreshSelectedProject() {
@@ -889,6 +928,7 @@
     operationState = "running";
     lastOperationResult = null;
     const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
+    operationProjectPaths.set(operationId, selectedProject.path);
     activeOperationId = operationId;
     if (!data.isNative) simulateOperation(operationId, action);
   }
@@ -1588,10 +1628,14 @@
             </div>
           {:else if projectTab === "operations"}
             <div class="table-card operations-list">
-              {#if operationEvents.filter((event) => event.kind !== "system").length === 0}
-                <div class="empty-state"><Icon name="terminal" size={28} /><h2>No operations this session</h2><p>Provision, deploy, refresh, and down activity will appear here and in the output panel.</p></div>
+              <div class="operation-history-header">
+                <div><h2>Lifecycle history</h2><p>Terminal outcomes retained locally for this project.</p></div>
+                <span>{projectOperations.length} recorded</span>
+              </div>
+              {#if projectOperations.length === 0}
+                <div class="empty-state"><Icon name="terminal" size={28} /><h2>No recorded operations</h2><p>Provision, deploy, refresh, and down outcomes will appear here and in the output panel.</p></div>
               {/if}
-              {#each operationEvents.filter((event) => event.kind !== "system").slice().reverse() as event}
+              {#each projectOperations as event}
                 <div class="operation-row">
                   <span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span>
                   <div>
@@ -1599,7 +1643,7 @@
                     <span>{event.outcome?.summary ?? event.message}</span>
                     {#if event.outcome && event.state !== "succeeded"}<small>{event.outcome.guidance}</small>{/if}
                   </div>
-                  <time>{new Date(event.timestamp).toLocaleTimeString()}</time>
+                  <time>{new Date(event.timestamp).toLocaleString()}</time>
                   <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} />
                   {#if event.outcome?.retryable && ["provision", "deploy", "refresh", "down"].includes(event.kind)}
                     <button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={() => retryProjectOperation(event)}>Retry</button>

@@ -239,6 +239,50 @@ impl Database {
         transaction.commit()?;
         Ok(())
     }
+
+    pub fn operation_history(&self, project_path: &str) -> AppResult<Vec<OperationEvent>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, kind, state, COALESCE(completed_at, started_at), summary, outcome_json
+             FROM operation_history
+             WHERE project_path = ?1
+             ORDER BY COALESCE(completed_at, started_at) DESC
+             LIMIT 100",
+        )?;
+        let rows = statement.query_map([project_path], |row| {
+            let state: String = row.get(2)?;
+            let outcome_json: Option<String> = row.get(5)?;
+            let outcome = outcome_json
+                .map(|value| {
+                    serde_json::from_str(&value).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            5,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?;
+            Ok(OperationEvent {
+                operation_id: row.get(0)?,
+                kind: row.get(1)?,
+                level: match state.as_str() {
+                    "succeeded" => "success",
+                    "failed" => "error",
+                    "cancelled" => "warning",
+                    _ => "info",
+                }
+                .into(),
+                state,
+                timestamp: row.get(3)?,
+                stream: "system".into(),
+                message: row.get(4)?,
+                progress: None,
+                outcome,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
 }
 
 #[cfg(test)]
@@ -296,5 +340,14 @@ mod tests {
             )
             .unwrap();
         assert!(outcome.contains("possiblyModified"));
+        drop(connection);
+
+        let history = database.operation_history(&project.path).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].operation_id, event.operation_id);
+        assert_eq!(history[0].level, "error");
+        let outcome = history[0].outcome.as_ref().unwrap();
+        assert_eq!(outcome.resource_state, "possiblyModified");
+        assert!(outcome.retryable);
     }
 }

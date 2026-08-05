@@ -1152,6 +1152,34 @@ kbd {
   min-height: 240px;
 }
 
+.operation-history-header {
+  display: flex;
+  min-height: 58px;
+  padding: 10px 14px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-raised);
+}
+
+.operation-history-header h2,
+.operation-history-header p {
+  margin: 0;
+}
+
+.operation-history-header h2 {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.operation-history-header p,
+.operation-history-header > span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
 .operation-row {
   display: grid;
   min-height: 53px;
@@ -1162,15 +1190,19 @@ kbd {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.operation-row strong,
-.operation-row span {
+.operation-row > div strong,
+.operation-row > div > span {
   display: block;
 }
 
-.operation-row span {
+.operation-row > div > span {
   margin-top: 2px;
   color: var(--muted);
   font-size: 10px;
+}
+
+.operation-row > .status-pill {
+  width: max-content;
 }
 
 .operation-row time {

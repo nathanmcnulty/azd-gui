@@ -3,6 +3,7 @@ import type {
   BootstrapData,
   Catalog,
   ConnectionStatus,
+  OperationEvent,
   ProjectSummary,
   ToolStatus
 } from "./types";
@@ -516,6 +517,54 @@ export const mockProjects: ProjectSummary[] = [
     revision: "21b45a1",
     lastOperation: "Yesterday",
     state: "attention"
+  }
+];
+
+export const mockOperationHistory: OperationEvent[] = [
+  {
+    operationId: "preview-history-up",
+    kind: "up",
+    state: "succeeded",
+    timestamp: "2026-08-05T18:42:00.000Z",
+    stream: "system",
+    level: "success",
+    message: "Deployment completed successfully.",
+    outcome: {
+      resourceState: "changed",
+      summary: "Deployment completed successfully.",
+      guidance: "Refresh project state to inspect the resulting Azure resources.",
+      retryable: false
+    }
+  },
+  {
+    operationId: "preview-history-provision",
+    kind: "provision",
+    state: "failed",
+    timestamp: "2026-08-04T21:16:00.000Z",
+    stream: "system",
+    level: "error",
+    message: "Provisioning did not complete.",
+    outcome: {
+      resourceState: "possiblyModified",
+      summary: "Provisioning did not complete.",
+      guidance: "Review the output and Azure state before retrying.",
+      retryable: true
+    }
+  },
+  {
+    operationId: "preview-history-refresh",
+    kind: "refresh",
+    state: "succeeded",
+    timestamp: "2026-08-03T16:05:00.000Z",
+    stream: "system",
+    level: "success",
+    message: "Environment state refreshed.",
+    outcome: {
+      resourceState: "unchanged",
+      summary: "Environment state refreshed.",
+      guidance: "No Azure resource changes were applied by this action.",
+      retryable: false
+    }
   }
 ];
 

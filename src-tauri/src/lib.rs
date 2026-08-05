@@ -233,6 +233,17 @@ fn record_operation(
         .record_operation(&event, &canonical.display().to_string())
 }
 
+#[tauri::command]
+fn get_operation_history(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<Vec<OperationEvent>> {
+    let canonical = std::fs::canonicalize(project_path)?;
+    state
+        .database
+        .operation_history(&canonical.display().to_string())
+}
+
 fn sanitized_draft(mut values: serde_json::Value) -> AppResult<serde_json::Value> {
     let object = values
         .as_object_mut()
@@ -304,6 +315,7 @@ pub fn run() {
             get_project_state,
             list_project_environments,
             record_operation,
+            get_operation_history,
             save_wizard_draft,
             load_wizard_draft
         ])
