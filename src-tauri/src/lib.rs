@@ -1,4 +1,5 @@
 mod azd;
+mod azure;
 mod catalog;
 mod command_runner;
 mod connections;
@@ -14,7 +15,7 @@ use crate::{
     command_runner::{spawn_operation, OperationManager},
     error::{AppError, AppResult},
     models::{
-        BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
+        AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
         PrepareDeploymentRequest, ProjectSummary, TemplateInspection, ToolStatus,
     },
     persistence::Database,
@@ -87,6 +88,14 @@ fn install_tool(app: AppHandle, state: State<'_, AppState>, id: String) -> AppRe
 #[tauri::command]
 async fn check_connections() -> AppResult<Vec<ConnectionStatus>> {
     Ok(connections::check_all().await)
+}
+
+#[tauri::command]
+async fn discover_azure_scope(
+    subscription_id: Option<String>,
+    refresh: bool,
+) -> AppResult<AzureDiscovery> {
+    azure::discover(subscription_id.as_deref(), refresh).await
 }
 
 #[tauri::command]
@@ -275,6 +284,7 @@ pub fn run() {
             check_tools,
             install_tool,
             check_connections,
+            discover_azure_scope,
             start_login,
             start_azd_operation,
             cancel_operation,

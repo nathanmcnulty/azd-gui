@@ -141,9 +141,66 @@ pub struct ConnectionStatus {
     #[serde(default)]
     pub tenant_id: Option<String>,
     #[serde(default)]
+    pub subscription_id: Option<String>,
+    #[serde(default)]
+    pub subscription_name: Option<String>,
+    #[serde(default)]
     pub expires_on: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureTenant {
+    pub tenant_id: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub default_domain: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureSubscription {
+    pub id: String,
+    pub name: String,
+    pub tenant_id: String,
+    #[serde(default)]
+    pub tenant_display_name: Option<String>,
+    #[serde(default)]
+    pub tenant_default_domain: Option<String>,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureLocation {
+    pub name: String,
+    pub display_name: String,
+    #[serde(default)]
+    pub regional_display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureResourceGroup {
+    pub name: String,
+    pub location: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureDiscovery {
+    pub provider: String,
+    pub subscriptions: Vec<AzureSubscription>,
+    pub tenants: Vec<AzureTenant>,
+    pub locations: Vec<AzureLocation>,
+    pub resource_groups: Vec<AzureResourceGroup>,
+    #[serde(default)]
+    pub selected_subscription_id: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

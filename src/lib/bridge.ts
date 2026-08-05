@@ -1,8 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { mockBootstrap } from "./mock-data";
+import { mockAzureDiscovery, mockBootstrap } from "./mock-data";
 import type {
+  AzureDiscovery,
   BootstrapData,
   Catalog,
   CatalogSource,
@@ -95,6 +96,28 @@ export async function installTool(id: string): Promise<string> {
 export async function refreshConnections(): Promise<ConnectionStatus[]> {
   if (!isTauri()) return structuredClone(mockBootstrap.connections);
   return invoke<ConnectionStatus[]>("check_connections");
+}
+
+export async function discoverAzureScope(
+  subscriptionId?: string,
+  refresh = false
+): Promise<AzureDiscovery> {
+  if (!isTauri()) {
+    const discovery = structuredClone(mockAzureDiscovery);
+    if (!subscriptionId) {
+      discovery.locations = [];
+      discovery.resourceGroups = [];
+      delete discovery.selectedSubscriptionId;
+      return discovery;
+    }
+    const selected = discovery.subscriptions.find(
+      (subscription) => subscription.id.toLowerCase() === subscriptionId.toLowerCase()
+    );
+    if (!selected) throw new Error("The selected subscription is unavailable.");
+    discovery.selectedSubscriptionId = selected.id;
+    return discovery;
+  }
+  return invoke<AzureDiscovery>("discover_azure_scope", { subscriptionId, refresh });
 }
 
 export async function login(

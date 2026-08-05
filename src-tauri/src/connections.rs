@@ -14,6 +14,7 @@ fn status(
     value: Option<Value>,
     account_keys: &[&str],
     tenant_keys: &[&str],
+    subscription_keys: (&[&str], &[&str]),
 ) -> ConnectionStatus {
     let account = value.as_ref().and_then(|value| {
         account_keys
@@ -22,6 +23,18 @@ fn status(
     });
     let tenant_id = value.as_ref().and_then(|value| {
         tenant_keys
+            .iter()
+            .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
+    });
+    let subscription_id = value.as_ref().and_then(|value| {
+        subscription_keys
+            .0
+            .iter()
+            .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
+    });
+    let subscription_name = value.as_ref().and_then(|value| {
+        subscription_keys
+            .1
             .iter()
             .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
     });
@@ -39,6 +52,8 @@ fn status(
         scopes: vec![],
         account,
         tenant_id,
+        subscription_id,
+        subscription_name,
         expires_on: None,
         detail: None,
     }
@@ -67,7 +82,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$c=Get-AzContext -ErrorAction SilentlyContinue; if($c){[pscustomobject]@{account=$c.Account.Id;tenantId=$c.Tenant.Id}|ConvertTo-Json -Compress}"
+                "$c=Get-AzContext -ErrorAction SilentlyContinue; if($c){[pscustomobject]@{account=$c.Account.Id;tenantId=$c.Tenant.Id;subscriptionId=$c.Subscription.Id;subscriptionName=$c.Subscription.Name}|ConvertTo-Json -Compress}"
             ]
         )),
         json_status(CommandSpec::new(
@@ -89,6 +104,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             azd.ok(),
             &["/email", "/account/email", "/user/email"],
             &["/tenantId", "/tenant/id"],
+            (&[], &[]),
         ),
         status(
             "azureCli",
@@ -97,6 +113,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             az,
             &["/user/name"],
             &["/tenantId"],
+            (&["/id"], &["/name"]),
         ),
         status(
             "azPowerShell",
@@ -105,6 +122,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             az_ps,
             &["/account"],
             &["/tenantId"],
+            (&["/subscriptionId"], &["/subscriptionName"]),
         ),
         status(
             "graphPowerShell",
@@ -113,6 +131,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             graph_ps,
             &["/account"],
             &["/tenantId"],
+            (&[], &[]),
         ),
     ];
     if let Some(mismatches) = tenant_mismatch(&statuses) {
@@ -205,6 +224,40 @@ pub fn tenant_mismatch(statuses: &[ConnectionStatus]) -> Option<Vec<(String, Str
     let first = tenants.first()?.1.as_str();
     tenants
         .iter()
-        .any(|(_, tenant)| tenant != first)
+        .any(|(_, tenant)| !tenant.eq_ignore_ascii_case(first))
         .then_some(tenants)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn connected(name: &str, tenant_id: &str) -> ConnectionStatus {
+        ConnectionStatus {
+            id: name.into(),
+            name: name.into(),
+            required: true,
+            reason: String::new(),
+            state: "connected".into(),
+            scopes: vec![],
+            account: None,
+            tenant_id: Some(tenant_id.into()),
+            subscription_id: None,
+            subscription_name: None,
+            expires_on: None,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn tenant_alignment_is_case_insensitive() {
+        let statuses = vec![connected("azd", "ABC-123"), connected("az", "abc-123")];
+        assert!(tenant_mismatch(&statuses).is_none());
+    }
+
+    #[test]
+    fn tenant_mismatch_returns_each_connected_tenant() {
+        let statuses = vec![connected("azd", "tenant-a"), connected("az", "tenant-b")];
+        assert_eq!(tenant_mismatch(&statuses).unwrap().len(), 2);
+    }
 }

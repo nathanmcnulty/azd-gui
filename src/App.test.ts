@@ -10,11 +10,11 @@ describe("desktop experience", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
     await fireEvent.click(
-      screen.getAllByRole("button", { name: /configure deployment/i })[0]
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
     );
 
     expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
-    expect(screen.getByText(/STEP 1 OF 12/i)).toBeInTheDocument();
+    expect(screen.getByText(/STEP 1 OF 9/i)).toBeInTheDocument();
     const deploymentSteps = within(
       screen.getByRole("navigation", { name: /deployment steps/i })
     ).getAllByRole("button");
@@ -25,9 +25,34 @@ describe("desktop experience", () => {
     expect(continueButton).toBeDisabled();
 
     await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
-      target: { value: "C:\\Deployments\\myworkid-dev" }
+      target: { value: "C:\\Deployments\\entra-health-dev" }
     });
     expect(continueButton).toBeEnabled();
+  });
+
+  it("discovers Azure scope when the wizard reaches environment configuration", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\entra-health-dev" }
+    });
+
+    for (let step = 0; step < 4; step += 1) {
+      await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    }
+
+    expect(screen.getByRole("heading", { name: /configure environment/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /subscription/i })).toHaveValue(
+        "11111111-1111-1111-1111-111111111111"
+      );
+    });
+    expect(screen.getByRole("combobox", { name: /azure region/i })).toHaveValue("westus2");
+    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
   });
 
   it("opens the command palette from the keyboard", async () => {
@@ -45,7 +70,7 @@ describe("desktop experience", () => {
   it("opens the post-deployment project workspace", async () => {
     render(App);
     await fireEvent.click(screen.getAllByRole("button", { name: "Projects" })[0]);
-    await fireEvent.click(screen.getByRole("button", { name: /myworkid/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
 
     expect(screen.getByRole("navigation", { name: /project sections/i })).toBeInTheDocument();
     await waitFor(() => {

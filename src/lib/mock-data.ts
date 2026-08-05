@@ -1,4 +1,11 @@
-import type { BootstrapData, Catalog, ConnectionStatus, ProjectSummary, ToolStatus } from "./types";
+import type {
+  AzureDiscovery,
+  BootstrapData,
+  Catalog,
+  ConnectionStatus,
+  ProjectSummary,
+  ToolStatus
+} from "./types";
 
 export const bundledCatalog: Catalog = {
   schemaVersion: "1.0",
@@ -387,7 +394,9 @@ export const mockConnections: ConnectionStatus[] = [
     reason: "Deploy Azure resources.",
     state: "connected",
     account: "nathan@example.com",
-    tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47"
+    tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+    subscriptionId: "11111111-1111-1111-1111-111111111111",
+    subscriptionName: "Development Subscription"
   },
   {
     id: "azureCli",
@@ -413,6 +422,51 @@ export const mockConnections: ConnectionStatus[] = [
     state: "disconnected"
   }
 ];
+
+export const mockAzureDiscovery: AzureDiscovery = {
+  provider: "azureCli",
+  tenants: [
+    {
+      tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+      displayName: "Contoso Development",
+      defaultDomain: "contoso.onmicrosoft.com"
+    },
+    {
+      tenantId: "00000000-0000-0000-0000-000000000002",
+      displayName: "Sandbox Directory",
+      defaultDomain: "sandbox.onmicrosoft.com"
+    }
+  ],
+  subscriptions: [
+    {
+      id: "11111111-1111-1111-1111-111111111111",
+      name: "Development Subscription",
+      tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+      tenantDisplayName: "Contoso Development",
+      tenantDefaultDomain: "contoso.onmicrosoft.com",
+      isDefault: true
+    },
+    {
+      id: "22222222-2222-2222-2222-222222222222",
+      name: "Sandbox Subscription",
+      tenantId: "00000000-0000-0000-0000-000000000002",
+      tenantDisplayName: "Sandbox Directory",
+      tenantDefaultDomain: "sandbox.onmicrosoft.com",
+      isDefault: false
+    }
+  ],
+  locations: [
+    { name: "eastus", displayName: "East US", regionalDisplayName: "(US) East US" },
+    { name: "westus2", displayName: "West US 2", regionalDisplayName: "(US) West US 2" },
+    { name: "westeurope", displayName: "West Europe", regionalDisplayName: "(Europe) West Europe" }
+  ],
+  resourceGroups: [
+    { name: "rg-azd-development", location: "westus2" },
+    { name: "rg-shared-services", location: "eastus" }
+  ],
+  selectedSubscriptionId: "11111111-1111-1111-1111-111111111111",
+  warnings: []
+};
 
 export const mockProjects: ProjectSummary[] = [
   {

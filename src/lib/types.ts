@@ -67,8 +67,46 @@ export interface ConnectionStatus extends ConnectionRequirement {
   state: ConnectionState;
   account?: string;
   tenantId?: string;
+  subscriptionId?: string;
+  subscriptionName?: string;
   expiresOn?: string;
   detail?: string;
+}
+
+export interface AzureTenant {
+  tenantId: string;
+  displayName?: string;
+  defaultDomain?: string;
+}
+
+export interface AzureSubscription {
+  id: string;
+  name: string;
+  tenantId: string;
+  tenantDisplayName?: string;
+  tenantDefaultDomain?: string;
+  isDefault: boolean;
+}
+
+export interface AzureLocation {
+  name: string;
+  displayName: string;
+  regionalDisplayName?: string;
+}
+
+export interface AzureResourceGroup {
+  name: string;
+  location: string;
+}
+
+export interface AzureDiscovery {
+  provider: "azureCli";
+  subscriptions: AzureSubscription[];
+  tenants: AzureTenant[];
+  locations: AzureLocation[];
+  resourceGroups: AzureResourceGroup[];
+  selectedSubscriptionId?: string;
+  warnings: string[];
 }
 
 export interface ConfigurationGroup {
