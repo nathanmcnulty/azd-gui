@@ -44,7 +44,8 @@ impl Database {
                 state TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 completed_at TEXT,
-                summary TEXT
+                summary TEXT,
+                outcome_json TEXT
             );
             CREATE TABLE IF NOT EXISTS wizard_drafts (
                 project_key TEXT PRIMARY KEY,
@@ -55,6 +56,10 @@ impl Database {
         )?;
         let _ = connection.execute(
             "ALTER TABLE catalog_sources ADD COLUMN accepted_catalog_json TEXT",
+            [],
+        );
+        let _ = connection.execute(
+            "ALTER TABLE operation_history ADD COLUMN outcome_json TEXT",
             [],
         );
         Ok(Self {
@@ -195,21 +200,101 @@ impl Database {
     }
 
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
-        self.lock()?.execute(
+        let outcome_json = event
+            .outcome
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
             "INSERT INTO operation_history
-             (id, project_path, kind, state, started_at, completed_at, summary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)
+             (id, project_path, kind, state, started_at, completed_at, summary, outcome_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)
              ON CONFLICT(id) DO UPDATE SET
-             state=excluded.state, completed_at=excluded.completed_at, summary=excluded.summary",
+             state=excluded.state, completed_at=excluded.completed_at,
+             summary=excluded.summary, outcome_json=excluded.outcome_json",
             params![
                 event.operation_id,
                 project_path,
                 event.kind,
                 event.state,
                 event.timestamp,
-                event.message
+                event.message,
+                outcome_json
             ],
         )?;
+        transaction.execute(
+            "UPDATE projects SET last_operation = ?1, state = ?2 WHERE path = ?3",
+            params![
+                event.timestamp,
+                if event.state == "succeeded" {
+                    "ready"
+                } else {
+                    "attention"
+                },
+                project_path
+            ],
+        )?;
+        transaction.commit()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+    use crate::models::{OperationEvent, OperationOutcome, ProjectSummary};
+    use tempfile::tempdir;
+
+    #[test]
+    fn terminal_operation_updates_project_attention_and_persists_outcome() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some("sample".into()),
+            revision: None,
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        let event = OperationEvent {
+            operation_id: "operation-1".into(),
+            kind: "up".into(),
+            state: "failed".into(),
+            timestamp: "2026-08-05T12:00:00Z".into(),
+            stream: "system".into(),
+            level: "error".into(),
+            message: "Deployment did not complete.".into(),
+            progress: Some(55),
+            outcome: Some(OperationOutcome {
+                resource_state: "possiblyModified".into(),
+                summary: "Deployment did not complete.".into(),
+                guidance: "Review output before retrying.".into(),
+                retryable: true,
+            }),
+        };
+
+        database.record_operation(&event, &project.path).unwrap();
+
+        let projects = database.projects().unwrap();
+        assert_eq!(projects[0].state, "attention");
+        assert_eq!(
+            projects[0].last_operation.as_deref(),
+            Some(event.timestamp.as_str())
+        );
+        let connection = database.lock().unwrap();
+        let outcome: String = connection
+            .query_row(
+                "SELECT outcome_json FROM operation_history WHERE id = ?1",
+                [&event.operation_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(outcome.contains("possiblyModified"));
     }
 }

@@ -1,10 +1,19 @@
 use crate::{
     error::{AppError, AppResult},
-    models::OperationEvent,
+    models::{OperationEvent, OperationOutcome},
     redaction::redact,
 };
 use chrono::Utc;
-use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    process::Stdio,
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tauri::{AppHandle, Emitter};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
@@ -169,8 +178,76 @@ fn emit_event(
             level: level.into(),
             message: redact(&message.into()),
             progress,
+            outcome: terminal_outcome(kind, state),
         },
     );
+}
+
+fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
+    let mutating = matches!(kind, "up" | "provision" | "deploy" | "down");
+    if !mutating && !matches!(kind, "preview" | "refresh" | "show") {
+        return None;
+    }
+    let action = match kind {
+        "up" => "Deployment",
+        "provision" => "Provisioning",
+        "preview" => "Infrastructure preview",
+        "deploy" => "Service deployment",
+        "refresh" => "Environment refresh",
+        "show" => "Project refresh",
+        "down" => "Resource removal",
+        _ => unreachable!("known lifecycle action"),
+    };
+    let (resource_state, summary, guidance, retryable) = match state {
+        "succeeded" => (
+            if mutating { "changed" } else { "unchanged" },
+            format!("{action} completed successfully."),
+            if mutating {
+                "Refresh project state to inspect the resulting Azure resources."
+            } else {
+                "No Azure resource changes were applied by this action."
+            }
+            .into(),
+            false,
+        ),
+        "failed" => (
+            if mutating {
+                "possiblyModified"
+            } else {
+                "unchanged"
+            },
+            format!("{action} did not complete."),
+            if mutating {
+                "Review the output and template hooks before retrying. Azure may contain partial changes."
+            } else {
+                "Review the output, correct the reported issue, and retry the same action."
+            }
+            .into(),
+            true,
+        ),
+        "cancelled" => (
+            if mutating {
+                "possiblyModified"
+            } else {
+                "unchanged"
+            },
+            format!("{action} was cancelled."),
+            if mutating {
+                "The local process stopped, but Azure operations already accepted may continue. Review the output and refresh state before retrying."
+            } else {
+                "No Azure resource changes were applied by this action. Retry when ready."
+            }
+            .into(),
+            true,
+        ),
+        _ => return None,
+    };
+    Some(OperationOutcome {
+        resource_state: resource_state.into(),
+        summary,
+        guidance,
+        retryable,
+    })
 }
 
 fn inferred_progress(message: &str) -> Option<u8> {
@@ -273,13 +350,19 @@ pub fn spawn_operation(
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
+        let last_progress = Arc::new(AtomicU8::new(2));
         let stdout_app = app.clone();
         let stdout_id = operation_id.clone();
         let stdout_kind = kind.clone();
+        let stdout_progress = last_progress.clone();
         let stdout_task = tauri::async_runtime::spawn(async move {
             if let Some(stdout) = stdout {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    let progress = inferred_progress(&line);
+                    if let Some(progress) = progress {
+                        stdout_progress.fetch_max(progress, Ordering::Relaxed);
+                    }
                     emit_event(
                         &stdout_app,
                         &stdout_id,
@@ -288,7 +371,7 @@ pub fn spawn_operation(
                         "stdout",
                         "info",
                         &line,
-                        inferred_progress(&line),
+                        progress,
                     );
                 }
             }
@@ -326,6 +409,7 @@ pub fn spawn_operation(
         let _ = stdout_task.await;
         let _ = stderr_task.await;
         operations.cancellations.lock().await.remove(&operation_id);
+        let terminal_progress = last_progress.load(Ordering::Relaxed);
 
         if cancelled {
             emit_event(
@@ -336,7 +420,7 @@ pub fn spawn_operation(
                 "system",
                 "warning",
                 "Operation cancelled.",
-                None,
+                Some(terminal_progress),
             );
         } else {
             match status {
@@ -358,7 +442,7 @@ pub fn spawn_operation(
                     "system",
                     "error",
                     format!("Process exited with status {status}."),
-                    None,
+                    Some(terminal_progress),
                 ),
                 Err(error) => emit_event(
                     &app,
@@ -368,7 +452,7 @@ pub fn spawn_operation(
                     "system",
                     "error",
                     error.to_string(),
-                    None,
+                    Some(terminal_progress),
                 ),
             }
         }
@@ -379,7 +463,7 @@ pub fn spawn_operation(
 
 #[cfg(test)]
 mod tests {
-    use super::{capture, CommandSpec, Executable};
+    use super::{capture, terminal_outcome, CommandSpec, Executable};
     use crate::error::AppError;
     use std::time::Duration;
 
@@ -430,5 +514,25 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(error, AppError::MissingExecutable(_)));
+    }
+
+    #[test]
+    fn failed_mutating_operation_reports_possible_partial_changes() {
+        let outcome = terminal_outcome("up", "failed").unwrap();
+        assert_eq!(outcome.resource_state, "possiblyModified");
+        assert!(outcome.retryable);
+        assert!(outcome.guidance.contains("partial changes"));
+    }
+
+    #[test]
+    fn failed_preview_reports_azure_unchanged() {
+        let outcome = terminal_outcome("preview", "failed").unwrap();
+        assert_eq!(outcome.resource_state, "unchanged");
+        assert!(outcome.retryable);
+    }
+
+    #[test]
+    fn non_lifecycle_operations_do_not_claim_resource_outcomes() {
+        assert!(terminal_outcome("login:azd", "failed").is_none());
     }
 }

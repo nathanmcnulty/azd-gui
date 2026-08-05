@@ -228,6 +228,14 @@ export interface OperationEvent {
   level: "trace" | "info" | "warning" | "error" | "success";
   message: string;
   progress?: number;
+  outcome?: OperationOutcome;
+}
+
+export interface OperationOutcome {
+  resourceState: "unchanged" | "changed" | "possiblyModified" | "unknown";
+  summary: string;
+  guidance: string;
+  retryable: boolean;
 }
 
 export interface ProjectSummary {

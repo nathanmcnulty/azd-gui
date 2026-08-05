@@ -78,6 +78,7 @@
   let activeOperationId: string | null = null;
   let operationEvents: OperationEvent[] = [];
   let operationState: "idle" | "running" | "succeeded" | "failed" | "cancelled" = "idle";
+  let lastOperationResult: OperationEvent | null = null;
   let deviceCode = false;
   let theme: "system" | "dark" | "light" = "system";
   let projectPrepared = false;
@@ -223,6 +224,7 @@
     permissionCheckResults = [];
     operationEvents = [];
     operationState = "idle";
+    lastOperationResult = null;
     projectPrepared = false;
     azureDiscovery = null;
     azureDiscoveryLoading = false;
@@ -639,6 +641,7 @@
   async function runDeployment(action = "up") {
     if (!selectedEntry || activeOperationId) return;
     operationState = "running";
+    lastOperationResult = null;
     outputOpen = true;
     addSystemLog(`Starting azd ${action} --no-prompt`, "info");
     try {
@@ -685,7 +688,20 @@
           stream: "stdout",
           level: progress === 100 ? "success" : "info",
           message,
-          progress
+          progress,
+          outcome:
+            progress === 100
+              ? {
+                  resourceState: ["up", "provision", "deploy", "down"].includes(action)
+                    ? "changed"
+                    : "unchanged",
+                  summary: `${action === "up" ? "Deployment" : action} completed successfully.`,
+                  guidance: ["up", "provision", "deploy", "down"].includes(action)
+                    ? "Refresh project state to inspect the resulting Azure resources."
+                    : "No Azure resource changes were applied by this action.",
+                  retryable: false
+                }
+              : undefined
         });
       }, 450 * (index + 1));
     });
@@ -694,6 +710,9 @@
   function handleOperationEvent(event: OperationEvent) {
     operationEvents = [...operationEvents.slice(-499), event];
     if (event.state === "succeeded" || event.state === "failed" || event.state === "cancelled") {
+      if (["up", "provision", "deploy", "refresh", "show", "down"].includes(event.kind)) {
+        lastOperationResult = event;
+      }
       completedOperations.set(event.operationId, event);
       const waiter = operationResolvers.get(event.operationId);
       if (waiter) {
@@ -707,6 +726,22 @@
         ["up", "provision", "preview", "deploy", "refresh", "show", "down"].includes(event.kind)
       ) {
         void recordOperation(event, projectPath);
+        const projectState = event.state === "succeeded" ? "ready" : "attention";
+        data = {
+          ...data,
+          projects: data.projects.map((project) =>
+            project.path === projectPath
+              ? { ...project, state: projectState, lastOperation: event.timestamp }
+              : project
+          )
+        };
+        if (selectedProject?.path === projectPath) {
+          selectedProject = {
+            ...selectedProject,
+            state: projectState,
+            lastOperation: event.timestamp
+          };
+        }
       }
     }
     if (
@@ -751,16 +786,26 @@
 
   async function stopOperation() {
     if (!activeOperationId) return;
-    await cancelOperation(activeOperationId);
-    handleOperationEvent({
-      operationId: activeOperationId,
-      kind: "up",
-      state: "cancelled",
-      timestamp: new Date().toISOString(),
-      stream: "system",
-      level: "warning",
-      message: "Cancellation requested by user."
-    });
+    const operationId = activeOperationId;
+    await cancelOperation(operationId);
+    if (!data.isNative) {
+      handleOperationEvent({
+        operationId,
+        kind: "up",
+        state: "cancelled",
+        timestamp: new Date().toISOString(),
+        stream: "system",
+        level: "warning",
+        message: "Cancellation requested by user.",
+        outcome: {
+          resourceState: "possiblyModified",
+          summary: "Deployment was cancelled.",
+          guidance:
+            "The local process stopped, but Azure operations already accepted may continue. Review the output and refresh state before retrying.",
+          retryable: true
+        }
+      });
+    }
   }
 
   function addSystemLog(message: string, level: OperationEvent["level"]) {
@@ -827,9 +872,29 @@
     }
     outputOpen = true;
     operationState = "running";
+    lastOperationResult = null;
     const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
     activeOperationId = operationId;
     if (!data.isNative) simulateOperation(operationId, action);
+  }
+
+  function retryProjectOperation(event: OperationEvent) {
+    if (["provision", "deploy", "refresh", "down"].includes(event.kind)) {
+      void runProjectAction(event.kind as "provision" | "deploy" | "refresh" | "down");
+    }
+  }
+
+  function resourceStateLabel(event: OperationEvent) {
+    switch (event.outcome?.resourceState) {
+      case "changed":
+        return "Azure changed";
+      case "unchanged":
+        return "Azure unchanged";
+      case "possiblyModified":
+        return "Partial changes possible";
+      default:
+        return "State unknown";
+    }
   }
 
   function setTheme(value: "system" | "dark" | "light") {
@@ -1371,16 +1436,28 @@
           {:else if activePage.kind === "deploy"}
             <div class="deployment-hero">
               <div class={`deployment-orb ${operationState}`}>
-                {#if operationState === "running"}<span class="spinner"></span>{:else if operationState === "succeeded"}<Icon name="check" size={38} />{:else}<Icon name="cloud" size={38} />{/if}
+                {#if operationState === "running"}<span class="spinner"></span>{:else if operationState === "succeeded"}<Icon name="check" size={38} />{:else if operationState === "failed" || operationState === "cancelled"}<Icon name="warning" size={38} />{:else}<Icon name="cloud" size={38} />{/if}
               </div>
-              <h2>{operationState === "succeeded" ? "Deployment complete" : operationState === "running" ? "Deploying with azd" : "Ready for azd up"}</h2>
-              <p>{operationState === "running" ? "You can continue using the app while the operation runs." : "The complete guided deployment runs without CLI prompts."}</p>
+              <h2>{operationState === "succeeded" ? "Deployment complete" : operationState === "failed" ? "Deployment needs attention" : operationState === "cancelled" ? "Deployment cancelled" : operationState === "running" ? "Deploying with azd" : "Ready for azd up"}</h2>
+              <p>{operationState === "running" ? "You can continue using the app while the operation runs." : lastOperationResult?.outcome?.summary ?? "The complete guided deployment runs without CLI prompts."}</p>
               {#if operationState === "running"}
                 <button class="danger" on:click={stopOperation}><Icon name="stop" size={15} /> Cancel deployment</button>
               {:else}
-                <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {operationState === "succeeded" ? "Deploy again" : "Deploy with azd up"}</button>
+                <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {operationState === "succeeded" ? "Deploy again" : lastOperationResult?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
               {/if}
             </div>
+            {#if lastOperationResult?.outcome}
+              <div class={`operation-outcome ${lastOperationResult.outcome.resourceState}`}>
+                <StatusPill
+                  tone={lastOperationResult.outcome.resourceState === "changed" ? "success" : lastOperationResult.outcome.resourceState === "possiblyModified" ? "warning" : "neutral"}
+                  label={resourceStateLabel(lastOperationResult)}
+                />
+                <div>
+                  <strong>{lastOperationResult.outcome.summary}</strong>
+                  <p>{lastOperationResult.outcome.guidance}</p>
+                </div>
+              </div>
+            {/if}
             <div class="deployment-progress">
               <div class="progress-track"><span style={`width: ${operationEvents.at(-1)?.progress ?? 0}%`}></span></div>
               <div><span>{operationEvents.at(-1)?.message ?? "Waiting to start"}</span><strong>{operationEvents.at(-1)?.progress ?? 0}%</strong></div>
@@ -1510,7 +1587,19 @@
                 <div class="empty-state"><Icon name="terminal" size={28} /><h2>No operations this session</h2><p>Provision, deploy, refresh, and down activity will appear here and in the output panel.</p></div>
               {/if}
               {#each operationEvents.filter((event) => event.kind !== "system").slice().reverse() as event}
-                <div class="operation-row"><span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span><div><strong>azd {event.kind}</strong><span>{event.message}</span></div><time>{new Date(event.timestamp).toLocaleTimeString()}</time><StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} /></div>
+                <div class="operation-row">
+                  <span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span>
+                  <div>
+                    <strong>azd {event.kind}</strong>
+                    <span>{event.outcome?.summary ?? event.message}</span>
+                    {#if event.outcome && event.state !== "succeeded"}<small>{event.outcome.guidance}</small>{/if}
+                  </div>
+                  <time>{new Date(event.timestamp).toLocaleTimeString()}</time>
+                  <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} />
+                  {#if event.outcome?.retryable && ["provision", "deploy", "refresh", "down"].includes(event.kind)}
+                    <button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={() => retryProjectOperation(event)}>Retry</button>
+                  {/if}
+                </div>
               {/each}
             </div>
           {:else}

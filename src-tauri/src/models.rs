@@ -354,6 +354,17 @@ pub struct OperationEvent {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<OperationOutcome>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationOutcome {
+    pub resource_state: String,
+    pub summary: String,
+    pub guidance: String,
+    pub retryable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
