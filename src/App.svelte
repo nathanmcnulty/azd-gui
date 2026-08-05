@@ -61,7 +61,7 @@
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
   let activeNav: NavId = "home";
-  let sidebarOpen = true;
+  let navigationExpanded = true;
   let outputOpen = false;
   let commandPaletteOpen = false;
   let commandQuery = "";
@@ -132,7 +132,7 @@
     .every((connection) => connection.state === "connected");
   $: selectedPlatformSupported =
     !selectedEntry || selectedEntry.platforms.includes(data.platform);
-  $: activeNavigationLabel = navigation.find((item) => item.id === activeNav)?.label ?? "Home";
+  $: connectionAttentionCount = data.connections.filter((connection) => connection.state !== "connected").length;
   $: tenantMismatch =
     new Set(
       data.connections
@@ -160,6 +160,12 @@
   );
 
   onMount(() => {
+    try {
+      const savedNavigationState = window.localStorage.getItem("azd-gui.navigation.expanded");
+      if (savedNavigationState !== null) navigationExpanded = savedNavigationState === "true";
+    } catch {
+      // Storage can be unavailable in hardened webviews; the expanded default remains usable.
+    }
     document.addEventListener("keydown", handleGlobalKeydown);
     let unlisten: () => void = () => {};
     void (async () => {
@@ -192,6 +198,15 @@
     activeNav = id;
     selectedEntry = null;
     if (id !== "projects") selectedProject = null;
+  }
+
+  function toggleNavigation() {
+    navigationExpanded = !navigationExpanded;
+    try {
+      window.localStorage.setItem("azd-gui.navigation.expanded", String(navigationExpanded));
+    } catch {
+      // Navigation remains functional even when preference storage is unavailable.
+    }
   }
 
   function initializeValues(entry: CatalogEntry): WizardValues {
@@ -956,12 +971,12 @@
   <title>{selectedEntry ? `${selectedEntry.title} — ` : ""}Azure Deployment Studio</title>
 </svelte:head>
 
-<div class="app-shell" class:output-open={outputOpen}>
+<div class="app-shell" class:output-open={outputOpen} class:nav-collapsed={!navigationExpanded}>
   <header class="titlebar">
-    <button class="brand-button" aria-label="Toggle navigation" on:click={() => (sidebarOpen = !sidebarOpen)}>
+    <div class="brand-button">
       <span class="brand-mark"><Icon name="cloud" size={17} /></span>
       <span>Azure Deployment Studio</span>
-    </button>
+    </div>
     <button class="command-trigger" on:click={() => (commandPaletteOpen = true)}>
       <Icon name="search" size={14} />
       <span>Search projects, templates, and commands</span>
@@ -973,88 +988,78 @@
     </div>
   </header>
 
-  <aside class="activity-bar" aria-label="Primary navigation">
-    <div class="activity-items">
-      {#each navigation.slice(0, 5) as item}
-        <button
-          class:active={activeNav === item.id && !selectedEntry}
-          class="activity-button"
-          aria-label={item.label}
-          title={item.label}
-          on:click={() => navigate(item.id)}
-        >
-          <Icon name={item.icon} size={22} />
-        </button>
-      {/each}
+  <aside class:collapsed={!navigationExpanded} class="sidebar">
+    {#if selectedEntry && wizardPlan}
+      <div class="sidebar-heading">
+        <span>DEPLOYMENT</span>
+        <button aria-label="Close deployment" title="Close deployment" on:click={() => (selectedEntry = null)}><Icon name="close" size={15} /></button>
+      </div>
+      <div class="wizard-template" title={selectedEntry.title}>
+        <div class="template-monogram">{selectedEntry.title.slice(0, 2).toUpperCase()}</div>
+        <div class="wizard-template-details">
+          <strong>{selectedEntry.title}</strong>
+          <span>{selectedEntry.commit.slice(0, 8)}</span>
+        </div>
+      </div>
+      <nav class="step-list" aria-label="Deployment steps">
+        {#each wizardPlan.pages as page, index}
+          <button
+            class:active={activeStep === index}
+            class:complete={index < activeStep || page.complete}
+            disabled={index > activeStep}
+            on:click={() => (activeStep = index)}
+            aria-current={activeStep === index ? "step" : undefined}
+            aria-label={`${index + 1}. ${page.title}`}
+            title={page.title}
+          >
+            <span class="step-marker">
+              {#if index < activeStep}<Icon name="check" size={12} />{:else}{index + 1}{/if}
+            </span>
+            <span class="step-copy">
+              <strong>{page.title}</strong>
+              <small>{page.description}</small>
+            </span>
+          </button>
+        {/each}
+      </nav>
+    {:else}
+      <div class="sidebar-heading navigation-heading"><span>NAVIGATION</span></div>
+      <nav class="sidebar-nav" aria-label="Primary navigation">
+        {#each navigation as item}
+          <button
+            class:active={activeNav === item.id}
+            aria-current={activeNav === item.id ? "page" : undefined}
+            aria-label={item.id === "connections" ? `${item.label}, ${connectionAttentionCount} require attention` : item.id === "projects" ? `${item.label}, ${data.projects.length} projects` : item.label}
+            title={item.label}
+            on:click={() => navigate(item.id)}
+          >
+            <Icon name={item.icon} size={18} />
+            <span class="nav-label">{item.label}</span>
+            {#if item.id === "connections"}
+              <span class="nav-count">{connectionAttentionCount}</span>
+            {:else if item.id === "projects"}
+              <span class="nav-count">{data.projects.length}</span>
+            {/if}
+          </button>
+        {/each}
+      </nav>
+    {/if}
+    <div class="sidebar-footer">
+      <div class="sidebar-versions" aria-hidden={!navigationExpanded}>
+        <span>azd {data.tools.find((tool) => tool.id === "azd")?.installedVersion ?? "not found"}</span>
+        <span>App {data.appVersion}</span>
+      </div>
+      <button
+        class="navigation-toggle"
+        aria-label={navigationExpanded ? "Collapse navigation" : "Expand navigation"}
+        aria-expanded={navigationExpanded}
+        title={navigationExpanded ? "Collapse navigation" : "Expand navigation"}
+        on:click={toggleNavigation}
+      ><Icon name="chevron" size={15} /></button>
     </div>
-    <button
-      class:active={activeNav === "settings" && !selectedEntry}
-      class="activity-button"
-      aria-label="Settings"
-      title="Settings"
-      on:click={() => navigate("settings")}
-    >
-      <Icon name="settings" size={22} />
-    </button>
   </aside>
 
-  {#if sidebarOpen}
-    <aside class="sidebar">
-      {#if selectedEntry && wizardPlan}
-        <div class="sidebar-heading">
-          <span>DEPLOYMENT</span>
-          <button aria-label="Close deployment" on:click={() => (selectedEntry = null)}><Icon name="close" size={15} /></button>
-        </div>
-        <div class="wizard-template">
-          <div class="template-monogram">{selectedEntry.title.slice(0, 2).toUpperCase()}</div>
-          <div>
-            <strong>{selectedEntry.title}</strong>
-            <span>{selectedEntry.commit.slice(0, 8)}</span>
-          </div>
-        </div>
-        <nav class="step-list" aria-label="Deployment steps">
-          {#each wizardPlan.pages as page, index}
-            <button
-              class:active={activeStep === index}
-              class:complete={index < activeStep || page.complete}
-              disabled={index > activeStep}
-              on:click={() => (activeStep = index)}
-              aria-current={activeStep === index ? "step" : undefined}
-            >
-              <span class="step-marker">
-                {#if index < activeStep}<Icon name="check" size={12} />{:else}{index + 1}{/if}
-              </span>
-              <span>
-                <strong>{page.title}</strong>
-                <small>{page.description}</small>
-              </span>
-            </button>
-          {/each}
-        </nav>
-      {:else}
-        <div class="sidebar-heading"><span>{activeNavigationLabel.toUpperCase()}</span></div>
-        <nav class="sidebar-nav">
-          {#each navigation as item}
-            <button class:active={activeNav === item.id} on:click={() => navigate(item.id)}>
-              <Icon name={item.icon} size={16} />
-              <span>{item.label}</span>
-              {#if item.id === "connections"}
-                <span class="nav-count">{data.connections.filter((c) => c.state !== "connected").length}</span>
-              {:else if item.id === "projects"}
-                <span class="nav-count">{data.projects.length}</span>
-              {/if}
-            </button>
-          {/each}
-        </nav>
-        <div class="sidebar-footer">
-          <span>azd {data.tools.find((tool) => tool.id === "azd")?.installedVersion ?? "not found"}</span>
-          <span>App {data.appVersion}</span>
-        </div>
-      {/if}
-    </aside>
-  {/if}
-
-  <main class:wide={!sidebarOpen} class="workspace">
+  <main class="workspace">
     {#if selectedEntry && wizardPlan && activePage}
       <section class="wizard-page">
         <div class="wizard-header">

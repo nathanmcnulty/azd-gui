@@ -6,7 +6,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 
 ## Current V1
 
-- Compact VS Code-inspired shell with Catalog, Projects, Connections, Tools, and Settings areas.
+- Compact VS Code-inspired shell with one persistent, collapsible navigation tree for Catalog, Projects, Connections, Tools, and Settings.
 - Dynamic deployment wizard with conditional manifest pages and preserved values.
 - Bundled catalog containing pinned MyWorkID, Maester Automation, and Entra Health Monitoring templates.
 - HTTPS/GitHub external catalog preview and explicit trust gate.

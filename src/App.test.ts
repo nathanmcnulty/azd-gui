@@ -2,7 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it } from "vitest";
 import App from "./App.svelte";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  window.localStorage.clear();
+});
 
 describe("desktop experience", () => {
   it("opens a catalog template as a calculated deployment wizard", async () => {
@@ -101,7 +104,7 @@ describe("desktop experience", () => {
 
   it("opens the post-deployment project workspace", async () => {
     render(App);
-    await fireEvent.click(screen.getAllByRole("button", { name: "Projects" })[0]);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
 
     expect(screen.getByRole("navigation", { name: /project sections/i })).toBeInTheDocument();
@@ -111,5 +114,29 @@ describe("desktop experience", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "resources" }));
     expect(screen.getByText(/structured azd state/i)).toBeInTheDocument();
+  });
+
+  it("uses one collapsible navigation tree and persists the preferred width", async () => {
+    const firstRender = render(App);
+    const primaryNavigation = screen.getByRole("navigation", { name: /primary navigation/i });
+
+    expect(screen.getAllByRole("navigation", { name: /primary navigation/i })).toHaveLength(1);
+    const projects = within(primaryNavigation).getByRole("button", { name: /^Projects,/ });
+    await fireEvent.click(projects);
+    expect(projects).toHaveAttribute("aria-current", "page");
+
+    await fireEvent.click(screen.getByRole("button", { name: /collapse navigation/i }));
+
+    expect(screen.getAllByRole("navigation", { name: /primary navigation/i })).toHaveLength(1);
+    expect(projects).toHaveAttribute("aria-current", "page");
+    expect(projects).toHaveAttribute("title", "Projects");
+    expect(screen.getByRole("button", { name: /expand navigation/i })).toBeInTheDocument();
+    expect(window.localStorage.getItem("azd-gui.navigation.expanded")).toBe("false");
+
+    firstRender.unmount();
+    render(App);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /expand navigation/i })).toBeInTheDocument();
+    });
   });
 });
