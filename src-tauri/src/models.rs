@@ -281,6 +281,29 @@ pub struct PermissionCheck {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PermissionCheckRequest {
+    pub checks: Vec<PermissionCheck>,
+    pub tenant_id: String,
+    pub subscription_id: String,
+    #[serde(default)]
+    pub required_graph_scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionCheckResult {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub required: bool,
+    pub description: String,
+    pub state: String,
+    pub detail: String,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProjectSummary {
     pub id: String,
     pub name: String,

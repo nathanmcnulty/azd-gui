@@ -5,6 +5,7 @@ use crate::{
         Catalog, CatalogEntry, CatalogFile, Configuration, ConnectionRequirement, Prerequisite,
         TemplateInspection, TemplateManifest,
     },
+    permissions,
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -70,13 +71,16 @@ pub fn bundled_catalog() -> AppResult<Catalog> {
             commit: &entry.commit,
             subdirectory: entry.subdirectory.as_deref(),
         })?;
-        let manifest = entry
+        let manifest: Option<TemplateManifest> = entry
             .manifest
             .as_deref()
             .map(manifest_json)
             .transpose()?
             .map(serde_json::from_str)
             .transpose()?;
+        if let Some(manifest) = &manifest {
+            permissions::validate(&manifest.permission_checks)?;
+        }
         entries.push(CatalogEntry {
             id: entry.id,
             title: entry.title,
@@ -182,6 +186,7 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
                     manifest.schema_version
                 )));
             }
+            permissions::validate(&manifest.permission_checks)?;
             Some(manifest)
         } else {
             None
@@ -267,6 +272,13 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
     } else {
         (inferred_manifest(&yaml), "inferred".to_string())
     };
+    if manifest.schema_version != "1.0" {
+        return Err(AppError::Invalid(format!(
+            "Unsupported template manifest version: {}",
+            manifest.schema_version
+        )));
+    }
+    permissions::validate(&manifest.permission_checks)?;
     let interactive_hooks = yaml_text.to_ascii_lowercase().contains("interactive: true");
     let windows_hooks = yaml_text.contains("windows:");
     let posix_hooks = yaml_text.contains("posix:");
@@ -373,6 +385,13 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
     } else {
         (inferred_manifest(&yaml), "inferred")
     };
+    if manifest.schema_version != "1.0" {
+        return Err(AppError::Invalid(format!(
+            "Unsupported template manifest version: {}",
+            manifest.schema_version
+        )));
+    }
+    permissions::validate(&manifest.permission_checks)?;
     let name = yaml
         .get("name")
         .and_then(serde_yaml::Value::as_str)
@@ -476,6 +495,9 @@ pub fn validate_external_snapshot(catalog: &Catalog) -> AppResult<()> {
                 entry.id
             )));
         }
+        if let Some(manifest) = &entry.manifest {
+            permissions::validate(&manifest.permission_checks)?;
+        }
     }
     Ok(())
 }
@@ -519,5 +541,33 @@ mod tests {
         let inspection = inspect_local(directory.path().to_str().unwrap()).unwrap();
         assert_eq!(inspection.manifest_source, "inferred");
         assert!(!inspection.entry.trusted);
+    }
+
+    #[test]
+    fn local_manifest_rejects_unregistered_permission_checks() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("azure.yaml"), "name: sample").unwrap();
+        fs::write(
+            directory.path().join("azd-gui.json"),
+            r#"{
+                "schemaVersion": "1.0",
+                "prerequisites": [],
+                "connections": [],
+                "configuration": { "groups": [] },
+                "permissionChecks": [{
+                    "id": "manifest-command",
+                    "name": "Unsafe check",
+                    "provider": "azure",
+                    "required": true,
+                    "description": "Must be rejected before execution."
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        let error = inspect_local(directory.path().to_str().unwrap()).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Unsupported permission-check provider ID"));
     }
 }

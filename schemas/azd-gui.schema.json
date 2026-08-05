@@ -136,12 +136,26 @@
       "additionalProperties": false,
       "required": ["id", "name", "provider", "required", "description"],
       "properties": {
-        "id": { "type": "string" },
+        "id": {
+          "enum": [
+            "azure-subscription-access",
+            "graph-directory-read",
+            "graph-delegated-scopes",
+            "entra-directory-access"
+          ]
+        },
         "name": { "type": "string" },
         "provider": { "enum": ["azure", "graph"] },
         "required": { "type": "boolean" },
         "description": { "type": "string" }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "id": { "const": "azure-subscription-access" } } },
+          "then": { "properties": { "provider": { "const": "azure" } } },
+          "else": { "properties": { "provider": { "const": "graph" } } }
+        }
+      ]
     }
   }
 }

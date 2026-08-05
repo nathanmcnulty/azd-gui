@@ -10,6 +10,7 @@ Rust owns all privileged behavior:
 - `command_runner.rs` enforces the executable allowlist, streams redacted operation events, and manages cancellation.
 - `azd.rs` defines the `AzdClient` lifecycle interface using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.
+- `permissions.rs` runs only registered, read-only Azure and Microsoft Graph checks and returns structured pass, warning, or failure results.
 - `tools.rs` detects versions and exposes only vetted per-user module installers.
 - `deployment.rs` verifies pinned source content, initializes projects, applies azd environment values, and records the project.
 - `persistence.rs` stores non-sensitive projects, catalog trust, drafts, and operation history in SQLite.
@@ -22,11 +23,14 @@ The hidden `azd vs-server` protocol is intentionally not used.
 2. Resolve the effective manifest and compute the wizard pages.
 3. Verify prerequisite and connection state.
 4. Collect environment and template values. Sensitive values are not placed in drafts or logs.
-5. Resolve a remote source to a full commit and cache that exact checkout.
-6. Run `azd init` for new projects or register an environment for an existing project.
-7. Apply approved values with `azd env set`.
-8. Run `azd provision --preview --no-prompt`.
-9. Run `azd up --no-prompt`, stream output, and refresh project state.
+5. Run manifest-requested registered permission checks and stop on required failures.
+6. Resolve a remote source to a full commit and cache that exact checkout.
+7. Run `azd init` for new projects or register an environment for an existing project.
+8. Apply approved values with `azd env set`.
+9. Run `azd provision --preview --no-prompt`.
+10. Run `azd up --no-prompt`, stream output, and refresh project state.
+
+Permission-check IDs are an application-owned registry. Catalogs can select a registered ID but cannot provide a command, script, URL, or executable argument. V1 can perform a live ARM subscription read, a Microsoft Graph organization read, and a Microsoft Graph PowerShell delegated-scope comparison. These checks do not capture tokens and do not mutate Azure or Microsoft Entra resources.
 
 Only one process operation is represented by an operation ID. Cancellation first requests child termination; Azure-side work already accepted by the service may continue and is reported as such by azd.
 

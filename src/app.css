@@ -1843,6 +1843,52 @@ kbd {
   color: var(--success);
 }
 
+.permission-results {
+  display: grid;
+  margin-top: 12px;
+  gap: 8px;
+}
+
+.permission-result {
+  display: grid;
+  min-width: 0;
+  padding: 10px 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--panel);
+}
+
+.permission-result > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.permission-result strong {
+  color: var(--text);
+}
+
+.permission-result span {
+  overflow-wrap: anywhere;
+}
+
+.permission-result.passed > .icon {
+  color: var(--success);
+}
+
+.permission-result.warning > .icon,
+.permission-result.failed > .icon {
+  color: var(--warning);
+}
+
+.permission-result.failed > .icon {
+  color: var(--danger);
+}
+
 .review-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

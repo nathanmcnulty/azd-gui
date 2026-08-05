@@ -35,4 +35,14 @@ describe("catalog contracts", () => {
 
     expect(validateManifest(manifest)).toBe(false);
   });
+
+  it("rejects unregistered and provider-mismatched permission checks", () => {
+    const manifest = json("catalog/manifests/entra-health-monitoring.json");
+    manifest.permissionChecks[0].id = "run-manifest-command";
+    expect(validateManifest(manifest)).toBe(false);
+
+    manifest.permissionChecks[0].id = "azure-subscription-access";
+    manifest.permissionChecks[0].provider = "graph";
+    expect(validateManifest(manifest)).toBe(false);
+  });
 });

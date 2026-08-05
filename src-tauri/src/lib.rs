@@ -6,6 +6,7 @@ mod connections;
 mod deployment;
 mod error;
 mod models;
+mod permissions;
 mod persistence;
 mod redaction;
 mod tools;
@@ -16,7 +17,8 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
-        PrepareDeploymentRequest, ProjectSummary, TemplateInspection, ToolStatus,
+        PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest, ProjectSummary,
+        TemplateInspection, ToolStatus,
     },
     persistence::Database,
 };
@@ -96,6 +98,13 @@ async fn discover_azure_scope(
     refresh: bool,
 ) -> AppResult<AzureDiscovery> {
     azure::discover(subscription_id.as_deref(), refresh).await
+}
+
+#[tauri::command]
+async fn run_permission_checks(
+    request: PermissionCheckRequest,
+) -> AppResult<Vec<PermissionCheckResult>> {
+    permissions::run(request).await
 }
 
 #[tauri::command]
@@ -285,6 +294,7 @@ pub fn run() {
             install_tool,
             check_connections,
             discover_azure_scope,
+            run_permission_checks,
             start_login,
             start_azd_operation,
             cancel_operation,

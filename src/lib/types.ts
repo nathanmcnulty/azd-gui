@@ -158,11 +158,28 @@ export interface ConfigurationField {
 }
 
 export interface PermissionCheck {
-  id: string;
+  id:
+    | "azure-subscription-access"
+    | "graph-directory-read"
+    | "graph-delegated-scopes"
+    | "entra-directory-access";
   name: string;
   provider: "azure" | "graph";
   required: boolean;
   description: string;
+}
+
+export interface PermissionCheckRequest {
+  checks: PermissionCheck[];
+  tenantId: string;
+  subscriptionId: string;
+  requiredGraphScopes: string[];
+}
+
+export interface PermissionCheckResult extends PermissionCheck {
+  state: "passed" | "warning" | "failed";
+  detail: string;
+  blocking: boolean;
 }
 
 export type WizardPageKind =
