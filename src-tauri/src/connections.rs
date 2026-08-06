@@ -4,6 +4,7 @@ use crate::{
     error::{AppError, AppResult},
     models::ConnectionStatus,
 };
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -11,28 +12,28 @@ fn status(
     id: &str,
     name: &str,
     reason: &str,
-    value: Option<Value>,
+    value: Option<&Value>,
     account_keys: &[&str],
     tenant_keys: &[&str],
     subscription_keys: (&[&str], &[&str]),
 ) -> ConnectionStatus {
-    let account = value.as_ref().and_then(|value| {
+    let account = value.and_then(|value| {
         account_keys
             .iter()
             .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
     });
-    let tenant_id = value.as_ref().and_then(|value| {
+    let tenant_id = value.and_then(|value| {
         tenant_keys
             .iter()
             .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
     });
-    let subscription_id = value.as_ref().and_then(|value| {
+    let subscription_id = value.and_then(|value| {
         subscription_keys
             .0
             .iter()
             .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
     });
-    let subscription_name = value.as_ref().and_then(|value| {
+    let subscription_name = value.and_then(|value| {
         subscription_keys
             .1
             .iter()
@@ -57,6 +58,24 @@ fn status(
         subscription_name,
         expires_on: None,
         detail: None,
+    }
+}
+
+fn apply_expiration(status: &mut ConnectionStatus, value: Option<&Value>, now: DateTime<Utc>) {
+    let Some(raw) = value
+        .and_then(|value| value.pointer("/expiresOn"))
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    let Ok(expires_at) = DateTime::parse_from_rfc3339(raw) else {
+        return;
+    };
+    status.expires_on = Some(raw.into());
+    if expires_at.with_timezone(&Utc) <= now {
+        status.state = "expired".into();
+        status.detail =
+            Some("The cached credential has expired. Reconnect before deployment.".into());
     }
 }
 
@@ -112,32 +131,35 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             ]
         ))
     );
+    let azd_status_value = azd.ok();
+    let mut azd_status = status(
+        "azd",
+        "Azure Developer CLI",
+        "Provision and deploy Azure resources.",
+        azd_status_value.as_ref(),
+        &["/email", "/account/email", "/user/email"],
+        &["/tenantId", "/tenant/id"],
+        (&[], &[]),
+    );
+    apply_expiration(&mut azd_status, azd_status_value.as_ref(), Utc::now());
     let graph_granted_scopes = granted_scopes(graph_ps.as_ref());
     let mut graph_status = status(
         "graphPowerShell",
         "Microsoft Graph PowerShell",
         "Template-specific Microsoft Graph operations.",
-        graph_ps,
+        graph_ps.as_ref(),
         &["/account"],
         &["/tenantId"],
         (&[], &[]),
     );
     graph_status.granted_scopes = graph_granted_scopes;
     let mut statuses = vec![
-        status(
-            "azd",
-            "Azure Developer CLI",
-            "Provision and deploy Azure resources.",
-            azd.ok(),
-            &["/email", "/account/email", "/user/email"],
-            &["/tenantId", "/tenant/id"],
-            (&[], &[]),
-        ),
+        azd_status,
         status(
             "azureCli",
             "Azure CLI",
             "Template-specific Azure and Graph operations.",
-            az,
+            az.as_ref(),
             &["/user/name"],
             &["/tenantId"],
             (&["/id"], &["/name"]),
@@ -146,7 +168,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             "azPowerShell",
             "Azure PowerShell",
             "Template-specific PowerShell operations.",
-            az_ps,
+            az_ps.as_ref(),
             &["/account"],
             &["/tenantId"],
             (&["/subscriptionId"], &["/subscriptionName"]),
@@ -285,6 +307,26 @@ mod tests {
 
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0], "Application.ReadWrite.All");
+    }
+
+    #[test]
+    fn azd_expiration_marks_only_stale_credentials_as_expired() {
+        let now = DateTime::parse_from_rfc3339("2026-08-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let expired_value = serde_json::json!({"expiresOn": "2026-08-06T11:59:59Z"});
+        let active_value = serde_json::json!({"expiresOn": "2026-08-06T12:00:01Z"});
+        let mut expired = connected("azd", "tenant-a");
+        let mut active = connected("azd", "tenant-a");
+
+        apply_expiration(&mut expired, Some(&expired_value), now);
+        apply_expiration(&mut active, Some(&active_value), now);
+
+        assert_eq!(expired.state, "expired");
+        assert_eq!(expired.expires_on.as_deref(), Some("2026-08-06T11:59:59Z"));
+        assert!(expired.detail.as_deref().unwrap().contains("Reconnect"));
+        assert_eq!(active.state, "connected");
+        assert_eq!(active.expires_on.as_deref(), Some("2026-08-06T12:00:01Z"));
     }
 
     #[test]
