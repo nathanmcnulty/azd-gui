@@ -1115,6 +1115,124 @@ kbd {
   gap: 8px;
 }
 
+.project-deployment-result {
+  display: grid;
+  gap: 14px;
+  border-color: color-mix(in srgb, var(--success), var(--border) 72%);
+}
+
+.project-deployment-progress {
+  display: grid;
+  padding: 14px;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.project-deployment-progress > div:nth-child(2) {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.project-deployment-progress > button {
+  justify-self: end;
+}
+
+.project-deployment-summary {
+  display: grid;
+  padding: 14px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 11px;
+  color: var(--success);
+  border: 1px solid color-mix(in srgb, var(--success), transparent 58%);
+  border-radius: 5px;
+  background: var(--success-bg);
+}
+
+.project-deployment-summary.failed,
+.project-deployment-summary.cancelled {
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning), transparent 58%);
+  background: var(--warning-bg);
+}
+
+.project-deployment-summary strong {
+  display: block;
+  color: var(--text-bright);
+}
+
+.project-deployment-summary p {
+  margin: 4px 0 0;
+}
+
+.project-state-refresh {
+  display: flex;
+  min-height: 54px;
+  padding: 12px 14px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.project-state-refresh .spinner {
+  width: 15px;
+  height: 15px;
+  border-width: 1px;
+}
+
+.deployed-service-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.deployed-service-card {
+  display: grid;
+  min-width: 0;
+  padding: 13px;
+  gap: 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.deployed-service-card > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.deployed-service-card h3 {
+  margin: 0;
+}
+
+.deployed-service-card code,
+.deployed-service-card > span {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deployed-service-card small {
+  color: var(--muted);
+}
+
+.project-deployment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .environment-hero {
   display: grid;
   min-height: 62px;
@@ -2433,6 +2551,11 @@ button.compact {
   background: var(--panel-hover);
 }
 
+.output-panel header .output-cancel {
+  color: var(--warning);
+  border: 1px solid color-mix(in srgb, var(--warning), transparent 65%);
+}
+
 .output-lines {
   padding: 8px 12px;
   overflow: auto;
@@ -2791,6 +2914,7 @@ button.compact {
   .review-grid,
   .check-grid,
   .workspace-grid,
+  .deployed-service-grid,
   .lifecycle-actions {
     grid-template-columns: 1fr;
   }
