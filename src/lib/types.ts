@@ -318,3 +318,8 @@ export interface TemplateInspection {
   interactiveHooks: boolean;
   warnings: string[];
 }
+
+export interface ExternalTerminalLaunch {
+  workingDirectory: string;
+  command: string;
+}

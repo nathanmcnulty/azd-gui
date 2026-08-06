@@ -102,6 +102,21 @@ describe("desktop experience", () => {
     });
   });
 
+  it("offers an external-terminal fallback for interactive local hooks", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    expect(await screen.findByText(/interactive hooks detected/i)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /open external terminal/i }));
+
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    expect(screen.getByText("C:\\GitHub\\sample-azd-project")).toBeInTheDocument();
+    expect(screen.getByText("azd up --environment dev")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy command/i })).toBeEnabled();
+  });
+
   it("opens the post-deployment project workspace", async () => {
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
@@ -111,6 +126,9 @@ describe("desktop experience", () => {
     await waitFor(() => {
       expect(screen.getByText(/active environment/i)).toBeInTheDocument();
     });
+    await fireEvent.click(screen.getByRole("button", { name: /^terminal$/i }));
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /dismiss terminal notice/i }));
 
     await fireEvent.click(screen.getByRole("button", { name: "operations" }));
     expect(screen.getByText(/lifecycle history/i)).toBeInTheDocument();

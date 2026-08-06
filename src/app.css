@@ -484,6 +484,49 @@ kbd {
     var(--bg);
 }
 
+.terminal-launch-notice {
+  position: fixed;
+  top: 45px;
+  right: 16px;
+  z-index: 30;
+  display: grid;
+  width: min(620px, calc(100vw - 84px));
+  margin: 0;
+  padding: 11px 13px;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent), transparent 55%);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--panel-raised), var(--accent) 8%);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.terminal-launch-notice > div:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.terminal-launch-notice strong {
+  color: var(--text-bright);
+}
+
+.terminal-launch-notice span,
+.terminal-launch-notice code {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-launch-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .page {
   width: min(1180px, calc(100% - 64px));
   margin: 0 auto;
@@ -3024,6 +3067,16 @@ button.compact {
       "sidebar workspace" minmax(0, 1fr)
       "status status" 22px /
       52px minmax(0, 1fr);
+  }
+
+  .terminal-launch-notice {
+    width: calc(100vw - 84px);
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .terminal-launch-actions {
+    grid-column: 2;
+    justify-content: flex-start;
   }
 
   .sidebar:not(.collapsed) .sidebar-heading > span,

@@ -12,6 +12,7 @@
     inspectLocalTemplate,
     installTool,
     onOperationEvent,
+    openExternalTerminal,
     openExternalUrl,
     refreshConnections,
     refreshTools,
@@ -40,10 +41,12 @@
     CatalogEntry,
     ConfigurationField,
     ConnectionStatus,
+    ExternalTerminalLaunch,
     OperationEvent,
     PermissionCheckResult,
     ProjectEnvironment,
     ProjectEnvironmentValue,
+    TemplateInspection,
     ToolStatus,
     WizardPage,
     WizardPlan,
@@ -86,6 +89,7 @@
   let commandQuery = "";
   let catalogQuery = "";
   let selectedEntry: CatalogEntry | null = null;
+  let selectedInspection: TemplateInspection | null = null;
   let wizardPlan: WizardPlan | null = null;
   let wizardValues: WizardValues = {};
   let activeStep = 0;
@@ -102,6 +106,8 @@
   let deviceCode = false;
   let theme: "system" | "dark" | "light" = "system";
   let projectPrepared = false;
+  let terminalLaunch: ExternalTerminalLaunch | null = null;
+  let terminalOpening = false;
   let selectedProject: import("./lib/types").ProjectSummary | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
@@ -330,6 +336,8 @@
 
   function startWizard(entry: CatalogEntry) {
     selectedEntry = entry;
+    selectedInspection = null;
+    terminalLaunch = null;
     wizardValues = initializeValues(entry);
     wizardPlan = calculateWizardPlan(entry, wizardValues);
     activeStep = 0;
@@ -415,17 +423,23 @@
     if (!wizardPlan) return;
     if (activePage?.kind === "source" && wizardValues.sourceMode !== "catalog") {
       try {
+        const sourcePath = String(
+          wizardValues.sourceMode === "existingProject"
+            ? wizardValues.projectPath
+            : wizardValues.sourcePath
+        );
+        const cachedInspection =
+          wizardValues.sourceMode !== "github" && selectedInspection?.sourcePath === sourcePath
+            ? selectedInspection
+            : null;
+        const inspectionAlreadyReported = Boolean(cachedInspection);
         const inspection =
-          wizardValues.sourceMode === "github"
-            ? await inspectGitHubTemplate(String(wizardValues.sourcePath))
-            : await inspectLocalTemplate(
-                String(
-                  wizardValues.sourceMode === "existingProject"
-                    ? wizardValues.projectPath
-                    : wizardValues.sourcePath
-                )
-              );
+          cachedInspection ??
+          (wizardValues.sourceMode === "github"
+            ? await inspectGitHubTemplate(sourcePath)
+            : await inspectLocalTemplate(sourcePath));
         selectedEntry = inspection.entry;
+        selectedInspection = inspection;
         for (const group of selectedEntry.manifest?.configuration.groups ?? []) {
           for (const field of group.fields) {
             if (wizardValues[field.id] === undefined && field.default !== undefined) {
@@ -434,8 +448,10 @@
           }
         }
         wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan);
-        inspection.warnings.forEach((warning) => addSystemLog(warning, "warning"));
-        if (inspection.warnings.length) outputOpen = true;
+        if (!inspectionAlreadyReported) {
+          inspection.warnings.forEach((warning) => addSystemLog(warning, "warning"));
+          if (inspection.warnings.length) outputOpen = true;
+        }
         activeStep = Math.max(
           0,
           wizardPlan.pages.findIndex((page) => page.id === "overview")
@@ -543,6 +559,7 @@
     try {
       const inspection = await inspectLocalTemplate(selected);
       startWizard(inspection.entry);
+      selectedInspection = inspection;
       wizardValues = {
         ...wizardValues,
         sourceMode: copyAsTemplate ? "localTemplate" : "existingProject",
@@ -1096,6 +1113,10 @@
     addSystemLog("Copied command to clipboard.", "success");
   }
 
+  function copyTerminalCommand() {
+    if (terminalLaunch) void copyText(terminalLaunch.command);
+  }
+
   async function openProjectUrl(url: string | undefined) {
     if (!url) return;
     try {
@@ -1106,14 +1127,34 @@
     }
   }
 
+  async function launchExternalTerminal(projectPath: string, environment?: string) {
+    if (!projectPath || terminalOpening) return;
+    terminalOpening = true;
+    try {
+      terminalLaunch = await openExternalTerminal(projectPath, environment);
+      addSystemLog(`Opened an external terminal in ${terminalLaunch.workingDirectory}.`, "success");
+    } catch (error) {
+      addSystemLog(`Could not open an external terminal: ${String(error)}`, "error");
+      outputOpen = true;
+    } finally {
+      terminalOpening = false;
+    }
+  }
+
+  function launchSelectedProjectTerminal() {
+    if (selectedProject) void launchExternalTerminal(selectedProject.path, selectedProject.environment);
+  }
+
   async function openProjectWorkspace(
     project: import("./lib/types").ProjectSummary,
     preserveView = false
   ) {
     if (!preserveView) {
       selectedEntry = null;
+      selectedInspection = null;
       projectPreview = null;
       projectDeploymentResult = null;
+      terminalLaunch = null;
       projectTab = "overview";
     }
     selectedProject = project;
@@ -1444,6 +1485,20 @@
   </aside>
 
   <main class="workspace">
+    {#if terminalLaunch}
+      <div class="terminal-launch-notice" role="status">
+        <Icon name="terminal" size={18} />
+        <div>
+          <strong>External terminal opened</strong>
+          <span>{terminalLaunch.workingDirectory}</span>
+          <code>{terminalLaunch.command}</code>
+        </div>
+        <div class="terminal-launch-actions">
+          <button class="secondary compact" on:click={copyTerminalCommand}>Copy command</button>
+          <button class="icon-button" aria-label="Dismiss terminal notice" on:click={() => (terminalLaunch = null)}><Icon name="close" size={14} /></button>
+        </div>
+      </div>
+    {/if}
     {#if selectedEntry && wizardPlan && activePage}
       <section class="wizard-page">
         <div class="wizard-header">
@@ -1569,6 +1624,15 @@
               <Icon name="check" size={18} />
               <div><strong>Source integrity</strong><p>The deployment will use this exact commit. Future repository changes do not alter this project.</p></div>
             </div>
+            {#if selectedInspection?.interactiveHooks}
+              <div class="callout warning interactive-hook-warning">
+                <Icon name="warning" size={18} />
+                <div><strong>Interactive hooks detected</strong><p>Guided deployment uses <code>--no-prompt</code>. If a hook requires input, finish preflight and use the external-terminal fallback.</p></div>
+                {#if wizardValues.sourceMode === "existingProject"}
+                  <button class="secondary" disabled={terminalOpening} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={14} /> Open external terminal</button>
+                {/if}
+              </div>
+            {/if}
           {:else if activePage.kind === "prerequisites"}
             <div class="section-toolbar">
               <div><h2>Required for this template</h2><p>Checks are read-only until you approve an installation.</p></div>
@@ -1818,9 +1882,15 @@
                 </dl>
               </section>
             </div>
-            <div class="callout warning">
+            <div class="callout warning interactive-hook-warning">
               <Icon name="warning" size={18} />
-              <div><strong>Template code will run</strong><p>Continuing allows azd to execute the hooks in this pinned template. Review the repository if the source is not familiar.</p></div>
+              <div>
+                <strong>{selectedInspection?.interactiveHooks ? "Interactive template code will run" : "Template code will run"}</strong>
+                <p>{selectedInspection?.interactiveHooks ? "The guided path remains available, but a hook that requests input may require the external terminal." : "Continuing allows azd to execute the hooks in this pinned template. Review the repository if the source is not familiar."}</p>
+              </div>
+              {#if selectedInspection?.interactiveHooks}
+                <button class="secondary" disabled={terminalOpening || !projectPrepared} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={14} /> Open external terminal</button>
+              {/if}
             </div>
           {:else if activePage.kind === "deploy"}
             <div class="deployment-hero">
@@ -1845,6 +1915,13 @@
                   <strong>{lastOperationResult.outcome.summary}</strong>
                   <p>{lastOperationResult.outcome.guidance}</p>
                 </div>
+              </div>
+            {/if}
+            {#if selectedInspection?.interactiveHooks}
+              <div class="callout warning interactive-hook-warning">
+                <Icon name="terminal" size={18} />
+                <div><strong>Need interactive input?</strong><p>Open a terminal in the materialized project and run the copyable command without <code>--no-prompt</code>.</p></div>
+                <button class="secondary" disabled={terminalOpening || !projectPrepared || operationState === "running"} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}>Open external terminal</button>
               </div>
             {/if}
             <div class="deployment-progress">
@@ -1930,6 +2007,7 @@
                 <p>{selectedProject.path}</p>
               </div>
               <div class="project-actions">
+                <button class="secondary" disabled={terminalOpening} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
                 <button class="danger" on:click={() => runProjectAction("down")}>Down</button>
               </div>

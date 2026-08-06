@@ -34,6 +34,8 @@ Permission-check IDs are an application-owned registry. Catalogs can select a re
 
 Only one process operation is represented by an operation ID. Terminal lifecycle events include a structured resource state: `changed`, `unchanged`, `possiblyModified`, or `unknown`. Failed or cancelled mutating operations are conservatively marked `possiblyModified` because Azure-side work already accepted by the service may continue after the local child process stops. The UI presents that guidance and can retry only the same registered lifecycle action; templates cannot inject retry commands or arguments.
 
+Interactive hooks use an explicit external-terminal escape hatch. Rust canonicalizes the selected folder, requires `azure.yaml`, validates the environment name, and chooses a terminal from a fixed platform-owned provider list. The terminal opens at the project directory without executing renderer- or manifest-supplied text. The UI separately displays the app-constructed interactive `azd up` command for the user to copy.
+
 ## Authentication
 
 The Connections center invokes each provider's supported login:

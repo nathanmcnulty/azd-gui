@@ -9,6 +9,7 @@ mod models;
 mod permissions;
 mod persistence;
 mod redaction;
+mod terminal;
 mod tools;
 
 use crate::{
@@ -158,6 +159,14 @@ async fn cancel_operation(state: State<'_, AppState>, operation_id: String) -> A
             "Operation is not running: {operation_id}"
         )))
     }
+}
+
+#[tauri::command]
+fn open_external_terminal(
+    project_path: String,
+    environment: Option<String>,
+) -> AppResult<terminal::TerminalLaunch> {
+    terminal::open(&project_path, environment.as_deref())
 }
 
 #[tauri::command]
@@ -525,6 +534,7 @@ pub fn run() {
             start_login,
             start_azd_operation,
             cancel_operation,
+            open_external_terminal,
             preview_external_catalog,
             save_catalog_source,
             prepare_deployment,
