@@ -17,8 +17,8 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
-        PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest, ProjectSummary,
-        TemplateInspection, ToolStatus,
+        PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
+        ProjectEnvironment, ProjectSummary, TemplateInspection, ToolStatus,
     },
     persistence::Database,
 };
@@ -201,9 +201,70 @@ async fn get_project_state(
 }
 
 #[tauri::command]
-async fn list_project_environments(project_path: String) -> AppResult<serde_json::Value> {
+async fn list_project_environments(project_path: String) -> AppResult<Vec<ProjectEnvironment>> {
     let canonical = std::fs::canonicalize(project_path)?;
     SystemAzdClient.environment_list(&canonical).await
+}
+
+#[tauri::command]
+async fn create_project_environment(
+    state: State<'_, AppState>,
+    project_path: String,
+    environment: String,
+    subscription: Option<String>,
+    location: Option<String>,
+) -> AppResult<Vec<ProjectEnvironment>> {
+    let canonical = std::fs::canonicalize(project_path)?;
+    if !canonical.join("azure.yaml").is_file() {
+        return Err(AppError::Invalid(format!(
+            "{} does not contain azure.yaml.",
+            canonical.display()
+        )));
+    }
+    let client = SystemAzdClient;
+    client
+        .environment_new(
+            &canonical,
+            &environment,
+            subscription.as_deref(),
+            location.as_deref(),
+        )
+        .await?;
+    let environments = client.environment_list(&canonical).await?;
+    let selected = environments
+        .iter()
+        .find(|item| item.is_default)
+        .ok_or_else(|| AppError::Invalid("azd did not select the new environment.".into()))?;
+    state
+        .database
+        .set_project_environment(&canonical.display().to_string(), &selected.name)?;
+    Ok(environments)
+}
+
+#[tauri::command]
+async fn select_project_environment(
+    state: State<'_, AppState>,
+    project_path: String,
+    environment: String,
+) -> AppResult<Vec<ProjectEnvironment>> {
+    let canonical = std::fs::canonicalize(project_path)?;
+    if !canonical.join("azure.yaml").is_file() {
+        return Err(AppError::Invalid(format!(
+            "{} does not contain azure.yaml.",
+            canonical.display()
+        )));
+    }
+    let client = SystemAzdClient;
+    client.environment_select(&canonical, &environment).await?;
+    let environments = client.environment_list(&canonical).await?;
+    let selected = environments
+        .iter()
+        .find(|item| item.is_default)
+        .ok_or_else(|| AppError::Invalid("azd did not select an environment.".into()))?;
+    state
+        .database
+        .set_project_environment(&canonical.display().to_string(), &selected.name)?;
+    Ok(environments)
 }
 
 #[tauri::command]
@@ -314,6 +375,8 @@ pub fn run() {
             prepare_deployment,
             get_project_state,
             list_project_environments,
+            create_project_environment,
+            select_project_environment,
             record_operation,
             get_operation_history,
             save_wizard_draft,

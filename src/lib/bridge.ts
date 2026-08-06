@@ -1,7 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { mockAzureDiscovery, mockBootstrap, mockOperationHistory } from "./mock-data";
+import {
+  mockAzureDiscovery,
+  mockBootstrap,
+  mockOperationHistory,
+  mockProjectEnvironments
+} from "./mock-data";
 import type {
   AzureDiscovery,
   BootstrapData,
@@ -11,14 +16,20 @@ import type {
   OperationEvent,
   PermissionCheckRequest,
   PermissionCheckResult,
+  ProjectEnvironment,
   ProjectSummary,
   PrepareDeploymentRequest,
   TemplateInspection,
   ToolStatus
 } from "./types";
 
+let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+
 export async function bootstrap(): Promise<BootstrapData> {
-  if (!isTauri()) return structuredClone(mockBootstrap);
+  if (!isTauri()) {
+    previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+    return structuredClone(mockBootstrap);
+  }
   return invoke<BootstrapData>("bootstrap");
 }
 
@@ -213,16 +224,56 @@ export async function getProjectState(
 
 export async function listProjectEnvironments(
   projectPath: string
-): Promise<Record<string, unknown>> {
+): Promise<ProjectEnvironment[]> {
+  if (!isTauri()) return structuredClone(previewProjectEnvironments);
+  return invoke<ProjectEnvironment[]>("list_project_environments", { projectPath });
+}
+
+export async function createProjectEnvironment(
+  projectPath: string,
+  environment: string,
+  subscription?: string,
+  location?: string
+): Promise<ProjectEnvironment[]> {
   if (!isTauri()) {
-    return {
-      environments: [
-        { name: "dev", isDefault: true },
-        { name: "test", isDefault: false }
-      ]
-    };
+    if (previewProjectEnvironments.some((item) => item.name === environment)) {
+      throw new Error(`Environment '${environment}' already exists.`);
+    }
+    previewProjectEnvironments = [
+      ...previewProjectEnvironments.map((item) => ({ ...item, isDefault: false })),
+      {
+        name: environment,
+        dotEnvPath: `${projectPath}\\.azure\\${environment}\\.env`,
+        hasLocal: true,
+        hasRemote: false,
+        isDefault: true
+      }
+    ];
+    return structuredClone(previewProjectEnvironments);
   }
-  return invoke("list_project_environments", { projectPath });
+  return invoke<ProjectEnvironment[]>("create_project_environment", {
+    projectPath,
+    environment,
+    subscription,
+    location
+  });
+}
+
+export async function selectProjectEnvironment(
+  projectPath: string,
+  environment: string
+): Promise<ProjectEnvironment[]> {
+  if (!isTauri()) {
+    if (!previewProjectEnvironments.some((item) => item.name === environment)) {
+      throw new Error(`Environment '${environment}' does not exist.`);
+    }
+    previewProjectEnvironments = previewProjectEnvironments.map((item) => ({
+      ...item,
+      isDefault: item.name === environment
+    }));
+    return structuredClone(previewProjectEnvironments);
+  }
+  return invoke<ProjectEnvironment[]>("select_project_environment", { projectPath, environment });
 }
 
 export async function recordOperation(

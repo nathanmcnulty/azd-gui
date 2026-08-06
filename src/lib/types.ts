@@ -249,6 +249,14 @@ export interface ProjectSummary {
   state: "ready" | "attention" | "deploying";
 }
 
+export interface ProjectEnvironment {
+  name: string;
+  dotEnvPath: string;
+  hasLocal: boolean;
+  hasRemote: boolean;
+  isDefault: boolean;
+}
+
 export interface BootstrapData {
   catalog: Catalog;
   tools: ToolStatus[];

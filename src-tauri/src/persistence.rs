@@ -116,6 +116,14 @@ impl Database {
         Ok(())
     }
 
+    pub fn set_project_environment(&self, project_path: &str, environment: &str) -> AppResult<()> {
+        self.lock()?.execute(
+            "UPDATE projects SET environment = ?1 WHERE path = ?2",
+            params![environment, project_path],
+        )?;
+        Ok(())
+    }
+
     pub fn save_catalog_source(&self, source: &CatalogSource) -> AppResult<()> {
         let accepted_catalog = source
             .accepted_catalog
@@ -306,6 +314,13 @@ mod tests {
             state: "ready".into(),
         };
         database.upsert_project(&project).unwrap();
+        database
+            .set_project_environment(&project.path, "staging")
+            .unwrap();
+        assert_eq!(
+            database.projects().unwrap()[0].environment.as_deref(),
+            Some("staging")
+        );
         let event = OperationEvent {
             operation_id: "operation-1".into(),
             kind: "up".into(),

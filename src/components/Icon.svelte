@@ -18,6 +18,7 @@
     | "close"
     | "copy"
     | "play"
+    | "plus"
     | "stop"
     | "external" = "home";
   export let size = 20;
@@ -41,6 +42,7 @@
     close: ["m6 6 12 12", "m18 6-12 12"],
     copy: ["M8 8h12v12H8V8Z", "M4 16V4h12"],
     play: ["m8 5 11 7-11 7V5Z"],
+    plus: ["M12 5v14", "M5 12h14"],
     stop: ["M6 6h12v12H6z"],
     external: ["M14 4h6v6", "m20 4-9 9", "M18 13v7H4V6h7"]
   };

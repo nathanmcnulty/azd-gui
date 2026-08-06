@@ -121,6 +121,35 @@ describe("desktop experience", () => {
     expect(screen.getByText(/structured azd state/i)).toBeInTheDocument();
   });
 
+  it("selects and creates azd project environments", async () => {
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+
+    await fireEvent.click(screen.getByRole("button", { name: /use test environment/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /use dev environment/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /use test environment/i })).not.toBeInTheDocument();
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: /new environment/i }));
+    await fireEvent.input(screen.getByLabelText(/environment name/i), {
+      target: { value: "staging.us_(1)" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /create environment/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("staging.us_(1)", { selector: ".environment-table strong" })
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /use staging\.us_\(1\) environment/i })).not.toBeInTheDocument();
+      expect(
+        within(screen.getByRole("contentinfo")).getByRole("button", { name: /staging\.us_\(1\)/i })
+      ).toBeInTheDocument();
+    });
+  });
+
   it("uses one collapsible navigation tree and persists the preferred width", async () => {
     const firstRender = render(App);
     const primaryNavigation = screen.getByRole("navigation", { name: /primary navigation/i });
