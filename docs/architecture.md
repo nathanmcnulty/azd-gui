@@ -19,6 +19,8 @@ The hidden `azd vs-server` protocol is intentionally not used.
 
 Tool installation is a two-step typed flow. The renderer requests an application-owned `ToolInstallPlan` and displays its provider, source, scope, destination, exact command, and documentation. A separate confirmation starts the corresponding registered `CommandSpec`; tool IDs that are not in the native non-elevated registry cannot produce either a plan or an executable command.
 
+The Windows Azure CLI provider invokes the official `az.cmd` shim because the MSI also places an extensionless Unix shell wrapper on `PATH`. Renderer and manifest data cannot select this shim, and command-shell metacharacters are rejected from its argument array before process creation.
+
 When supported by the installed azd version, an explicit tool refresh also consumes the public `azd tool list/check --output json` contracts. The slower network-backed update scan is not part of application bootstrap. It enriches Azure CLI status with azd's installed and latest versions while preserving the direct executable probe as a fallback. Available updates are informational and do not block deployment readiness. Because azd 1.30 dry-run reports the action but not its selected package-manager strategy, elevation, or destination, system-tool installs and upgrades remain user-directed and the app exposes a copyable dry-run command instead of executing them.
 
 ## Deployment flow
