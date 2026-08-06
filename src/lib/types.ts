@@ -271,6 +271,12 @@ export interface ProjectEnvironmentValueInput {
   value: string;
 }
 
+export interface AzdProjectState {
+  name?: string;
+  services?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface BootstrapData {
   catalog: Catalog;
   tools: ToolStatus[];

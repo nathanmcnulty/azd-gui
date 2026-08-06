@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   mockAzureDiscovery,
   mockBootstrap,
@@ -10,6 +11,7 @@ import {
 } from "./mock-data";
 import type {
   AzureDiscovery,
+  AzdProjectState,
   BootstrapData,
   Catalog,
   CatalogSource,
@@ -217,20 +219,35 @@ export async function loadWizardDraft(
 export async function getProjectState(
   projectPath: string,
   environment?: string
-): Promise<Record<string, unknown>> {
+): Promise<AzdProjectState> {
   if (!isTauri()) {
     return {
       name: projectPath.split(/[\\/]/).filter(Boolean).at(-1),
-      services: [
-        {
-          name: "web",
-          endpoint: "https://preview.example.azurewebsites.net"
+      services: {
+        web: {
+          project: { path: "./src/web", language: "node" },
+          target: {
+            resourceIds: [
+              "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-preview/providers/Microsoft.Web/sites/preview"
+            ]
+          },
+          ingressUrl: "https://preview.example.azurewebsites.net"
         }
-      ],
+      },
       environment: environment ?? "dev"
     };
   }
-  return invoke("get_project_state", { projectPath, environment });
+  return invoke<AzdProjectState>("get_project_state", { projectPath, environment });
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:") throw new Error("Only HTTPS links can be opened.");
+  if (!isTauri()) {
+    window.open(parsed.toString(), "_blank", "noopener,noreferrer");
+    return;
+  }
+  await openUrl(parsed.toString());
 }
 
 export async function listProjectEnvironments(

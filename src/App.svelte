@@ -12,6 +12,7 @@
     inspectLocalTemplate,
     installTool,
     onOperationEvent,
+    openExternalUrl,
     refreshConnections,
     refreshTools,
     prepareDeployment,
@@ -33,6 +34,7 @@
   import { mockBootstrap } from "./lib/mock-data";
   import type {
     AzureDiscovery,
+    AzdProjectState,
     BootstrapData,
     Catalog,
     CatalogEntry,
@@ -47,6 +49,7 @@
     WizardPlan,
     WizardValues
   } from "./lib/types";
+  import { projectServices } from "./lib/project-state";
   import {
     calculateWizardPlan,
     environmentValuesForPlan,
@@ -56,6 +59,14 @@
 
   type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
   type IconName = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
+  type ProjectDeploymentResult = {
+    event: OperationEvent;
+    projectPath: string;
+    environment?: string;
+    refreshState: "loading" | "ready" | "failed";
+    state?: AzdProjectState;
+    refreshError?: string;
+  };
 
   const navigation: { id: NavId; label: string; icon: IconName }[] = [
     { id: "home", label: "Home", icon: "home" },
@@ -84,6 +95,7 @@
   let permissionCheckResults: PermissionCheckResult[] = [];
   let preflightOperationId: string | null = null;
   let activeOperationId: string | null = null;
+  let activeOperationKind: string | null = null;
   let operationEvents: OperationEvent[] = [];
   let operationState: "idle" | "running" | "succeeded" | "failed" | "cancelled" = "idle";
   let lastOperationResult: OperationEvent | null = null;
@@ -92,13 +104,14 @@
   let projectPrepared = false;
   let selectedProject: import("./lib/types").ProjectSummary | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
-  let projectState: Record<string, unknown> | null = null;
+  let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
   let projectOperationHistory: OperationEvent[] = [];
   let projectOperations: OperationEvent[] = [];
   let projectPreview:
     | { projectPath: string; environment?: string; event: OperationEvent }
     | null = null;
+  let projectDeploymentResult: ProjectDeploymentResult | null = null;
   let projectLoading = false;
   let environmentEditorOpen = false;
   let environmentBusy = false;
@@ -164,6 +177,10 @@
       selectedProject?.path === projectPreview?.projectPath &&
       selectedProject?.environment === projectPreview?.environment
   );
+  $: activeOperationEvent = activeOperationId
+    ? operationEvents.filter((event) => event.operationId === activeOperationId).at(-1) ?? null
+    : null;
+  $: deploymentServices = projectServices(projectDeploymentResult?.state);
   $: {
     const mergedOperations = new Map(
       projectOperationHistory.map((event) => [event.operationId, event])
@@ -316,6 +333,7 @@
     permissionCheckResults = [];
     operationEvents = [];
     operationState = "idle";
+    activeOperationKind = null;
     lastOperationResult = null;
     projectPrepared = false;
     azureDiscovery = null;
@@ -693,11 +711,13 @@
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
       activeOperationId = operationId;
+      activeOperationKind = "preview";
       operationState = "running";
       if (!data.isNative) simulateOperation(operationId, "preview");
     } catch (error) {
       addSystemLog(`Preflight failed: ${String(error)}`, "error");
       operationState = "idle";
+      activeOperationKind = null;
     }
   }
 
@@ -748,9 +768,11 @@
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
       activeOperationId = operationId;
+      activeOperationKind = action;
       if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
       operationState = "failed";
+      activeOperationKind = null;
       addSystemLog(`Could not start deployment: ${String(error)}`, "error");
     }
   }
@@ -860,6 +882,20 @@
       ) {
         projectPreview = { projectPath, environment: operationEnvironment, event };
       }
+      if (
+        event.kind === "up" &&
+        selectedProject?.path === projectPath &&
+        selectedProject.environment === operationEnvironment
+      ) {
+        const result: ProjectDeploymentResult = {
+          event,
+          projectPath,
+          environment: operationEnvironment,
+          refreshState: "loading"
+        };
+        projectDeploymentResult = result;
+        void refreshDeploymentResult(result);
+      }
       operationProjectPaths.delete(event.operationId);
       operationEnvironments.delete(event.operationId);
     }
@@ -870,6 +906,7 @@
       preflightRan = event.state === "succeeded";
       preflightOperationId = null;
       activeOperationId = null;
+      activeOperationKind = null;
       operationState = "idle";
       if (preflightRan) {
         addSystemLog("Infrastructure preview completed. No Azure changes were applied.", "success");
@@ -879,9 +916,34 @@
     if (event.state === "succeeded" || event.state === "failed" || event.state === "cancelled") {
       operationState = event.state;
       activeOperationId = null;
+      activeOperationKind = null;
     } else {
       operationState = "running";
       activeOperationId = event.operationId;
+      activeOperationKind = event.kind;
+    }
+  }
+
+  async function refreshDeploymentResult(result: ProjectDeploymentResult | null = projectDeploymentResult) {
+    if (!result) return;
+    projectDeploymentResult = { ...result, refreshState: "loading", refreshError: undefined };
+    try {
+      const state = await getProjectState(result.projectPath, result.environment);
+      if (projectDeploymentResult?.event.operationId !== result.event.operationId) return;
+      projectDeploymentResult = { ...result, refreshState: "ready", state };
+      if (
+        selectedProject?.path === result.projectPath &&
+        selectedProject.environment === result.environment
+      ) {
+        projectState = state;
+      }
+    } catch (error) {
+      if (projectDeploymentResult?.event.operationId !== result.event.operationId) return;
+      projectDeploymentResult = {
+        ...result,
+        refreshState: "failed",
+        refreshError: String(error)
+      };
     }
   }
 
@@ -906,21 +968,24 @@
   async function stopOperation() {
     if (!activeOperationId) return;
     const operationId = activeOperationId;
+    const kind = activeOperationKind ?? "up";
     await cancelOperation(operationId);
     if (!data.isNative) {
+      const mutating = ["up", "provision", "deploy", "down"].includes(kind);
       handleOperationEvent({
         operationId,
-        kind: "up",
+        kind,
         state: "cancelled",
         timestamp: new Date().toISOString(),
         stream: "system",
         level: "warning",
         message: "Cancellation requested by user.",
         outcome: {
-          resourceState: "possiblyModified",
-          summary: "Deployment was cancelled.",
-          guidance:
-            "The local process stopped, but Azure operations already accepted may continue. Review the output and refresh state before retrying.",
+          resourceState: mutating ? "possiblyModified" : "unchanged",
+          summary: `${kind === "up" ? "Deployment" : kind === "preview" ? "Infrastructure preview" : kind} was cancelled.`,
+          guidance: mutating
+            ? "The local process stopped, but Azure operations already accepted may continue. Review the output and refresh state before retrying."
+            : "No Azure resource changes were applied by this action. Retry when ready.",
           retryable: true
         }
       });
@@ -1025,9 +1090,20 @@
     addSystemLog("Copied command to clipboard.", "success");
   }
 
+  async function openProjectUrl(url: string | undefined) {
+    if (!url) return;
+    try {
+      await openExternalUrl(url);
+    } catch (error) {
+      addSystemLog(`Could not open link: ${String(error)}`, "error");
+      outputOpen = true;
+    }
+  }
+
   async function openProjectWorkspace(project: import("./lib/types").ProjectSummary) {
     selectedEntry = null;
     projectPreview = null;
+    projectDeploymentResult = null;
     selectedProject = project;
     activeNav = "projects";
     projectTab = "overview";
@@ -1177,12 +1253,15 @@
     }
     try {
       const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
+      if (action === "up") projectDeploymentResult = null;
       operationProjectPaths.set(operationId, selectedProject.path);
       operationEnvironments.set(operationId, selectedProject.environment);
       activeOperationId = operationId;
+      activeOperationKind = action;
       if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
       operationState = "failed";
+      activeOperationKind = null;
       addSystemLog(`Could not start azd ${action}: ${String(error)}`, "error");
     }
   }
@@ -1862,6 +1941,70 @@
                 <h2>Source</h2>
                 <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
+              {#if activeOperationKind === "up" || projectDeploymentResult}
+                <section class="workspace-panel full project-deployment-result" aria-label="Latest deployment">
+                  <div class="section-toolbar">
+                    <div><h2>{activeOperationKind === "up" ? "Deployment in progress" : "Latest deployment"}</h2><p>The complete <code>azd up</code> operation and refreshed project state.</p></div>
+                    {#if activeOperationKind === "up"}
+                      <StatusPill tone="accent" label="Running" />
+                    {:else if projectDeploymentResult}
+                      <StatusPill
+                        tone={projectDeploymentResult.event.state === "succeeded" ? "success" : projectDeploymentResult.event.state === "failed" ? "danger" : "warning"}
+                        label={projectDeploymentResult.event.state}
+                      />
+                    {/if}
+                  </div>
+                  {#if activeOperationKind === "up"}
+                    <div class="project-deployment-progress">
+                      <div class="progress-track"><span style={`width: ${activeOperationEvent?.progress ?? 0}%`}></span></div>
+                      <div><span>{activeOperationEvent?.message ?? "Starting azd up…"}</span><strong>{activeOperationEvent?.progress ?? 0}%</strong></div>
+                      <button class="danger" on:click={stopOperation}><Icon name="stop" size={14} /> Cancel deployment</button>
+                    </div>
+                  {:else if projectDeploymentResult}
+                    <div class={`project-deployment-summary ${projectDeploymentResult.event.state}`}>
+                      <Icon name={projectDeploymentResult.event.state === "succeeded" ? "check" : "warning"} size={22} />
+                      <div>
+                        <strong>{projectDeploymentResult.event.outcome?.summary ?? projectDeploymentResult.event.message}</strong>
+                        <p>{projectDeploymentResult.event.outcome?.guidance ?? "Review the operation output for details."}</p>
+                      </div>
+                      {#if projectDeploymentResult.event.outcome}
+                        <StatusPill
+                          tone={projectDeploymentResult.event.outcome.resourceState === "changed" ? "success" : projectDeploymentResult.event.outcome.resourceState === "possiblyModified" ? "warning" : "neutral"}
+                          label={resourceStateLabel(projectDeploymentResult.event)}
+                        />
+                      {/if}
+                    </div>
+                    {#if projectDeploymentResult.refreshState === "loading"}
+                      <div class="project-state-refresh"><span class="spinner"></span><span>Refreshing service endpoints and Azure resource state from <code>azd show</code>…</span></div>
+                    {:else if projectDeploymentResult.refreshState === "failed"}
+                      <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Deployment state could not be refreshed</strong><p>{projectDeploymentResult.refreshError}</p></div><button class="secondary compact" on:click={() => refreshDeploymentResult()}>Retry refresh</button></div>
+                    {:else if deploymentServices.length > 0}
+                      <div class="deployed-service-grid">
+                        {#each deploymentServices as service}
+                          <article class="deployed-service-card">
+                            <div><h3>{service.name}</h3>{#if service.language}<StatusPill tone="neutral" label={service.language} />{/if}</div>
+                            {#if service.endpoint}<code>{service.endpoint}</code>{:else}<span>No public endpoint returned</span>{/if}
+                            <small>{service.resources.length} Azure resource{service.resources.length === 1 ? "" : "s"}</small>
+                            <div>
+                              {#if service.endpoint}<button class="secondary compact" on:click={() => openProjectUrl(service.endpoint)}>Open endpoint</button>{/if}
+                              {#if service.resources[0]}<button class="secondary compact" on:click={() => openProjectUrl(service.resources[0].portalUrl)}>Open in Azure</button>{/if}
+                            </div>
+                          </article>
+                        {/each}
+                      </div>
+                    {:else}
+                      <div class="callout info"><Icon name="cloud" size={17} /><div><strong>No deployed service endpoints were returned</strong><p>The operation result is still recorded. Inspect structured state for infrastructure-only templates or resources without public ingress.</p></div></div>
+                    {/if}
+                    <div class="project-deployment-actions">
+                      <button class="secondary" on:click={() => (outputOpen = true)}><Icon name="terminal" size={14} /> View output</button>
+                      <button class="secondary" on:click={() => (projectTab = "resources")}><Icon name="cloud" size={14} /> View structured state</button>
+                      {#if projectDeploymentResult.event.state !== "succeeded"}
+                        <button class="primary" disabled={Boolean(activeOperationId)} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
+                      {/if}
+                    </div>
+                  {/if}
+                </section>
+              {/if}
               <section class="workspace-panel full project-preflight" aria-label="Deployment preflight">
                 <div class="section-toolbar">
                   <div><h2>Deployment preflight</h2><p>Preview infrastructure changes for the selected environment before running the complete deployment.</p></div>
@@ -2110,6 +2253,7 @@
       <header>
         <div><Icon name="terminal" size={15} /><strong>OUTPUT</strong><span>azd</span></div>
         <div>
+          {#if activeOperationId}<button class="output-cancel" on:click={stopOperation}>Cancel {activeOperationKind ?? "operation"}</button>{/if}
           <button title="Clear output" on:click={() => (operationEvents = [])}>Clear</button>
           <button aria-label="Close output" on:click={() => (outputOpen = false)}><Icon name="close" size={15} /></button>
         </div>
