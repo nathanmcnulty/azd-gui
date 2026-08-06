@@ -50,6 +50,7 @@ fn status(
         }
         .into(),
         scopes: vec![],
+        granted_scopes: vec![],
         account,
         tenant_id,
         subscription_id,
@@ -57,6 +58,21 @@ fn status(
         expires_on: None,
         detail: None,
     }
+}
+
+fn granted_scopes(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(|value| value.pointer("/scopes"))
+        .map(|value| match value {
+            Value::Array(values) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(Into::into)
+                .collect(),
+            Value::String(value) => vec![value.clone()],
+            _ => vec![],
+        })
+        .unwrap_or_default()
 }
 
 async fn json_status(spec: CommandSpec) -> Option<Value> {
@@ -96,6 +112,17 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             ]
         ))
     );
+    let graph_granted_scopes = granted_scopes(graph_ps.as_ref());
+    let mut graph_status = status(
+        "graphPowerShell",
+        "Microsoft Graph PowerShell",
+        "Template-specific Microsoft Graph operations.",
+        graph_ps,
+        &["/account"],
+        &["/tenantId"],
+        (&[], &[]),
+    );
+    graph_status.granted_scopes = graph_granted_scopes;
     let mut statuses = vec![
         status(
             "azd",
@@ -124,15 +151,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
             &["/tenantId"],
             (&["/subscriptionId"], &["/subscriptionName"]),
         ),
-        status(
-            "graphPowerShell",
-            "Microsoft Graph PowerShell",
-            "Template-specific Microsoft Graph operations.",
-            graph_ps,
-            &["/account"],
-            &["/tenantId"],
-            (&[], &[]),
-        ),
+        graph_status,
     ];
     if let Some(mismatches) = tenant_mismatch(&statuses) {
         let detail = format!(
@@ -240,6 +259,7 @@ mod tests {
             reason: String::new(),
             state: "connected".into(),
             scopes: vec![],
+            granted_scopes: vec![],
             account: None,
             tenant_id: Some(tenant_id.into()),
             subscription_id: None,
@@ -247,6 +267,17 @@ mod tests {
             expires_on: None,
             detail: None,
         }
+    }
+
+    #[test]
+    fn graph_status_preserves_granted_scopes() {
+        let value = serde_json::json!({
+            "scopes": ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"]
+        });
+        let scopes = granted_scopes(Some(&value));
+
+        assert_eq!(scopes.len(), 2);
+        assert_eq!(scopes[0], "Application.ReadWrite.All");
     }
 
     #[test]

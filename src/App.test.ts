@@ -142,6 +142,43 @@ describe("desktop experience", () => {
     expect(within(azureCliRow).getByRole("button", { name: "Copy update preview" })).toBeEnabled();
   });
 
+  it("requires missing Microsoft Graph scopes before continuing", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[1]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\maester-scopes" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    await fireEvent.click(screen.getByRole("button", { name: "Review install" }));
+    await fireEvent.click(screen.getByRole("button", { name: /install for current user/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    const graphRow = screen
+      .getByText(/Requested scopes: Application\.ReadWrite\.All/)
+      .closest<HTMLElement>(".connection-row")!;
+    expect(within(graphRow).getByText("scope update required")).toBeInTheDocument();
+    expect(
+      within(graphRow).getByText("Missing scopes: RoleManagement.ReadWrite.Directory")
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
+
+    await fireEvent.click(within(graphRow).getByRole("button", { name: "Update scopes" }));
+
+    await waitFor(() => {
+      expect(within(graphRow).queryByText(/Missing scopes:/)).not.toBeInTheDocument();
+    });
+    expect(within(graphRow).getByText("connected")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+    });
+  });
+
   it("offers an external-terminal fallback for interactive local hooks", async () => {
     render(App);
 

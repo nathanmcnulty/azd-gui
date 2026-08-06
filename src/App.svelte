@@ -50,10 +50,13 @@
     TemplateInspection,
     ToolInstallPlan,
     ToolStatus,
-    WizardPage,
     WizardPlan,
     WizardValues
   } from "./lib/types";
+  import {
+    connectionMeetsRequirements,
+    missingRequestedScopes
+  } from "./lib/connections";
   import { projectServices } from "./lib/project-state";
   import {
     calculateWizardPlan,
@@ -149,6 +152,7 @@
   let azureDiscoveryLoading = false;
   let azureDiscoveryError = "";
   let manualAzureScope = false;
+  let activeStepReady = false;
   const operationResolvers = new Map<
     string,
     { resolve: (event: OperationEvent) => void; reject: (error: Error) => void }
@@ -239,7 +243,7 @@
     .every((tool) => tool.state === "ready");
   $: requiredConnectionsReady = requiredConnections
     .filter((connection) => connection.required)
-    .every((connection) => connection.state === "connected");
+    .every(connectionMeetsRequirements);
   $: selectedPlatformSupported =
     !selectedEntry || selectedEntry.platforms.includes(data.platform);
   $: connectionAttentionCount = data.connections.filter((connection) => connection.state !== "connected").length;
@@ -268,6 +272,37 @@
             connection.tenantId?.toLowerCase() !== String(wizardValues.tenantId).toLowerCase()
         )
   );
+  $: {
+    const page = activePage;
+    if (!page) {
+      activeStepReady = false;
+    } else if (page.kind === "source") {
+      activeStepReady =
+        wizardValues.sourceMode === "localTemplate" || wizardValues.sourceMode === "github"
+          ? Boolean(wizardValues.sourcePath && wizardValues.projectPath)
+          : Boolean(wizardValues.projectPath);
+    } else if (page.kind === "environment") {
+      activeStepReady = Boolean(
+        wizardValues.environmentName &&
+          wizardValues.tenantId &&
+          wizardValues.subscriptionId &&
+          wizardValues.location &&
+          !selectedTenantMismatch
+      );
+    } else if (page.kind === "overview") {
+      activeStepReady = selectedPlatformSupported;
+    } else if (page.kind === "prerequisites") {
+      activeStepReady = requiredToolsReady;
+    } else if (page.kind === "connections") {
+      activeStepReady = requiredConnectionsReady && !requiredTenantMismatch;
+    } else if (page.kind === "configuration") {
+      activeStepReady = page.blockingIssues.length === 0;
+    } else if (page.kind === "preflight") {
+      activeStepReady = preflightRan;
+    } else {
+      activeStepReady = true;
+    }
+  }
 
   onMount(() => {
     try {
@@ -396,34 +431,6 @@
       Object.entries(wizardValues).filter(([key, value]) => !sensitive.has(key) && value !== undefined)
     );
     await saveWizardDraft(selectedEntry.id, values);
-  }
-
-  function stepIsReady(page: WizardPage | null): boolean {
-    if (!page) return false;
-    if (page.kind === "source") {
-      if (wizardValues.sourceMode === "localTemplate") {
-        return Boolean(wizardValues.sourcePath && wizardValues.projectPath);
-      }
-      if (wizardValues.sourceMode === "github") {
-        return Boolean(wizardValues.sourcePath && wizardValues.projectPath);
-      }
-      return Boolean(wizardValues.projectPath);
-    }
-    if (page.kind === "environment") {
-      return Boolean(
-        wizardValues.environmentName &&
-          wizardValues.tenantId &&
-          wizardValues.subscriptionId &&
-          wizardValues.location &&
-          !selectedTenantMismatch
-      );
-    }
-    if (page.kind === "overview") return selectedPlatformSupported;
-    if (page.kind === "prerequisites") return requiredToolsReady;
-    if (page.kind === "connections") return requiredConnectionsReady && !requiredTenantMismatch;
-    if (page.kind === "configuration") return page.blockingIssues.length === 0;
-    if (page.kind === "preflight") return preflightRan;
-    return true;
   }
 
   async function nextStep() {
@@ -661,7 +668,9 @@
                   ...connection,
                   state: "connected",
                   account: "preview@example.com",
-                  tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47"
+                  tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+                  grantedScopes:
+                    provider.id === "graphPowerShell" ? [...(provider.scopes ?? [])] : connection.grantedScopes
                 }
               : connection
           )
@@ -673,7 +682,9 @@
   }
 
   async function connectRequired() {
-    for (const connection of requiredConnections.filter((item) => item.state !== "connected")) {
+    for (const connection of requiredConnections.filter(
+      (item) => !connectionMeetsRequirements(item)
+    )) {
       await connect(connection);
     }
   }
@@ -1705,6 +1716,7 @@
             {/if}
             <div class="data-list">
               {#each requiredConnections as connection}
+                {@const missingScopes = missingRequestedScopes(connection)}
                 <div class="data-row connection-row">
                   <div class={`state-icon ${connection.state}`}>
                     <Icon name="connections" size={16} />
@@ -1713,10 +1725,15 @@
                     <strong>{connection.name}</strong>
                     <span>{connection.reason}</span>
                     {#if connection.account}<small>{connection.account} · {connection.tenantId}{connection.subscriptionName ? ` · ${connection.subscriptionName}` : ""}</small>{/if}
+                    {#if connection.id === "graphPowerShell" && connection.scopes?.length}
+                      <small>Requested scopes: {connection.scopes.join(", ")}</small>
+                      <small>Granted scopes: {connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "None detected"}</small>
+                    {/if}
+                    {#if missingScopes.length}<small class="scope-warning">Missing scopes: {missingScopes.join(", ")}</small>{/if}
                   </div>
-                  <StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} />
+                  <StatusPill tone={connection.state === "connected" && missingScopes.length === 0 ? "success" : "warning"} label={missingScopes.length ? "scope update required" : connection.state} />
                   <button class="secondary" on:click={() => connect(connection)}>
-                    {connection.state === "connected" ? "Reconnect" : "Connect"}
+                    {connection.state === "connected" ? (missingScopes.length ? "Update scopes" : "Reconnect") : "Connect"}
                   </button>
                 </div>
               {/each}
@@ -1965,7 +1982,7 @@
           <button class="secondary" disabled={activeStep === 0} on:click={previousStep}>Back</button>
           <div class="footer-spacer"></div>
           {#if activeStep < wizardPlan.pages.length - 1}
-            <button class="primary" disabled={!stepIsReady(activePage)} on:click={nextStep}>Continue <Icon name="chevron" size={15} /></button>
+            <button class="primary" disabled={!activeStepReady} on:click={nextStep}>Continue <Icon name="chevron" size={15} /></button>
           {/if}
         </footer>
       </section>
@@ -2370,7 +2387,7 @@
               <div class={`connection-icon ${connection.state}`}><Icon name="connections" size={21} /></div>
               <div class="row"><h2>{connection.name}</h2><StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} /></div>
               <p>{connection.account ?? "No active account detected"}</p>
-              <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div></dl>
+              <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div>{#if connection.id === "graphPowerShell"}<div><dt>Granted scopes</dt><dd title={connection.grantedScopes?.join(", ")}>{connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "—"}</dd></div>{/if}</dl>
               <button class="secondary full-width" on:click={() => connect(connection)}>{connection.state === "connected" ? "Reconnect" : "Connect"}</button>
             </article>
           {/each}

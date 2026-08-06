@@ -155,6 +155,8 @@ pub struct ConnectionStatus {
     #[serde(default)]
     pub scopes: Vec<String>,
     #[serde(default)]
+    pub granted_scopes: Vec<String>,
+    #[serde(default)]
     pub account: Option<String>,
     #[serde(default)]
     pub tenant_id: Option<String>,

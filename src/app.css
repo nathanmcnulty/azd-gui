@@ -2433,6 +2433,10 @@ button.compact {
   font-size: 9px;
 }
 
+.data-primary small.scope-warning {
+  color: var(--warning);
+}
+
 .connection-row {
   min-height: 76px;
 }
