@@ -20,14 +20,15 @@ use crate::{
         AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
         PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
         ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        TemplateInspection, ToolInstallPlan, ToolStatus,
+        TemplateInspection, TemplateManifest, ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::BufRead,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 use tauri::{AppHandle, Manager, State};
 
@@ -35,6 +36,7 @@ pub struct AppState {
     database: Database,
     operations: OperationManager,
     template_cache: PathBuf,
+    inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
 }
 
 fn platform_name() -> String {
@@ -69,13 +71,40 @@ async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
 }
 
 #[tauri::command]
-fn inspect_local_template(path: String) -> AppResult<TemplateInspection> {
-    catalog::inspect_local(&path)
+fn inspect_local_template(
+    state: State<'_, AppState>,
+    path: String,
+) -> AppResult<TemplateInspection> {
+    let inspection = catalog::inspect_local(&path)?;
+    remember_inspection_manifest(state.inner(), &inspection)?;
+    Ok(inspection)
 }
 
 #[tauri::command]
-async fn inspect_github_template(url: String) -> AppResult<TemplateInspection> {
-    catalog::inspect_github(&url).await
+async fn inspect_github_template(
+    state: State<'_, AppState>,
+    url: String,
+) -> AppResult<TemplateInspection> {
+    let inspection = catalog::inspect_github(&url).await?;
+    remember_inspection_manifest(state.inner(), &inspection)?;
+    Ok(inspection)
+}
+
+fn remember_inspection_manifest(
+    state: &AppState,
+    inspection: &TemplateInspection,
+) -> AppResult<()> {
+    let Some(manifest) = inspection.entry.manifest.clone() else {
+        return Ok(());
+    };
+    state
+        .inspected_manifests
+        .lock()
+        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
+        .entry(inspection.entry.id.clone())
+        .or_default()
+        .push(manifest);
+    Ok(())
 }
 
 #[tauri::command]
@@ -478,17 +507,88 @@ fn get_operation_history(
         .operation_history(&canonical.display().to_string())
 }
 
-fn sanitized_draft(mut values: serde_json::Value) -> AppResult<serde_json::Value> {
+fn sanitized_draft(
+    mut values: serde_json::Value,
+    allowed_keys: &HashSet<String>,
+    sensitive_keys: &HashSet<String>,
+) -> AppResult<serde_json::Value> {
     let object = values
         .as_object_mut()
         .ok_or_else(|| AppError::Invalid("Wizard draft must be an object.".into()))?;
     object.retain(|key, _| {
         let key = key.to_ascii_lowercase();
-        !["secret", "password", "token", "webhook", "credential"]
-            .iter()
-            .any(|marker| key.contains(marker))
+        allowed_keys.contains(&key)
+            && !sensitive_keys.contains(&key)
+            && !["secret", "password", "token", "webhook", "credential"]
+                .iter()
+                .any(|marker| key.contains(marker))
     });
+    if object.values().any(|value| {
+        !(value.is_string()
+            || value.is_boolean()
+            || value
+                .as_array()
+                .is_some_and(|values| values.iter().all(serde_json::Value::is_string)))
+    }) {
+        return Err(AppError::Invalid(
+            "Wizard draft values must be strings, booleans, or string arrays.".into(),
+        ));
+    }
     Ok(values)
+}
+
+fn draft_keys(
+    state: &AppState,
+    template_id: &str,
+) -> AppResult<(HashSet<String>, HashSet<String>)> {
+    let mut allowed_keys = [
+        "sourceMode",
+        "projectPath",
+        "sourcePath",
+        "environmentName",
+        "subscriptionId",
+        "location",
+        "tenantId",
+        "resourceGroup",
+    ]
+    .into_iter()
+    .map(str::to_ascii_lowercase)
+    .collect::<HashSet<_>>();
+    let mut sensitive_keys = HashSet::new();
+    let mut manifests = Vec::new();
+    if let Ok(entry) = catalog::entry_by_id(template_id) {
+        manifests.extend(entry.manifest);
+    }
+    manifests.extend(
+        state
+            .database
+            .accepted_catalogs()?
+            .into_iter()
+            .flat_map(|catalog| catalog.entries)
+            .filter(|entry| entry.id == template_id)
+            .filter_map(|entry| entry.manifest),
+    );
+    manifests.extend(
+        state
+            .inspected_manifests
+            .lock()
+            .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
+            .get(template_id)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    for field in manifests
+        .into_iter()
+        .flat_map(|manifest| manifest.configuration.groups)
+        .flat_map(|group| group.fields)
+    {
+        let field_id = field.id.to_ascii_lowercase();
+        allowed_keys.insert(field_id.clone());
+        if field.sensitive || field.field_type == "secret" {
+            sensitive_keys.insert(field_id);
+        }
+    }
+    Ok((allowed_keys, sensitive_keys))
 }
 
 #[tauri::command]
@@ -500,9 +600,11 @@ fn save_wizard_draft(
     if template_id.len() > 128 {
         return Err(AppError::Invalid("Template ID is too long.".into()));
     }
-    state
-        .database
-        .save_draft(&template_id, &sanitized_draft(values)?)
+    let (allowed_keys, sensitive_keys) = draft_keys(state.inner(), &template_id)?;
+    state.database.save_draft(
+        &template_id,
+        &sanitized_draft(values, &allowed_keys, &sensitive_keys)?,
+    )
 }
 
 #[tauri::command]
@@ -510,7 +612,18 @@ fn load_wizard_draft(
     state: State<'_, AppState>,
     template_id: String,
 ) -> AppResult<Option<serde_json::Value>> {
-    state.database.load_draft(&template_id)
+    if template_id.len() > 128 {
+        return Err(AppError::Invalid("Template ID is too long.".into()));
+    }
+    let Some(values) = state.database.load_draft(&template_id)? else {
+        return Ok(None);
+    };
+    let (allowed_keys, sensitive_keys) = draft_keys(state.inner(), &template_id)?;
+    let sanitized = sanitized_draft(values.clone(), &allowed_keys, &sensitive_keys)?;
+    if sanitized != values {
+        state.database.save_draft(&template_id, &sanitized)?;
+    }
+    Ok(Some(sanitized))
 }
 
 pub fn run() {
@@ -528,6 +641,7 @@ pub fn run() {
                 database,
                 operations: OperationManager::default(),
                 template_cache,
+                inspected_manifests: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
@@ -576,5 +690,75 @@ mod environment_value_tests {
         assert_eq!(keys.len(), 2);
         assert!(keys.contains("FIRST"));
         assert!(keys.contains("SECOND"));
+    }
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::{catalog, draft_keys, sanitized_draft, AppState, Database, OperationManager};
+    use std::{
+        collections::{HashMap, HashSet},
+        sync::Mutex,
+    };
+    use tempfile::tempdir;
+
+    fn keys(values: &[&str]) -> HashSet<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn removes_manifest_secrets_even_when_the_name_is_neutral() {
+        let draft = serde_json::json!({
+            "apiKey": "do-not-store",
+            "location": "westus2",
+            "unexpected": "do-not-store-either"
+        });
+
+        let sanitized =
+            sanitized_draft(draft, &keys(&["apikey", "location"]), &keys(&["apikey"])).unwrap();
+
+        assert_eq!(sanitized, serde_json::json!({"location": "westus2"}));
+    }
+
+    #[test]
+    fn rejects_values_outside_the_typed_wizard_contract() {
+        let error = sanitized_draft(
+            serde_json::json!({"location": {"token": "nested-secret"}}),
+            &keys(&["location"]),
+            &HashSet::new(),
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("strings, booleans, or string arrays"));
+    }
+
+    #[test]
+    fn resolves_sensitive_fields_from_bundled_and_inspected_manifests() {
+        let directory = tempdir().unwrap();
+        let state = AppState {
+            database: Database::open(&directory.path().join("state.sqlite")).unwrap(),
+            operations: OperationManager::default(),
+            template_cache: directory.path().join("cache"),
+            inspected_manifests: Mutex::new(HashMap::new()),
+        };
+
+        let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();
+        assert!(allowed.contains("teamswebhook"));
+        assert!(sensitive.contains("teamswebhook"));
+
+        let manifest = catalog::entry_by_id("entra-health-monitoring")
+            .unwrap()
+            .manifest
+            .unwrap();
+        state
+            .inspected_manifests
+            .lock()
+            .unwrap()
+            .insert("local-template".into(), vec![manifest]);
+        let (allowed, sensitive) = draft_keys(&state, "local-template").unwrap();
+        assert!(allowed.contains("teamswebhook"));
+        assert!(sensitive.contains("teamswebhook"));
     }
 }
