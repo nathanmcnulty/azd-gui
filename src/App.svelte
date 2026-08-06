@@ -14,6 +14,7 @@
     onOperationEvent,
     openExternalTerminal,
     openExternalUrl,
+    previewToolInstall,
     refreshConnections,
     refreshTools,
     prepareDeployment,
@@ -47,6 +48,7 @@
     ProjectEnvironment,
     ProjectEnvironmentValue,
     TemplateInspection,
+    ToolInstallPlan,
     ToolStatus,
     WizardPage,
     WizardPlan,
@@ -108,6 +110,8 @@
   let projectPrepared = false;
   let terminalLaunch: ExternalTerminalLaunch | null = null;
   let terminalOpening = false;
+  let installPlan: ToolInstallPlan | null = null;
+  let installingToolId: string | null = null;
   let selectedProject: import("./lib/types").ProjectSummary | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
@@ -297,7 +301,10 @@
       commandPaletteOpen = true;
       setTimeout(() => document.getElementById("command-query")?.focus(), 0);
     }
-    if (event.key === "Escape") commandPaletteOpen = false;
+    if (event.key === "Escape") {
+      commandPaletteOpen = false;
+      if (!installingToolId) installPlan = null;
+    }
   }
 
   function navigate(id: NavId) {
@@ -586,10 +593,23 @@
     }
   }
 
-  async function oneClickInstall(tool: ToolStatus) {
-    addSystemLog(`Preparing per-user installation for ${tool.name}.`, "info");
+  async function requestToolInstall(tool: ToolStatus) {
     try {
-      const operationId = await installTool(tool.id);
+      installPlan = await previewToolInstall(tool.id);
+      setTimeout(() => document.getElementById("confirm-tool-install")?.focus(), 0);
+    } catch (error) {
+      addSystemLog(`Could not prepare installation: ${String(error)}`, "error");
+      outputOpen = true;
+    }
+  }
+
+  async function confirmToolInstall() {
+    if (!installPlan || installingToolId) return;
+    const plan = installPlan;
+    installingToolId = plan.id;
+    addSystemLog(`Approved: ${plan.action} from ${plan.source} for ${plan.scope.toLowerCase()}.`, "info");
+    try {
+      const operationId = await installTool(plan.id);
       outputOpen = true;
       if (data.isNative) {
         await waitForOperation(operationId);
@@ -598,12 +618,16 @@
         data = {
           ...data,
           tools: data.tools.map((item) =>
-            item.id === tool.id ? { ...item, state: "ready", installedVersion: item.minimumVersion } : item
+            item.id === plan.id ? { ...item, state: "ready", installedVersion: item.minimumVersion } : item
           )
         };
       }
+      installPlan = null;
     } catch (error) {
       addSystemLog(`Installation failed: ${String(error)}`, "error");
+      outputOpen = true;
+    } finally {
+      installingToolId = null;
     }
   }
 
@@ -1650,7 +1674,11 @@
                   </div>
                   <StatusPill tone={tool.state === "ready" ? "success" : tool.state === "missing" ? "warning" : "neutral"} label={tool.state} />
                   {#if tool.state !== "ready"}
-                    <button class="secondary" disabled={!tool.canInstall} on:click={() => oneClickInstall(tool)}>Install for me</button>
+                    {#if tool.canInstall}
+                      <button class="secondary" on:click={() => requestToolInstall(tool)}>Review install</button>
+                    {:else}
+                      <button class="secondary" disabled={!tool.documentationUrl} on:click={() => openProjectUrl(tool.documentationUrl)}>View instructions</button>
+                    {/if}
                   {/if}
                   {#if tool.installCommand}
                     <button class="icon-button" title="Copy install command" on:click={() => copyText(tool.installCommand!)}><Icon name="copy" size={15} /></button>
@@ -2357,7 +2385,9 @@
               <div><small>Installed</small><span>{tool.installedVersion ?? "Not found"}</span></div>
               <div><small>Required</small><span>{tool.minimumVersion ?? "Any"}</span></div>
               <StatusPill tone={tool.state === "ready" ? "success" : "warning"} label={tool.state} />
-              {#if tool.state !== "ready"}<button class="secondary" disabled={!tool.canInstall} on:click={() => oneClickInstall(tool)}>Install for me</button>{/if}
+              {#if tool.state !== "ready"}
+                {#if tool.canInstall}<button class="secondary" on:click={() => requestToolInstall(tool)}>Review install</button>{:else}<button class="secondary" disabled={!tool.documentationUrl} on:click={() => openProjectUrl(tool.documentationUrl)}>View instructions</button>{/if}
+              {/if}
             </div>
           {/each}
         </div>
@@ -2418,6 +2448,36 @@
     <span>{data.platform}</span>
   </footer>
 </div>
+
+{#if installPlan}
+  <div class="modal-backdrop" role="presentation" on:click={() => { if (!installingToolId) installPlan = null; }}>
+    <dialog open class="source-dialog install-dialog" aria-label={`Review ${installPlan.toolName} installation`} aria-describedby="install-review-description" on:click|stopPropagation>
+      <header>
+        <div><span class="eyebrow">INSTALLATION APPROVAL</span><h2>Review before installing</h2></div>
+        <button class="icon-button" aria-label="Close install review" disabled={Boolean(installingToolId)} on:click={() => (installPlan = null)}><Icon name="close" size={16} /></button>
+      </header>
+      <p id="install-review-description">The app will run only this registered, non-elevated installation action.</p>
+      <dl class="install-plan-details">
+        <div><dt>Action</dt><dd>{installPlan.action}</dd></div>
+        <div><dt>Provider</dt><dd>{installPlan.provider}</dd></div>
+        <div><dt>Source</dt><dd>{installPlan.source}</dd></div>
+        <div><dt>Scope</dt><dd>{installPlan.scope}</dd></div>
+        <div class="full"><dt>Destination</dt><dd>{installPlan.destination}</dd></div>
+      </dl>
+      <div class="install-command">
+        <div><span>Exact command</span><button class="icon-button" aria-label="Copy install command" title="Copy install command" on:click={() => copyText(installPlan!.command)}><Icon name="copy" size={15} /></button></div>
+        <code>{installPlan.command}</code>
+      </div>
+      <div class="callout info install-safety"><Icon name="check" size={17} /><div><strong>No administrator elevation</strong><p>This writes to the current-user PowerShell module path. Tokens and credentials are not involved.</p></div></div>
+      <footer>
+        <button class="secondary" disabled={Boolean(installingToolId)} on:click={() => (installPlan = null)}>Cancel</button>
+        <button class="text-button" on:click={() => openProjectUrl(installPlan!.documentationUrl)}>Official documentation</button>
+        <div class="footer-spacer"></div>
+        <button id="confirm-tool-install" class="primary" disabled={Boolean(installingToolId)} on:click={confirmToolInstall}>{installingToolId ? "Installing…" : "Install for current user"}</button>
+      </footer>
+    </dialog>
+  </div>
+{/if}
 
 {#if commandPaletteOpen}
   <div class="modal-backdrop" role="presentation" on:click={() => (commandPaletteOpen = false)}>

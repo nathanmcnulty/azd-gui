@@ -20,7 +20,7 @@ use crate::{
         AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
         PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
         ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        TemplateInspection, ToolStatus,
+        TemplateInspection, ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -81,6 +81,15 @@ async fn inspect_github_template(url: String) -> AppResult<TemplateInspection> {
 #[tauri::command]
 async fn check_tools() -> AppResult<Vec<ToolStatus>> {
     Ok(tools::check_all().await)
+}
+
+#[tauri::command]
+fn preview_tool_install(id: String) -> AppResult<ToolInstallPlan> {
+    tools::install_plan(&id).ok_or_else(|| {
+        AppError::Invalid(format!(
+            "{id} has no vetted non-elevated installation strategy."
+        ))
+    })
 }
 
 #[tauri::command]
@@ -527,6 +536,7 @@ pub fn run() {
             inspect_local_template,
             inspect_github_template,
             check_tools,
+            preview_tool_install,
             install_tool,
             check_connections,
             discover_azure_scope,

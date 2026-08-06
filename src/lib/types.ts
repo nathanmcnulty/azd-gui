@@ -55,6 +55,18 @@ export interface ToolStatus extends Prerequisite {
   canInstall?: boolean;
 }
 
+export interface ToolInstallPlan {
+  id: string;
+  toolName: string;
+  provider: string;
+  action: string;
+  source: string;
+  scope: string;
+  destination: string;
+  command: string;
+  documentationUrl: string;
+}
+
 export interface ConnectionRequirement {
   id: "azd" | "azureCli" | "azPowerShell" | "graphPowerShell";
   name: string;

@@ -1,6 +1,6 @@
 use crate::{
     command_runner::{capture, CommandSpec, Executable},
-    models::ToolStatus,
+    models::{ToolInstallPlan, ToolStatus},
 };
 use serde_json::Value;
 use std::time::Duration;
@@ -70,7 +70,6 @@ pub async fn check_all() -> Vec<ToolStatus> {
             "1.23.0",
             azd,
             "manual",
-            false,
             None,
         ),
         tool(
@@ -80,19 +79,9 @@ pub async fn check_all() -> Vec<ToolStatus> {
             "2.60.0",
             az,
             "azdTool",
-            false,
             Some("az-cli"),
         ),
-        tool(
-            "pwsh",
-            "PowerShell",
-            "tool",
-            "7.4.0",
-            pwsh,
-            "manual",
-            false,
-            None,
-        ),
+        tool("pwsh", "PowerShell", "tool", "7.4.0", pwsh, "manual", None),
         tool(
             "Az.Accounts",
             "Azure PowerShell",
@@ -100,7 +89,6 @@ pub async fn check_all() -> Vec<ToolStatus> {
             "3.0.0",
             az_module,
             "psResource",
-            true,
             Some("Az.Accounts"),
         ),
         tool(
@@ -110,13 +98,11 @@ pub async fn check_all() -> Vec<ToolStatus> {
             "2.0.0",
             graph_module,
             "psResource",
-            true,
             Some("Microsoft.Graph"),
         ),
     ]
 }
 
-#[allow(clippy::too_many_arguments)]
 fn tool(
     id: &str,
     name: &str,
@@ -124,7 +110,6 @@ fn tool(
     minimum: &str,
     installed: Option<String>,
     provider: &str,
-    can_install: bool,
     install_id: Option<&str>,
 ) -> ToolStatus {
     let installed_version = installed
@@ -145,12 +130,18 @@ fn tool(
         } else {
             "missing"
         });
-    let install_command = match provider {
-        "psResource" => install_id
-            .map(|name| format!("Install-PSResource {name} -Scope CurrentUser -TrustRepository")),
-        "azdTool" => install_id.map(|name| format!("azd tool install {name} --no-prompt")),
-        _ => None,
-    };
+    let install_plan = install_plan(id);
+    let install_command = install_plan
+        .as_ref()
+        .map(|plan| plan.command.clone())
+        .or_else(|| match provider {
+            "azdTool" => install_id.map(|name| format!("azd tool install {name} --no-prompt")),
+            _ => None,
+        });
+    let documentation_url = install_plan
+        .as_ref()
+        .map(|plan| plan.documentation_url.clone())
+        .or_else(|| documentation_url(id).map(Into::into));
     ToolStatus {
         id: id.into(),
         name: name.into(),
@@ -162,38 +153,138 @@ fn tool(
         detail: None,
         install_provider: Some(provider.into()),
         install_id: install_id.map(Into::into),
-        documentation_url: None,
+        documentation_url,
         install_command,
-        can_install,
+        can_install: install_plan.is_some(),
     }
 }
 
-pub fn install_spec(id: &str) -> Option<CommandSpec> {
+fn documentation_url(id: &str) -> Option<&'static str> {
     match id {
-        "Az.Accounts" => Some(
-            CommandSpec::new(
-                Executable::PowerShell,
-                [
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Install-PSResource Az.Accounts -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense",
-                ],
-            ),
+        "azd" => {
+            Some("https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd")
+        }
+        "az-cli" => Some(
+            "https://learn.microsoft.com/azure/developer/azure-developer-cli/development-tools",
         ),
-        "Microsoft.Graph" => Some(
-            CommandSpec::new(
-                Executable::PowerShell,
-                [
-                    "-NoLogo",
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    "Install-PSResource Microsoft.Graph -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense",
-                ],
-            ),
-        ),
+        "pwsh" => {
+            Some("https://learn.microsoft.com/powershell/scripting/install/installing-powershell")
+        }
         _ => None,
+    }
+}
+
+struct ApprovedModuleInstall {
+    id: &'static str,
+    name: &'static str,
+}
+
+impl ApprovedModuleInstall {
+    fn script(&self) -> String {
+        format!(
+            "Install-PSResource {} -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense",
+            self.id
+        )
+    }
+
+    fn plan(&self) -> ToolInstallPlan {
+        let script = self.script();
+        ToolInstallPlan {
+            id: self.id.into(),
+            tool_name: self.name.into(),
+            provider: "PSResourceGet".into(),
+            action: format!("Install or update the {} module", self.name),
+            source: "PowerShell Gallery (PSGallery)".into(),
+            scope: "Current user".into(),
+            destination: "Current-user PowerShell module path".into(),
+            command: format!(
+                "pwsh -NoLogo -NoProfile -NonInteractive -Command \"{script}\""
+            ),
+            documentation_url: "https://learn.microsoft.com/powershell/module/microsoft.powershell.psresourceget/install-psresource?view=powershellget-3.x".into(),
+        }
+    }
+
+    fn spec(&self) -> CommandSpec {
+        CommandSpec::new(
+            Executable::PowerShell,
+            [
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-Command".into(),
+                self.script(),
+            ],
+        )
+    }
+}
+
+fn approved_install(id: &str) -> Option<ApprovedModuleInstall> {
+    match id {
+        "Az.Accounts" => Some(ApprovedModuleInstall {
+            id: "Az.Accounts",
+            name: "Azure PowerShell",
+        }),
+        "Microsoft.Graph" => Some(ApprovedModuleInstall {
+            id: "Microsoft.Graph",
+            name: "Microsoft Graph PowerShell",
+        }),
+        _ => None,
+    }
+}
+
+pub fn install_plan(id: &str) -> Option<ToolInstallPlan> {
+    approved_install(id).map(|install| install.plan())
+}
+
+pub fn install_spec(id: &str) -> Option<CommandSpec> {
+    approved_install(id).map(|install| install.spec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{install_plan, install_spec, tool};
+
+    #[test]
+    fn approved_install_plan_matches_the_executed_script() {
+        let plan = install_plan("Microsoft.Graph").unwrap();
+        let spec = install_spec("Microsoft.Graph").unwrap();
+
+        assert_eq!(plan.provider, "PSResourceGet");
+        assert_eq!(plan.source, "PowerShell Gallery (PSGallery)");
+        assert_eq!(plan.scope, "Current user");
+        assert!(plan.command.contains(spec.args.last().unwrap()));
+        assert!(plan.command.contains("-Quiet -AcceptLicense"));
+    }
+
+    #[test]
+    fn unapproved_installers_do_not_produce_plans_or_commands() {
+        for id in ["azd", "az-cli", "pwsh", "manifest-supplied"] {
+            assert!(install_plan(id).is_none());
+            assert!(install_spec(id).is_none());
+        }
+    }
+
+    #[test]
+    fn user_directed_tools_keep_copyable_official_guidance() {
+        let status = tool(
+            "az-cli",
+            "Azure CLI",
+            "tool",
+            "2.60.0",
+            None,
+            "azdTool",
+            Some("az-cli"),
+        );
+
+        assert!(!status.can_install);
+        assert_eq!(
+            status.install_command.as_deref(),
+            Some("azd tool install az-cli --no-prompt")
+        );
+        assert!(status
+            .documentation_url
+            .as_deref()
+            .unwrap()
+            .contains("development-tools"));
     }
 }

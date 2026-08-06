@@ -26,6 +26,7 @@ import type {
   ProjectSummary,
   PrepareDeploymentRequest,
   TemplateInspection,
+  ToolInstallPlan,
   ToolStatus
 } from "./types";
 
@@ -120,6 +121,29 @@ export async function saveCatalogSource(source: CatalogSource): Promise<void> {
 export async function refreshTools(): Promise<ToolStatus[]> {
   if (!isTauri()) return structuredClone(mockBootstrap.tools);
   return invoke<ToolStatus[]>("check_tools");
+}
+
+export async function previewToolInstall(id: string): Promise<ToolInstallPlan> {
+  if (!isTauri()) {
+    const tool = mockBootstrap.tools.find((candidate) => candidate.id === id);
+    if (!tool?.canInstall || !["Az.Accounts", "Microsoft.Graph"].includes(id)) {
+      throw new Error(`${id} has no vetted non-elevated installation strategy.`);
+    }
+    const script = `Install-PSResource ${id} -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense`;
+    return {
+      id,
+      toolName: tool.name,
+      provider: "PSResourceGet",
+      action: `Install or update the ${tool.name} module`,
+      source: "PowerShell Gallery (PSGallery)",
+      scope: "Current user",
+      destination: "Current-user PowerShell module path",
+      command: `pwsh -NoLogo -NoProfile -NonInteractive -Command "${script}"`,
+      documentationUrl:
+        "https://learn.microsoft.com/powershell/module/microsoft.powershell.psresourceget/install-psresource?view=powershellget-3.x"
+    };
+  }
+  return invoke<ToolInstallPlan>("preview_tool_install", { id });
 }
 
 export async function installTool(id: string): Promise<string> {
