@@ -20,6 +20,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 - Project workspaces with environment management, lifecycle history, service endpoints, and validated Azure portal links from `azd show`.
 - Explicit external-terminal fallback for interactive hooks, opened in a validated azd project with a copyable interactive `azd up` command.
 - Explicit approval for vetted current-user module installs, including the provider, source, scope, destination, exact command, and official documentation.
+- Read-only `azd tool list/check` integration for Azure CLI inventory and non-blocking update guidance, with copyable dry-run commands.
 - Browser preview mode for UI development without Rust or Azure credentials.
 
 ## Development

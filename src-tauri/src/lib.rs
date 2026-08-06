@@ -48,7 +48,7 @@ fn platform_name() -> String {
 
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
-    let (tools, connections) = tokio::join!(tools::check_all(), connections::check_all());
+    let (tools, connections) = tokio::join!(tools::check_all(false), connections::check_all());
     let mut catalog = catalog::bundled_catalog()?;
     for mut external in state.database.accepted_catalogs()? {
         for entry in &mut external.entries {
@@ -80,7 +80,7 @@ async fn inspect_github_template(url: String) -> AppResult<TemplateInspection> {
 
 #[tauri::command]
 async fn check_tools() -> AppResult<Vec<ToolStatus>> {
-    Ok(tools::check_all().await)
+    Ok(tools::check_all(true).await)
 }
 
 #[tauri::command]
