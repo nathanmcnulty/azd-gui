@@ -213,16 +213,23 @@ pub fn login_spec(
             ],
         )),
         "graphPowerShell" => {
-            let script = if device_code {
-                "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
-            } else {
-                "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')"
+            let script = match (scopes.is_empty(), device_code) {
+                (true, true) => "Connect-MgGraph -UseDeviceCode",
+                (true, false) => "Connect-MgGraph",
+                (false, true) => {
+                    "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
+                }
+                (false, false) => "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')",
             };
-            Ok(CommandSpec::new(
+            let spec = CommandSpec::new(
                 Executable::PowerShell,
                 ["-NoLogo", "-NoProfile", "-Command", script],
-            )
-            .env("AZD_GUI_GRAPH_SCOPES", scopes.join(",")))
+            );
+            Ok(if scopes.is_empty() {
+                spec
+            } else {
+                spec.env("AZD_GUI_GRAPH_SCOPES", scopes.join(","))
+            })
         }
         _ => Err(AppError::Invalid(format!(
             "Unsupported connection provider: {provider_id}"
@@ -278,6 +285,47 @@ mod tests {
 
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0], "Application.ReadWrite.All");
+    }
+
+    #[test]
+    fn graph_login_without_template_scopes_omits_the_scopes_argument() {
+        let interactive = login_spec("graphPowerShell", &[], false).unwrap();
+        let device_code = login_spec("graphPowerShell", &[], true).unwrap();
+
+        assert_eq!(interactive.args.last().unwrap(), "Connect-MgGraph");
+        assert!(interactive.environment.is_empty());
+        assert_eq!(
+            device_code.args.last().unwrap(),
+            "Connect-MgGraph -UseDeviceCode"
+        );
+        assert!(device_code.environment.is_empty());
+    }
+
+    #[test]
+    fn graph_login_passes_manifest_scopes_through_a_private_environment_value() {
+        let scopes = vec![
+            "Application.ReadWrite.All".into(),
+            "RoleManagement.ReadWrite.Directory".into(),
+        ];
+        let spec = login_spec("graphPowerShell", &scopes, false).unwrap();
+        let device_code = login_spec("graphPowerShell", &scopes, true).unwrap();
+
+        assert_eq!(
+            spec.args.last().unwrap(),
+            "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')"
+        );
+        assert_eq!(
+            spec.environment,
+            vec![(
+                "AZD_GUI_GRAPH_SCOPES".into(),
+                "Application.ReadWrite.All,RoleManagement.ReadWrite.Directory".into()
+            )]
+        );
+        assert_eq!(
+            device_code.args.last().unwrap(),
+            "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
+        );
+        assert_eq!(device_code.environment, spec.environment);
     }
 
     #[test]
