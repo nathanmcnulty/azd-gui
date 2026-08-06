@@ -334,6 +334,25 @@ pub struct ProjectEnvironment {
     pub is_default: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectEnvironmentValue {
+    pub name: String,
+    #[serde(default)]
+    pub value: Option<String>,
+    pub is_set: bool,
+    pub sensitive: bool,
+    pub declared: bool,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectEnvironmentValueInput {
+    pub name: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapData {

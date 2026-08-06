@@ -257,6 +257,20 @@ export interface ProjectEnvironment {
   isDefault: boolean;
 }
 
+export interface ProjectEnvironmentValue {
+  name: string;
+  value?: string;
+  isSet: boolean;
+  sensitive: boolean;
+  declared: boolean;
+  required: boolean;
+}
+
+export interface ProjectEnvironmentValueInput {
+  name: string;
+  value: string;
+}
+
 export interface BootstrapData {
   catalog: Catalog;
   tools: ToolStatus[];

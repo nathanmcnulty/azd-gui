@@ -147,7 +147,32 @@ describe("desktop experience", () => {
       expect(
         within(screen.getByRole("contentinfo")).getByRole("button", { name: /staging\.us_\(1\)/i })
       ).toBeInTheDocument();
+      expect(screen.getByText("1 required")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Provision" })).toBeDisabled();
     });
+  });
+
+  it("updates manifest and write-only raw environment values", async () => {
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+
+    const schedule = await screen.findByRole("combobox", { name: /run frequency/i });
+    expect(schedule).toHaveValue("daily");
+    await fireEvent.change(schedule, { target: { value: "weekly" } });
+    await fireEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    await waitFor(() => expect(schedule).toHaveValue("weekly"));
+
+    await fireEvent.input(screen.getByLabelText(/variable name/i), {
+      target: { value: "CUSTOM_SECRET" }
+    });
+    await fireEvent.input(screen.getByLabelText(/new value/i), {
+      target: { value: "never-render-this-value" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /set variable/i }));
+    await waitFor(() => expect(screen.getByText("CUSTOM_SECRET")).toBeInTheDocument());
+    expect(screen.queryByText("never-render-this-value")).not.toBeInTheDocument();
   });
 
   it("uses one collapsible navigation tree and persists the preferred width", async () => {

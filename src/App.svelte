@@ -23,10 +23,12 @@
     saveWizardDraft,
     getProjectState,
     getOperationHistory,
+    getProjectEnvironmentValues,
     listProjectEnvironments,
     recordOperation,
     runPermissionChecks,
-    selectProjectEnvironment
+    selectProjectEnvironment,
+    setProjectEnvironmentValues
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
   import type {
@@ -39,6 +41,7 @@
     OperationEvent,
     PermissionCheckResult,
     ProjectEnvironment,
+    ProjectEnvironmentValue,
     ToolStatus,
     WizardPage,
     WizardPlan,
@@ -47,7 +50,8 @@
   import {
     calculateWizardPlan,
     environmentValuesForPlan,
-    valuesRemovedByPlan
+    valuesRemovedByPlan,
+    visibleFields
   } from "./lib/wizard";
 
   type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
@@ -99,6 +103,17 @@
   let environmentName = "";
   let environmentSubscription = "";
   let environmentLocation = "";
+  let projectEnvironmentValues: ProjectEnvironmentValue[] = [];
+  let environmentConfigurationValues: Record<string, string> = {};
+  let environmentConfigurationDirty: string[] = [];
+  let environmentConfigurationLoaded = false;
+  let environmentConfigurationBusy = false;
+  let environmentConfigurationError = "";
+  let rawVariableName = "";
+  let rawVariableValue = "";
+  let selectedProjectConfigurationFields: ConfigurationField[] = [];
+  let visibleProjectConfigurationFields: ConfigurationField[] = [];
+  let missingProjectConfiguration: ConfigurationField[] = [];
   let catalogSourceOpen = false;
   let catalogSourceUrl = "";
   let catalogPreview: Catalog | null = null;
@@ -116,6 +131,30 @@
   const operationProjectPaths = new Map<string, string>();
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
+  $: selectedProjectConfigurationFields = selectedProject?.templateId
+    ? data.catalog.entries
+        .find((entry) => entry.id === selectedProject?.templateId)
+        ?.manifest?.configuration.groups.flatMap((group) => group.fields) ?? []
+    : [];
+  $: visibleProjectConfigurationFields = visibleFields(
+    selectedProjectConfigurationFields,
+    Object.fromEntries(
+      selectedProjectConfigurationFields.map((field) => [
+        field.id,
+        field.type === "boolean"
+          ? environmentConfigurationValues[field.id] === "true"
+          : field.type === "multiselect"
+            ? (environmentConfigurationValues[field.id] ?? "").split(",").filter(Boolean)
+            : environmentConfigurationValues[field.id] ?? ""
+      ])
+    )
+  );
+  $: missingProjectConfiguration = environmentConfigurationLoaded
+    ? visibleProjectConfigurationFields.filter((field) =>
+        field.required &&
+        !projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet
+      )
+    : [];
   $: {
     const mergedOperations = new Map(
       projectOperationHistory.map((event) => [event.operationId, event])
@@ -874,6 +913,84 @@
     });
   }
 
+  function hydrateEnvironmentConfiguration(values: ProjectEnvironmentValue[]) {
+    projectEnvironmentValues = values;
+    const next: Record<string, string> = {};
+    for (const field of selectedProjectConfigurationFields) {
+      const status = values.find((value) => value.name === field.environmentVariable);
+      if (status?.value !== undefined) next[field.id] = status.value;
+      else if (!status?.isSet && field.default !== undefined) {
+        next[field.id] = Array.isArray(field.default) ? field.default.join(",") : String(field.default);
+      } else next[field.id] = "";
+    }
+    environmentConfigurationValues = next;
+    environmentConfigurationDirty = [];
+    environmentConfigurationLoaded = true;
+  }
+
+  async function loadEnvironmentConfiguration(projectPath: string, environment: string) {
+    environmentConfigurationLoaded = false;
+    environmentConfigurationError = "";
+    try {
+      hydrateEnvironmentConfiguration(
+        await getProjectEnvironmentValues(projectPath, environment)
+      );
+    } catch (error) {
+      projectEnvironmentValues = [];
+      environmentConfigurationError = String(error);
+    } finally {
+      environmentConfigurationLoaded = true;
+    }
+  }
+
+  function setEnvironmentConfigurationValue(field: ConfigurationField, value: string) {
+    environmentConfigurationValues = { ...environmentConfigurationValues, [field.id]: value };
+    if (!environmentConfigurationDirty.includes(field.environmentVariable)) {
+      environmentConfigurationDirty = [...environmentConfigurationDirty, field.environmentVariable];
+    }
+  }
+
+  async function saveEnvironmentConfiguration() {
+    if (!selectedProject?.environment || environmentConfigurationBusy) return;
+    const fields = selectedProjectConfigurationFields;
+    const values = environmentConfigurationDirty
+      .map((name) => fields.find((field) => field.environmentVariable === name))
+      .filter((field): field is ConfigurationField => Boolean(field))
+      .map((field) => ({ name: field.environmentVariable, value: environmentConfigurationValues[field.id] ?? "" }))
+      .filter((value) => value.value !== "" || !projectEnvironmentValues.find((item) => item.name === value.name)?.sensitive);
+    if (values.length === 0) return;
+    environmentConfigurationBusy = true;
+    environmentConfigurationError = "";
+    try {
+      await setProjectEnvironmentValues(selectedProject.path, selectedProject.environment, values);
+      addSystemLog(`Updated ${values.length} azd environment value${values.length === 1 ? "" : "s"}.`, "success");
+      await loadEnvironmentConfiguration(selectedProject.path, selectedProject.environment);
+    } catch (error) {
+      environmentConfigurationError = String(error);
+    } finally {
+      environmentConfigurationBusy = false;
+    }
+  }
+
+  async function setRawEnvironmentVariable() {
+    if (!selectedProject?.environment || !rawVariableName.trim() || !rawVariableValue || environmentConfigurationBusy) return;
+    environmentConfigurationBusy = true;
+    environmentConfigurationError = "";
+    try {
+      await setProjectEnvironmentValues(selectedProject.path, selectedProject.environment, [
+        { name: rawVariableName.trim(), value: rawVariableValue }
+      ]);
+      addSystemLog(`Updated azd environment variable '${rawVariableName.trim()}'. Its value was not logged.`, "success");
+      rawVariableName = "";
+      rawVariableValue = "";
+      await loadEnvironmentConfiguration(selectedProject.path, selectedProject.environment);
+    } catch (error) {
+      environmentConfigurationError = String(error);
+    } finally {
+      environmentConfigurationBusy = false;
+    }
+  }
+
   async function copyText(value: string) {
     await navigator.clipboard?.writeText(value);
     addSystemLog("Copied command to clipboard.", "success");
@@ -886,6 +1003,7 @@
     projectTab = "overview";
     environmentEditorOpen = false;
     environmentError = "";
+    environmentConfigurationLoaded = false;
     projectLoading = true;
     const [stateResult, environmentsResult, historyResult] = await Promise.allSettled([
       getProjectState(project.path, project.environment),
@@ -899,6 +1017,11 @@
         : project.environment
           ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
           : [];
+    const currentEnvironment = projectEnvironments.find((environment) => environment.isDefault)?.name ?? project.environment;
+    if (environmentsResult.status === "fulfilled") applyProjectEnvironments(projectEnvironments);
+    if (currentEnvironment) {
+      await loadEnvironmentConfiguration(project.path, currentEnvironment);
+    }
     projectOperationHistory = historyResult.status === "fulfilled" ? historyResult.value : [];
     const failures = [stateResult, environmentsResult, historyResult].filter(
       (result) => result.status === "rejected"
@@ -967,6 +1090,7 @@
       addSystemLog(`Created and selected azd environment '${environmentName.trim()}'.`, "success");
       environmentEditorOpen = false;
       await refreshEnvironmentProjectState(selectedProject.path, environmentName.trim());
+      await loadEnvironmentConfiguration(selectedProject.path, environmentName.trim());
     } catch (error) {
       environmentError = String(error);
     } finally {
@@ -983,6 +1107,7 @@
       applyProjectEnvironments(environments);
       addSystemLog(`Selected azd environment '${environment.name}'.`, "success");
       await refreshEnvironmentProjectState(selectedProject.path, environment.name);
+      await loadEnvironmentConfiguration(selectedProject.path, environment.name);
     } catch (error) {
       environmentError = String(error);
     } finally {
@@ -992,6 +1117,11 @@
 
   async function runProjectAction(action: "provision" | "deploy" | "refresh" | "down") {
     if (!selectedProject || activeOperationId) return;
+    if (["provision", "deploy"].includes(action) && missingProjectConfiguration.length > 0) {
+      projectTab = "environments";
+      environmentConfigurationError = "Set the required environment configuration before deployment.";
+      return;
+    }
     if (
       action === "down" &&
       !window.confirm(
@@ -1663,8 +1793,8 @@
               </div>
               <div class="project-actions">
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
-                <button class="secondary" on:click={() => runProjectAction("provision")}>Provision</button>
-                <button class="secondary" on:click={() => runProjectAction("deploy")}>Deploy</button>
+                <button class="secondary" disabled={missingProjectConfiguration.length > 0} title={missingProjectConfiguration.length > 0 ? "Set required environment configuration first" : undefined} on:click={() => runProjectAction("provision")}>Provision</button>
+                <button class="secondary" disabled={missingProjectConfiguration.length > 0} title={missingProjectConfiguration.length > 0 ? "Set required environment configuration first" : undefined} on:click={() => runProjectAction("deploy")}>Deploy</button>
                 <button class="danger" on:click={() => runProjectAction("down")}>Down</button>
               </div>
             </div>
@@ -1689,8 +1819,8 @@
               <section class="workspace-panel full">
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
                 <div class="lifecycle-actions">
-                  <button on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
-                  <button on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
+                  <button disabled={missingProjectConfiguration.length > 0} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
+                  <button disabled={missingProjectConfiguration.length > 0} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
                   <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong><span>Refresh environment state</span></button>
                 </div>
               </section>
@@ -1731,6 +1861,63 @@
                   </div>
                 {/each}
               </div>
+              <section class="workspace-panel environment-configuration-panel">
+                <div class="environment-toolbar">
+                  <div><h2>Environment configuration</h2><p>Manifest fields can be read back unless marked sensitive. Raw values are always write-only.</p></div>
+                  {#if missingProjectConfiguration.length > 0}
+                    <StatusPill tone="warning" label={`${missingProjectConfiguration.length} required`} />
+                  {:else if environmentConfigurationLoaded}
+                    <StatusPill tone="success" label="Ready" />
+                  {/if}
+                </div>
+                {#if environmentConfigurationError}<div class="inline-error" role="alert">{environmentConfigurationError}</div>{/if}
+                {#if !environmentConfigurationLoaded}
+                  <div class="project-loading"><span class="spinner"></span><span>Reading safe environment metadata…</span></div>
+                {:else}
+                  {#if missingProjectConfiguration.length > 0}
+                    <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration required before deployment</strong><p>{missingProjectConfiguration.map((field) => field.label).join(", ")}</p></div></div>
+                  {/if}
+                  {#if visibleProjectConfigurationFields.length > 0}
+                    <div class="configuration-editor-grid">
+                      {#each visibleProjectConfigurationFields as field}
+                        <label class:configuration-checkbox={field.type === "boolean"}>
+                          <span>{field.label}{#if field.required}<small>Required</small>{/if}</span>
+                          {#if field.type === "boolean"}
+                            <input type="checkbox" checked={environmentConfigurationValues[field.id] === "true"} on:change={(event) => setEnvironmentConfigurationValue(field, event.currentTarget.checked ? "true" : "false")} />
+                          {:else if field.type === "select"}
+                            <select value={environmentConfigurationValues[field.id] ?? ""} on:change={(event) => setEnvironmentConfigurationValue(field, event.currentTarget.value)}>
+                              <option value="">Choose a value</option>
+                              {#each field.options ?? [] as option}<option value={option.value}>{option.label}</option>{/each}
+                            </select>
+                          {:else}
+                            <input type={field.type === "secret" || field.sensitive ? "password" : "text"} value={environmentConfigurationValues[field.id] ?? ""} placeholder={projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.sensitive && projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet ? "Configured — enter to replace" : field.placeholder ?? "Enter a value"} autocomplete={field.type === "secret" || field.sensitive ? "new-password" : "off"} on:input={(event) => setEnvironmentConfigurationValue(field, event.currentTarget.value)} />
+                          {/if}
+                          <small><code>{field.environmentVariable}</code>{#if field.help} · {field.help}{/if}</small>
+                        </label>
+                      {/each}
+                    </div>
+                    <div class="environment-configuration-actions">
+                      <span>{environmentConfigurationDirty.length === 0 ? "No unsaved changes" : `${environmentConfigurationDirty.length} unsaved`}</span>
+                      <button class="primary" disabled={environmentConfigurationBusy || environmentConfigurationDirty.length === 0} on:click={saveEnvironmentConfiguration}>{environmentConfigurationBusy ? "Saving…" : "Save configuration"}</button>
+                    </div>
+                  {:else}
+                    <div class="empty-configuration"><strong>No manifest-defined fields</strong><span>Add a raw environment variable below when the template documentation requires one.</span></div>
+                  {/if}
+                  <div class="raw-environment-editor">
+                    <div><strong>Advanced variables</strong><span>Existing raw values stay masked and are never returned to the UI.</span></div>
+                    {#if projectEnvironmentValues.some((value) => !value.declared)}
+                      <div class="raw-variable-list">
+                        {#each projectEnvironmentValues.filter((value) => !value.declared) as value}<code>{value.name}</code>{/each}
+                      </div>
+                    {/if}
+                    <form on:submit|preventDefault={setRawEnvironmentVariable}>
+                      <label><span>Variable name</span><input bind:value={rawVariableName} required maxlength="128" pattern="[A-Z][A-Z0-9_]*" placeholder="CUSTOM_SETTING" /></label>
+                      <label><span>New value</span><input bind:value={rawVariableValue} type="password" required autocomplete="new-password" placeholder="Write-only value" /></label>
+                      <button class="secondary" disabled={environmentConfigurationBusy || !rawVariableName.trim() || !rawVariableValue}>Set variable</button>
+                    </form>
+                  </div>
+                {/if}
+              </section>
             </div>
           {:else if projectTab === "operations"}
             <div class="table-card operations-list">

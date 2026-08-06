@@ -5,6 +5,7 @@ import type {
   ConnectionStatus,
   OperationEvent,
   ProjectEnvironment,
+  ProjectEnvironmentValue,
   ProjectSummary,
   ToolStatus
 } from "./types";
@@ -535,6 +536,24 @@ export const mockProjectEnvironments: ProjectEnvironment[] = [
     hasLocal: true,
     hasRemote: false,
     isDefault: false
+  }
+];
+
+export const mockProjectEnvironmentValues: ProjectEnvironmentValue[] = [
+  {
+    name: "MAESTER_SCHEDULE",
+    value: "daily",
+    isSet: true,
+    sensitive: false,
+    declared: true,
+    required: true
+  },
+  {
+    name: "AZURE_LOCATION",
+    isSet: true,
+    sensitive: true,
+    declared: false,
+    required: false
   }
 ];
 
