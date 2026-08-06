@@ -30,6 +30,7 @@
     listProjectEnvironments,
     recordOperation,
     runPermissionChecks,
+    saveAppSettings,
     selectProjectEnvironment,
     setProjectEnvironmentValues
   } from "./lib/bridge";
@@ -305,18 +306,15 @@
   }
 
   onMount(() => {
-    try {
-      const savedNavigationState = window.localStorage.getItem("azd-gui.navigation.expanded");
-      if (savedNavigationState !== null) navigationExpanded = savedNavigationState === "true";
-    } catch {
-      // Storage can be unavailable in hardened webviews; the expanded default remains usable.
-    }
     document.addEventListener("keydown", handleGlobalKeydown);
     let unlisten: () => void = () => {};
     void (async () => {
       unlisten = await onOperationEvent(handleOperationEvent);
       try {
         data = await bootstrap();
+        theme = data.settings.theme;
+        navigationExpanded = data.settings.navigationExpanded;
+        applyTheme(theme);
       } catch (error) {
         addSystemLog(`Native backend unavailable: ${String(error)}. Using preview data.`, "warning");
       } finally {
@@ -350,11 +348,7 @@
 
   function toggleNavigation() {
     navigationExpanded = !navigationExpanded;
-    try {
-      window.localStorage.setItem("azd-gui.navigation.expanded", String(navigationExpanded));
-    } catch {
-      // Navigation remains functional even when preference storage is unavailable.
-    }
+    void persistAppSettings();
   }
 
   function initializeValues(entry: CatalogEntry): WizardValues {
@@ -1372,9 +1366,22 @@
     }
   }
 
+  function applyTheme(value: "system" | "dark" | "light") {
+    document.documentElement.dataset.theme = value === "system" ? "" : value;
+  }
+
   function setTheme(value: "system" | "dark" | "light") {
     theme = value;
-    document.documentElement.dataset.theme = value === "system" ? "" : value;
+    applyTheme(value);
+    void persistAppSettings();
+  }
+
+  async function persistAppSettings() {
+    try {
+      await saveAppSettings({ theme, navigationExpanded });
+    } catch (error) {
+      addSystemLog(`Could not save application settings: ${String(error)}`, "warning");
+    }
   }
 
   async function previewCatalogSource() {

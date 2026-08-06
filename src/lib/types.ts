@@ -292,11 +292,17 @@ export interface AzdProjectState {
   [key: string]: unknown;
 }
 
+export interface AppSettings {
+  theme: "system" | "dark" | "light";
+  navigationExpanded: boolean;
+}
+
 export interface BootstrapData {
   catalog: Catalog;
   tools: ToolStatus[];
   connections: ConnectionStatus[];
   projects: ProjectSummary[];
+  settings: AppSettings;
   platform: Platform;
   appVersion: string;
   isNative: boolean;
