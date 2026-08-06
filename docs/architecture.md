@@ -55,7 +55,7 @@ Future app-owned MSAL authentication can be introduced behind the same provider 
 
 ## Persistence
 
-SQLite is stored in the Tauri application-data directory. It contains project metadata, catalog sources and trust decisions, non-sensitive wizard drafts, and operation history, including structured terminal outcomes. A failed or cancelled operation marks its matching project as needing attention across restarts. azd continues to own `.azure` environment files.
+SQLite is stored in the Tauri application-data directory. It contains project metadata, catalog sources and trust decisions, non-sensitive wizard drafts, and operation history, including structured terminal outcomes. Draft persistence accepts only typed standard or manifest-declared keys; Rust resolves sensitivity from bundled, accepted, or active inspected manifests and removes stale unsafe values when a draft is loaded. A failed or cancelled operation marks its matching project as needing attention across restarts. azd continues to own `.azure` environment files.
 
 The template cache is content-addressed by template ID and commit. A cached Git checkout must resolve to the catalog commit before it is used.
 
