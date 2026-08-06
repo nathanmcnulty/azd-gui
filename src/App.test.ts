@@ -179,6 +179,20 @@ describe("desktop experience", () => {
     });
   });
 
+  it("shows azd credential expiration in the Connections center", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Connections,/ }));
+    const azdCard = screen
+      .getByRole("heading", { name: "Azure Developer CLI" })
+      .closest<HTMLElement>(".connection-card")!;
+
+    expect(within(azdCard).getByText("Expires")).toBeInTheDocument();
+    expect(
+      within(azdCard).getByText(new Date("2030-01-15T18:30:00Z").toLocaleString())
+    ).toBeInTheDocument();
+  });
+
   it("offers an external-terminal fallback for interactive local hooks", async () => {
     render(App);
 

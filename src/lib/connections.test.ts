@@ -44,4 +44,8 @@ describe("connection scope requirements", () => {
     expect(missingRequestedScopes(connection)).toEqual([]);
     expect(connectionMeetsRequirements(connection)).toBe(true);
   });
+
+  it("requires reconnecting an expired provider", () => {
+    expect(connectionMeetsRequirements(graphConnection({ state: "expired" }))).toBe(false);
+  });
 });

@@ -1725,6 +1725,7 @@
                     <strong>{connection.name}</strong>
                     <span>{connection.reason}</span>
                     {#if connection.account}<small>{connection.account} · {connection.tenantId}{connection.subscriptionName ? ` · ${connection.subscriptionName}` : ""}</small>{/if}
+                    {#if connection.expiresOn}<small>Expires <time datetime={connection.expiresOn}>{new Date(connection.expiresOn).toLocaleString()}</time></small>{/if}
                     {#if connection.id === "graphPowerShell" && connection.scopes?.length}
                       <small>Requested scopes: {connection.scopes.join(", ")}</small>
                       <small>Granted scopes: {connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "None detected"}</small>
@@ -2387,7 +2388,7 @@
               <div class={`connection-icon ${connection.state}`}><Icon name="connections" size={21} /></div>
               <div class="row"><h2>{connection.name}</h2><StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} /></div>
               <p>{connection.account ?? "No active account detected"}</p>
-              <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div>{#if connection.id === "graphPowerShell"}<div><dt>Granted scopes</dt><dd title={connection.grantedScopes?.join(", ")}>{connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "—"}</dd></div>{/if}</dl>
+              <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Expires</dt><dd>{connection.expiresOn ? new Date(connection.expiresOn).toLocaleString() : "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div>{#if connection.id === "graphPowerShell"}<div><dt>Granted scopes</dt><dd title={connection.grantedScopes?.join(", ")}>{connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "—"}</dd></div>{/if}</dl>
               <button class="secondary full-width" on:click={() => connect(connection)}>{connection.state === "connected" ? "Reconnect" : "Connect"}</button>
             </article>
           {/each}

@@ -435,7 +435,8 @@ export const mockConnections: ConnectionStatus[] = [
     account: "nathan@example.com",
     tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
     subscriptionId: "11111111-1111-1111-1111-111111111111",
-    subscriptionName: "Development Subscription"
+    subscriptionName: "Development Subscription",
+    expiresOn: "2030-01-15T18:30:00Z"
   },
   {
     id: "azureCli",
