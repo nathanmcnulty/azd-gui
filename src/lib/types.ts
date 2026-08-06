@@ -79,6 +79,7 @@ export interface ConnectionRequirement {
 
 export interface ConnectionStatus extends ConnectionRequirement {
   state: ConnectionState;
+  grantedScopes?: string[];
   account?: string;
   tenantId?: string;
   subscriptionId?: string;

@@ -458,7 +458,10 @@ export const mockConnections: ConnectionStatus[] = [
     name: "Microsoft Graph PowerShell",
     required: false,
     reason: "Template-specific Graph operations.",
-    state: "disconnected"
+    state: "connected",
+    account: "nathan@example.com",
+    tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+    grantedScopes: ["Application.ReadWrite.All"]
   }
 ];
 
