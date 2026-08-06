@@ -18,11 +18,16 @@ use crate::{
     models::{
         AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
         PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
-        ProjectEnvironment, ProjectSummary, TemplateInspection, ToolStatus,
+        ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
+        TemplateInspection, ToolStatus,
     },
     persistence::Database,
 };
-use std::path::PathBuf;
+use std::{
+    collections::HashSet,
+    io::BufRead,
+    path::{Path, PathBuf},
+};
 use tauri::{AppHandle, Manager, State};
 
 pub struct AppState {
@@ -267,6 +272,156 @@ async fn select_project_environment(
     Ok(environments)
 }
 
+fn dotenv_keys(path: &Path) -> AppResult<HashSet<String>> {
+    if !path.is_file() {
+        return Ok(HashSet::new());
+    }
+    let file = std::fs::File::open(path)?;
+    let mut keys = HashSet::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line?;
+        let candidate = line
+            .trim()
+            .strip_prefix("export ")
+            .unwrap_or(line.trim())
+            .split_once('=')
+            .map(|(key, _)| key.trim());
+        if let Some(key) = candidate.filter(|key| !key.is_empty()) {
+            keys.insert(key.to_string());
+        }
+    }
+    Ok(keys)
+}
+
+fn project_configuration_fields(
+    state: &AppState,
+    template_id: Option<&str>,
+) -> AppResult<Vec<crate::models::ConfigurationField>> {
+    let Some(template_id) = template_id.filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let entry = match catalog::entry_by_id(template_id) {
+        Ok(entry) => Some(entry),
+        Err(_) => state.database.accepted_catalog_entry(template_id)?,
+    };
+    Ok(entry
+        .and_then(|entry| entry.manifest)
+        .map(|manifest| {
+            manifest
+                .configuration
+                .groups
+                .into_iter()
+                .flat_map(|group| group.fields)
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn get_project_environment_values(
+    state: State<'_, AppState>,
+    project_path: String,
+    environment: String,
+) -> AppResult<Vec<ProjectEnvironmentValue>> {
+    deployment::validate_environment_name(&environment)?;
+    let canonical = std::fs::canonicalize(project_path)?;
+    if !canonical.join("azure.yaml").is_file() {
+        return Err(AppError::Invalid(format!(
+            "{} does not contain azure.yaml.",
+            canonical.display()
+        )));
+    }
+    let client = SystemAzdClient;
+    let description = client
+        .environment_list(&canonical)
+        .await?
+        .into_iter()
+        .find(|item| item.name == environment)
+        .ok_or_else(|| AppError::Invalid(format!("Environment does not exist: {environment}")))?;
+    let keys = if description.dot_env_path.is_empty() {
+        HashSet::new()
+    } else {
+        let dotenv = PathBuf::from(&description.dot_env_path);
+        let azure_root = std::fs::canonicalize(canonical.join(".azure"))?;
+        let dotenv = std::fs::canonicalize(dotenv)?;
+        if !dotenv.starts_with(&azure_root) {
+            return Err(AppError::Invalid(
+                "azd returned an environment path outside .azure.".into(),
+            ));
+        }
+        dotenv_keys(&dotenv)?
+    };
+    let canonical_path = canonical.display().to_string();
+    let template_id = state
+        .database
+        .projects()?
+        .into_iter()
+        .find(|project| project.path == canonical_path)
+        .and_then(|project| project.template_id);
+    let fields = project_configuration_fields(&state, template_id.as_deref())?;
+    let declared_names = fields
+        .iter()
+        .map(|field| field.environment_variable.clone())
+        .collect::<HashSet<_>>();
+    let mut values = Vec::new();
+    for field in fields {
+        let is_set = keys.contains(&field.environment_variable);
+        let sensitive = field.sensitive || field.field_type == "secret";
+        let value = if is_set && !sensitive {
+            client
+                .environment_get_value(&canonical, &environment, &field.environment_variable)
+                .await
+                .ok()
+        } else {
+            None
+        };
+        values.push(ProjectEnvironmentValue {
+            name: field.environment_variable,
+            value,
+            is_set,
+            sensitive,
+            declared: true,
+            required: field.required,
+        });
+    }
+    let mut raw = keys
+        .into_iter()
+        .filter(|name| !declared_names.contains(name))
+        .collect::<Vec<_>>();
+    raw.sort_unstable();
+    values.extend(raw.into_iter().map(|name| ProjectEnvironmentValue {
+        name,
+        value: None,
+        is_set: true,
+        sensitive: true,
+        declared: false,
+        required: false,
+    }));
+    Ok(values)
+}
+
+#[tauri::command]
+async fn set_project_environment_values(
+    project_path: String,
+    environment: String,
+    values: Vec<ProjectEnvironmentValueInput>,
+) -> AppResult<()> {
+    let canonical = std::fs::canonicalize(project_path)?;
+    if !canonical.join("azure.yaml").is_file() {
+        return Err(AppError::Invalid(format!(
+            "{} does not contain azure.yaml.",
+            canonical.display()
+        )));
+    }
+    let values = values
+        .into_iter()
+        .map(|value| (value.name, value.value))
+        .collect::<Vec<_>>();
+    SystemAzdClient
+        .environment_set_values(&canonical, &environment, &values)
+        .await
+}
+
 #[tauri::command]
 fn record_operation(
     state: State<'_, AppState>,
@@ -377,6 +532,8 @@ pub fn run() {
             list_project_environments,
             create_project_environment,
             select_project_environment,
+            get_project_environment_values,
+            set_project_environment_values,
             record_operation,
             get_operation_history,
             save_wizard_draft,
@@ -384,4 +541,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Azure Deployment Studio");
+}
+
+#[cfg(test)]
+mod environment_value_tests {
+    use super::dotenv_keys;
+    use std::io::Write;
+
+    #[test]
+    fn reads_only_dotenv_key_names() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "# comment\nexport FIRST=value\nSECOND=secret-value\n").unwrap();
+        let keys = dotenv_keys(file.path()).unwrap();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains("FIRST"));
+        assert!(keys.contains("SECOND"));
+    }
 }

@@ -7,7 +7,7 @@ use crate::{
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::{path::Path, time::Duration};
+use std::{io::Write, path::Path, time::Duration};
 
 #[async_trait]
 #[allow(dead_code)]
@@ -23,6 +23,18 @@ pub trait AzdClient {
         location: Option<&str>,
     ) -> AppResult<()>;
     async fn environment_select(&self, project: &Path, name: &str) -> AppResult<()>;
+    async fn environment_get_value(
+        &self,
+        project: &Path,
+        environment: &str,
+        key: &str,
+    ) -> AppResult<String>;
+    async fn environment_set_values(
+        &self,
+        project: &Path,
+        environment: &str,
+        values: &[(String, String)],
+    ) -> AppResult<()>;
     async fn show(&self, project: &Path, environment: Option<&str>) -> AppResult<Value>;
     fn lifecycle_command(
         &self,
@@ -78,6 +90,65 @@ fn environment_select_command(project: &Path, name: &str) -> AppResult<CommandSp
     Ok(CommandSpec::new(Executable::Azd, ["env", "select", name, "--no-prompt"]).cwd(project))
 }
 
+fn validate_environment_value_name(value: &str) -> AppResult<()> {
+    let mut characters = value.chars();
+    if value.len() > 128
+        || !characters
+            .next()
+            .is_some_and(|character| character.is_ascii_uppercase())
+        || !characters.all(|character| {
+            character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+        })
+    {
+        return Err(AppError::Invalid(format!(
+            "Invalid environment variable name: {value}"
+        )));
+    }
+    Ok(())
+}
+
+fn environment_get_value_command(
+    project: &Path,
+    environment: &str,
+    key: &str,
+) -> AppResult<CommandSpec> {
+    validate_environment_name(environment)?;
+    validate_environment_value_name(key)?;
+    Ok(CommandSpec::new(
+        Executable::Azd,
+        [
+            "env",
+            "get-value",
+            key,
+            "--environment",
+            environment,
+            "--no-prompt",
+        ],
+    )
+    .cwd(project))
+}
+
+fn environment_set_file_command(
+    project: &Path,
+    environment: &str,
+    file: &Path,
+) -> AppResult<CommandSpec> {
+    validate_environment_name(environment)?;
+    Ok(CommandSpec::new(
+        Executable::Azd,
+        [
+            "env".into(),
+            "set".into(),
+            "--file".into(),
+            file.display().to_string(),
+            "--environment".into(),
+            environment.into(),
+            "--no-prompt".into(),
+        ],
+    )
+    .cwd(project))
+}
+
 #[async_trait]
 impl AzdClient for SystemAzdClient {
     async fn version(&self) -> AppResult<Value> {
@@ -129,6 +200,55 @@ impl AzdClient for SystemAzdClient {
         Ok(())
     }
 
+    async fn environment_get_value(
+        &self,
+        project: &Path,
+        environment: &str,
+        key: &str,
+    ) -> AppResult<String> {
+        Ok(
+            command_stdout(environment_get_value_command(project, environment, key)?)
+                .await?
+                .trim_end()
+                .to_string(),
+        )
+    }
+
+    async fn environment_set_values(
+        &self,
+        project: &Path,
+        environment: &str,
+        values: &[(String, String)],
+    ) -> AppResult<()> {
+        if values.is_empty() || values.len() > 64 {
+            return Err(AppError::Invalid(
+                "Provide between 1 and 64 environment values.".into(),
+            ));
+        }
+        let mut file = tempfile::Builder::new().prefix("azd-gui-env-").tempfile()?;
+        for (name, value) in values {
+            validate_environment_value_name(name)?;
+            if value.len() > 32_768 {
+                return Err(AppError::Invalid(format!(
+                    "Environment value is too large: {name}"
+                )));
+            }
+            writeln!(file, "{}={}", name, serde_json::to_string(value)?)?;
+        }
+        file.flush()?;
+        let output = capture(
+            environment_set_file_command(project, environment, file.path())?,
+            Duration::from_secs(30),
+        )
+        .await?;
+        if !output.success {
+            return Err(AppError::Command(
+                "azd rejected an environment value; values were withheld from diagnostics.".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn show(&self, project: &Path, environment: Option<&str>) -> AppResult<Value> {
         let mut args: Vec<String> = vec![
             "show".into(),
@@ -173,8 +293,8 @@ impl AzdClient for SystemAzdClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        environment_new_command, environment_select_command, json_command, AzdClient,
-        SystemAzdClient,
+        environment_get_value_command, environment_new_command, environment_select_command,
+        environment_set_file_command, json_command, AzdClient, SystemAzdClient,
     };
     use crate::command_runner::{CommandSpec, Executable};
     use crate::models::ProjectEnvironment;
@@ -222,6 +342,31 @@ mod tests {
             ["env", "select", "staging", "--no-prompt"]
         );
         assert!(environment_select_command(&project, "unsafe environment").is_err());
+        assert_eq!(
+            environment_get_value_command(&project, "staging", "MAESTER_SCHEDULE")
+                .unwrap()
+                .args,
+            [
+                "env",
+                "get-value",
+                "MAESTER_SCHEDULE",
+                "--environment",
+                "staging",
+                "--no-prompt"
+            ]
+        );
+        let set_spec = environment_set_file_command(
+            &project,
+            "staging",
+            &project.join("azd-gui-env-input.env"),
+        )
+        .unwrap();
+        assert!(set_spec.args.contains(&"--file".to_string()));
+        assert!(!set_spec
+            .args
+            .iter()
+            .any(|argument| argument.contains("secret-value")));
+        assert!(environment_get_value_command(&project, "staging", "unsafe-key").is_err());
     }
 
     #[test]

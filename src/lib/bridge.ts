@@ -5,7 +5,8 @@ import {
   mockAzureDiscovery,
   mockBootstrap,
   mockOperationHistory,
-  mockProjectEnvironments
+  mockProjectEnvironments,
+  mockProjectEnvironmentValues
 } from "./mock-data";
 import type {
   AzureDiscovery,
@@ -17,6 +18,8 @@ import type {
   PermissionCheckRequest,
   PermissionCheckResult,
   ProjectEnvironment,
+  ProjectEnvironmentValue,
+  ProjectEnvironmentValueInput,
   ProjectSummary,
   PrepareDeploymentRequest,
   TemplateInspection,
@@ -24,10 +27,18 @@ import type {
 } from "./types";
 
 let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+function createPreviewEnvironmentValueState(): Record<string, ProjectEnvironmentValue[]> {
+  return {
+    dev: structuredClone(mockProjectEnvironmentValues),
+    test: structuredClone(mockProjectEnvironmentValues)
+  };
+}
+let previewProjectEnvironmentValues = createPreviewEnvironmentValueState();
 
 export async function bootstrap(): Promise<BootstrapData> {
   if (!isTauri()) {
     previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+    previewProjectEnvironmentValues = createPreviewEnvironmentValueState();
     return structuredClone(mockBootstrap);
   }
   return invoke<BootstrapData>("bootstrap");
@@ -249,6 +260,9 @@ export async function createProjectEnvironment(
         isDefault: true
       }
     ];
+    previewProjectEnvironmentValues[environment] = mockProjectEnvironmentValues
+      .filter((value) => value.declared)
+      .map((value) => ({ ...value, value: undefined, isSet: false }));
     return structuredClone(previewProjectEnvironments);
   }
   return invoke<ProjectEnvironment[]>("create_project_environment", {
@@ -274,6 +288,56 @@ export async function selectProjectEnvironment(
     return structuredClone(previewProjectEnvironments);
   }
   return invoke<ProjectEnvironment[]>("select_project_environment", { projectPath, environment });
+}
+
+export async function getProjectEnvironmentValues(
+  projectPath: string,
+  environment: string
+): Promise<ProjectEnvironmentValue[]> {
+  if (!isTauri()) {
+    return structuredClone(
+      previewProjectEnvironmentValues[environment] ??
+        mockProjectEnvironmentValues
+          .filter((value) => value.declared)
+          .map((value) => ({ ...value, value: undefined, isSet: false }))
+    );
+  }
+  return invoke<ProjectEnvironmentValue[]>("get_project_environment_values", {
+    projectPath,
+    environment
+  });
+}
+
+export async function setProjectEnvironmentValues(
+  projectPath: string,
+  environment: string,
+  values: ProjectEnvironmentValueInput[]
+): Promise<void> {
+  if (!isTauri()) {
+    const environmentValues =
+      previewProjectEnvironmentValues[environment] ??
+      mockProjectEnvironmentValues
+        .filter((value) => value.declared)
+        .map((value) => ({ ...value, value: undefined, isSet: false }));
+    for (const value of values) {
+      const existing = environmentValues.find((item) => item.name === value.name);
+      if (existing) {
+        existing.isSet = true;
+        existing.value = existing.sensitive ? undefined : value.value;
+      } else {
+        environmentValues.push({
+          name: value.name,
+          isSet: true,
+          sensitive: true,
+          declared: false,
+          required: false
+        });
+      }
+    }
+    previewProjectEnvironmentValues[environment] = environmentValues;
+    return;
+  }
+  await invoke("set_project_environment_values", { projectPath, environment, values });
 }
 
 export async function recordOperation(
