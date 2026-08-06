@@ -586,8 +586,11 @@ kbd {
 
 .status-pill {
   display: inline-flex;
+  width: max-content;
+  min-width: max-content;
   min-height: 20px;
   padding: 2px 7px;
+  flex: 0 0 auto;
   align-items: center;
   gap: 4px;
   color: var(--muted);
@@ -1061,6 +1064,55 @@ kbd {
   border: 1px solid var(--border-soft);
   border-radius: 6px;
   background: var(--panel);
+}
+
+.project-preflight {
+  display: grid;
+  gap: 14px;
+  border-color: color-mix(in srgb, var(--accent), var(--border) 72%);
+}
+
+.project-preview-result,
+.project-preview-pending {
+  display: grid;
+  min-height: 66px;
+  padding: 13px;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.project-preview-pending {
+  color: var(--muted);
+}
+
+.project-preview-result strong,
+.project-preview-pending strong {
+  display: block;
+  color: var(--text-bright);
+}
+
+.project-preview-result p,
+.project-preview-pending p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.project-preview-result small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.project-preflight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .environment-hero {

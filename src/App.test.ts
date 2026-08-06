@@ -148,8 +148,9 @@ describe("desktop experience", () => {
         within(screen.getByRole("contentinfo")).getByRole("button", { name: /staging\.us_\(1\)/i })
       ).toBeInTheDocument();
       expect(screen.getByText("1 required")).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: "Provision" })).toBeDisabled();
     });
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
   });
 
   it("updates manifest and write-only raw environment values", async () => {

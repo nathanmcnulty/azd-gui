@@ -303,9 +303,25 @@ mod tests {
     #[test]
     fn only_allows_known_lifecycle_commands() {
         let client = SystemAzdClient;
-        assert!(client
+        let up = client
             .lifecycle_command("up", Path::new("C:\\"), Some("dev"))
-            .is_ok());
+            .unwrap();
+        assert_eq!(up.args, ["up", "--no-prompt", "--environment", "dev"]);
+
+        let preview = client
+            .lifecycle_command("preview", Path::new("C:\\"), Some("staging"))
+            .unwrap();
+        assert_eq!(
+            preview.args,
+            [
+                "provision",
+                "--preview",
+                "--no-prompt",
+                "--environment",
+                "staging"
+            ]
+        );
+
         assert!(client
             .lifecycle_command("arbitrary-shell", Path::new("C:\\"), None)
             .is_err());

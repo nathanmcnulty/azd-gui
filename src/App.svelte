@@ -96,6 +96,9 @@
   let projectEnvironments: ProjectEnvironment[] = [];
   let projectOperationHistory: OperationEvent[] = [];
   let projectOperations: OperationEvent[] = [];
+  let projectPreview:
+    | { projectPath: string; environment?: string; event: OperationEvent }
+    | null = null;
   let projectLoading = false;
   let environmentEditorOpen = false;
   let environmentBusy = false;
@@ -129,6 +132,7 @@
   >();
   const completedOperations = new Map<string, OperationEvent>();
   const operationProjectPaths = new Map<string, string>();
+  const operationEnvironments = new Map<string, string | undefined>();
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
   $: selectedProjectConfigurationFields = selectedProject?.templateId
@@ -155,6 +159,11 @@
         !projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet
       )
     : [];
+  $: projectPreviewReady = Boolean(
+    projectPreview?.event.state === "succeeded" &&
+      selectedProject?.path === projectPreview?.projectPath &&
+      selectedProject?.environment === projectPreview?.environment
+  );
   $: {
     const mergedOperations = new Map(
       projectOperationHistory.map((event) => [event.operationId, event])
@@ -682,6 +691,7 @@
       );
       preflightOperationId = operationId;
       operationProjectPaths.set(operationId, projectPath);
+      operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
       activeOperationId = operationId;
       operationState = "running";
       if (!data.isNative) simulateOperation(operationId, "preview");
@@ -736,6 +746,7 @@
         String(wizardValues.environmentName || "dev")
       );
       operationProjectPaths.set(operationId, projectPath);
+      operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
       activeOperationId = operationId;
       if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
@@ -780,7 +791,12 @@
                   resourceState: ["up", "provision", "deploy", "down"].includes(action)
                     ? "changed"
                     : "unchanged",
-                  summary: `${action === "up" ? "Deployment" : action} completed successfully.`,
+                  summary:
+                    action === "up"
+                      ? "Deployment completed successfully."
+                      : action === "preview"
+                        ? "Infrastructure preview completed successfully."
+                        : `${action} completed successfully.`,
                   guidance: ["up", "provision", "deploy", "down"].includes(action)
                     ? "Refresh project state to inspect the resulting Azure resources."
                     : "No Azure resource changes were applied by this action.",
@@ -809,6 +825,7 @@
         operationProjectPaths.get(event.operationId) ||
         selectedProject?.path ||
         String(wizardValues.projectPath || "");
+      const operationEnvironment = operationEnvironments.get(event.operationId);
       if (
         projectPath &&
         ["up", "provision", "preview", "deploy", "refresh", "show", "down"].includes(event.kind)
@@ -835,7 +852,16 @@
           ];
         }
       }
+      if (
+        event.kind === "preview" &&
+        event.state === "succeeded" &&
+        selectedProject?.path === projectPath &&
+        selectedProject.environment === operationEnvironment
+      ) {
+        projectPreview = { projectPath, environment: operationEnvironment, event };
+      }
       operationProjectPaths.delete(event.operationId);
+      operationEnvironments.delete(event.operationId);
     }
     if (
       preflightOperationId === event.operationId &&
@@ -944,6 +970,7 @@
   }
 
   function setEnvironmentConfigurationValue(field: ConfigurationField, value: string) {
+    projectPreview = null;
     environmentConfigurationValues = { ...environmentConfigurationValues, [field.id]: value };
     if (!environmentConfigurationDirty.includes(field.environmentVariable)) {
       environmentConfigurationDirty = [...environmentConfigurationDirty, field.environmentVariable];
@@ -963,6 +990,7 @@
     environmentConfigurationError = "";
     try {
       await setProjectEnvironmentValues(selectedProject.path, selectedProject.environment, values);
+      projectPreview = null;
       addSystemLog(`Updated ${values.length} azd environment value${values.length === 1 ? "" : "s"}.`, "success");
       await loadEnvironmentConfiguration(selectedProject.path, selectedProject.environment);
     } catch (error) {
@@ -980,6 +1008,7 @@
       await setProjectEnvironmentValues(selectedProject.path, selectedProject.environment, [
         { name: rawVariableName.trim(), value: rawVariableValue }
       ]);
+      projectPreview = null;
       addSystemLog(`Updated azd environment variable '${rawVariableName.trim()}'. Its value was not logged.`, "success");
       rawVariableName = "";
       rawVariableValue = "";
@@ -998,6 +1027,7 @@
 
   async function openProjectWorkspace(project: import("./lib/types").ProjectSummary) {
     selectedEntry = null;
+    projectPreview = null;
     selectedProject = project;
     activeNav = "projects";
     projectTab = "overview";
@@ -1086,6 +1116,7 @@
         environmentSubscription.trim() || undefined,
         environmentLocation.trim() || undefined
       );
+      projectPreview = null;
       applyProjectEnvironments(environments);
       addSystemLog(`Created and selected azd environment '${environmentName.trim()}'.`, "success");
       environmentEditorOpen = false;
@@ -1104,6 +1135,7 @@
     environmentError = "";
     try {
       const environments = await selectProjectEnvironment(selectedProject.path, environment.name);
+      projectPreview = null;
       applyProjectEnvironments(environments);
       addSystemLog(`Selected azd environment '${environment.name}'.`, "success");
       await refreshEnvironmentProjectState(selectedProject.path, environment.name);
@@ -1115,11 +1147,18 @@
     }
   }
 
-  async function runProjectAction(action: "provision" | "deploy" | "refresh" | "down") {
+  type ProjectAction = "preview" | "up" | "provision" | "deploy" | "refresh" | "down";
+
+  async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
-    if (["provision", "deploy"].includes(action) && missingProjectConfiguration.length > 0) {
+    if (["preview", "up", "provision", "deploy"].includes(action) && missingProjectConfiguration.length > 0) {
       projectTab = "environments";
       environmentConfigurationError = "Set the required environment configuration before deployment.";
+      return;
+    }
+    if (action === "up" && !projectPreviewReady) {
+      addSystemLog("Run a successful infrastructure preview for the current environment before azd up.", "warning");
+      outputOpen = true;
       return;
     }
     if (
@@ -1133,15 +1172,24 @@
     outputOpen = true;
     operationState = "running";
     lastOperationResult = null;
-    const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
-    operationProjectPaths.set(operationId, selectedProject.path);
-    activeOperationId = operationId;
-    if (!data.isNative) simulateOperation(operationId, action);
+    if (["preview", "up", "provision", "deploy", "refresh", "down"].includes(action)) {
+      projectPreview = null;
+    }
+    try {
+      const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
+      operationProjectPaths.set(operationId, selectedProject.path);
+      operationEnvironments.set(operationId, selectedProject.environment);
+      activeOperationId = operationId;
+      if (!data.isNative) simulateOperation(operationId, action);
+    } catch (error) {
+      operationState = "failed";
+      addSystemLog(`Could not start azd ${action}: ${String(error)}`, "error");
+    }
   }
 
   function retryProjectOperation(event: OperationEvent) {
-    if (["provision", "deploy", "refresh", "down"].includes(event.kind)) {
-      void runProjectAction(event.kind as "provision" | "deploy" | "refresh" | "down");
+    if (["preview", "provision", "deploy", "refresh", "down"].includes(event.kind)) {
+      void runProjectAction(event.kind as Exclude<ProjectAction, "up">);
     }
   }
 
@@ -1793,8 +1841,6 @@
               </div>
               <div class="project-actions">
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
-                <button class="secondary" disabled={missingProjectConfiguration.length > 0} title={missingProjectConfiguration.length > 0 ? "Set required environment configuration first" : undefined} on:click={() => runProjectAction("provision")}>Provision</button>
-                <button class="secondary" disabled={missingProjectConfiguration.length > 0} title={missingProjectConfiguration.length > 0 ? "Set required environment configuration first" : undefined} on:click={() => runProjectAction("deploy")}>Deploy</button>
                 <button class="danger" on:click={() => runProjectAction("down")}>Down</button>
               </div>
             </div>
@@ -1815,6 +1861,43 @@
               <section class="workspace-panel">
                 <h2>Source</h2>
                 <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
+              </section>
+              <section class="workspace-panel full project-preflight" aria-label="Deployment preflight">
+                <div class="section-toolbar">
+                  <div><h2>Deployment preflight</h2><p>Preview infrastructure changes for the selected environment before running the complete deployment.</p></div>
+                  {#if projectPreviewReady}
+                    <StatusPill tone="success" label="Preview current" />
+                  {:else}
+                    <StatusPill tone="warning" label="Preview required" />
+                  {/if}
+                </div>
+                {#if missingProjectConfiguration.length > 0}
+                  <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration required</strong><p>Set {missingProjectConfiguration.map((field) => field.label).join(", ")} before previewing this environment.</p></div></div>
+                {:else if projectPreviewReady && projectPreview?.event.outcome}
+                  <div class="project-preview-result">
+                    <StatusPill tone="success" label={resourceStateLabel(projectPreview.event)} />
+                    <div>
+                      <strong>{projectPreview.event.outcome.summary}</strong>
+                      <p>{projectPreview.event.outcome.guidance}</p>
+                      <small>{selectedProject.environment ?? "Current environment"} · {new Date(projectPreview.event.timestamp).toLocaleString()}</small>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="project-preview-pending"><Icon name="cloud" size={20} /><div><strong>No current preview</strong><p>A prior result remains in operation history, but a fresh preview is required after reopening the project or changing its environment configuration.</p></div></div>
+                {/if}
+                <div class="project-preflight-actions">
+                  <button
+                    class="secondary"
+                    disabled={Boolean(activeOperationId) || !environmentConfigurationLoaded || missingProjectConfiguration.length > 0 || !selectedProject.environment}
+                    on:click={() => runProjectAction("preview")}
+                  ><Icon name="search" size={15} /> {projectPreviewReady ? "Run preview again" : "Run infrastructure preview"}</button>
+                  <button
+                    class="primary"
+                    disabled={Boolean(activeOperationId) || !projectPreviewReady}
+                    title={!projectPreviewReady ? "Complete a current infrastructure preview first" : undefined}
+                    on:click={() => runProjectAction("up")}
+                  ><Icon name="play" size={15} /> Deploy with azd up</button>
+                </div>
               </section>
               <section class="workspace-panel full">
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
@@ -1926,7 +2009,7 @@
                 <span>{projectOperations.length} recorded</span>
               </div>
               {#if projectOperations.length === 0}
-                <div class="empty-state"><Icon name="terminal" size={28} /><h2>No recorded operations</h2><p>Provision, deploy, refresh, and down outcomes will appear here and in the output panel.</p></div>
+                <div class="empty-state"><Icon name="terminal" size={28} /><h2>No recorded operations</h2><p>Preview and lifecycle outcomes will appear here and in the output panel.</p></div>
               {/if}
               {#each projectOperations as event}
                 <div class="operation-row">
@@ -1938,7 +2021,7 @@
                   </div>
                   <time>{new Date(event.timestamp).toLocaleString()}</time>
                   <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} />
-                  {#if event.outcome?.retryable && ["provision", "deploy", "refresh", "down"].includes(event.kind)}
+                  {#if event.outcome?.retryable && ["preview", "provision", "deploy", "refresh", "down"].includes(event.kind)}
                     <button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={() => retryProjectOperation(event)}>Retry</button>
                   {/if}
                 </div>
