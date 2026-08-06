@@ -1610,7 +1610,163 @@ button.compact {
   background: var(--panel);
 }
 
-.resource-state pre {
+.resource-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.resource-summary > div {
+  display: grid;
+  padding: 12px 14px;
+  gap: 2px;
+}
+
+.resource-summary > div + div {
+  border-left: 1px solid var(--border);
+}
+
+.resource-summary strong {
+  color: var(--text-bright);
+  font-size: 18px;
+}
+
+.resource-summary span,
+.project-resource-service small,
+.resource-endpoint > span,
+.resource-endpoint p,
+.azure-resource-list p,
+.azure-resource-row span,
+.azure-resource-row small {
+  color: var(--muted);
+}
+
+.project-resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 10px;
+}
+
+.project-resource-service {
+  display: grid;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.project-resource-service > header {
+  display: flex;
+  padding: 13px 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.project-resource-service h3,
+.project-resource-service p {
+  margin: 0;
+}
+
+.project-resource-service header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.resource-endpoint {
+  display: grid;
+  min-width: 0;
+  padding: 12px 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.resource-endpoint > span,
+.resource-endpoint code,
+.resource-endpoint p {
+  grid-column: 1;
+}
+
+.resource-endpoint code {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resource-endpoint button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+.azure-resource-list {
+  display: grid;
+  padding: 12px 14px;
+  gap: 8px;
+}
+
+.azure-resource-list-title,
+.azure-resource-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.azure-resource-list-title > span {
+  min-width: 20px;
+  padding: 1px 6px;
+  color: var(--muted);
+  text-align: center;
+  border-radius: 9px;
+  background: var(--badge-bg);
+}
+
+.azure-resource-row {
+  padding-top: 8px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.azure-resource-row > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.azure-resource-row strong,
+.azure-resource-row span,
+.azure-resource-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.raw-project-state {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel-raised);
+}
+
+.raw-project-state summary {
+  padding: 11px 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.raw-project-state[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.raw-project-state pre {
   max-height: 430px;
   margin: 0;
   padding: 14px;
@@ -2915,8 +3071,18 @@ button.compact {
   .check-grid,
   .workspace-grid,
   .deployed-service-grid,
+  .project-resource-grid,
   .lifecycle-actions {
     grid-template-columns: 1fr;
+  }
+
+  .resource-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-summary > div + div {
+    border-top: 1px solid var(--border);
+    border-left: 0;
   }
 
   .environment-form {

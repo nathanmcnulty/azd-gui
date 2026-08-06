@@ -118,7 +118,19 @@ describe("desktop experience", () => {
     expect(screen.getByText(/3 recorded/i)).toBeInTheDocument();
 
     await fireEvent.click(screen.getByRole("button", { name: "resources" }));
-    expect(screen.getByText(/structured azd state/i)).toBeInTheDocument();
+    const resources = screen.getByRole("region", { name: /project resources/i });
+    expect(within(resources).getByText(/services and Azure resources/i)).toBeInTheDocument();
+    expect(within(resources).getByRole("heading", { name: "web" })).toBeInTheDocument();
+    expect(within(resources).getByText("https://preview.example.azurewebsites.net/")).toBeInTheDocument();
+    expect(within(resources).getByText("preview", { selector: ".azure-resource-row strong" })).toBeInTheDocument();
+    expect(within(resources).getByText("Microsoft.Web/sites")).toBeInTheDocument();
+    expect(within(resources).getByRole("button", { name: /open preview in Azure/i })).toBeEnabled();
+    expect(within(resources).getByText(/raw azd state/i)).toBeInTheDocument();
+
+    await fireEvent.click(within(resources).getByRole("button", { name: /refresh/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("region", { name: /project resources/i })).toBeInTheDocument();
+    });
   });
 
   it("selects and creates azd project environments", async () => {

@@ -17,6 +17,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 - Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
 - Exact-commit template caching, `azd init`, environment value application, preflight preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
+- Project workspaces with environment management, lifecycle history, service endpoints, and validated Azure portal links from `azd show`.
 - Browser preview mode for UI development without Rust or Azure credentials.
 
 ## Development
