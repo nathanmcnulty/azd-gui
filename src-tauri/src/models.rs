@@ -103,6 +103,10 @@ pub struct ToolStatus {
     #[serde(default)]
     pub installed_version: Option<String>,
     #[serde(default)]
+    pub latest_version: Option<String>,
+    #[serde(default)]
+    pub update_available: bool,
+    #[serde(default)]
     pub detail: Option<String>,
     #[serde(default)]
     pub install_provider: Option<String>,

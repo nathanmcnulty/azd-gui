@@ -50,6 +50,8 @@ export interface Prerequisite {
 export interface ToolStatus extends Prerequisite {
   state: ToolState;
   installedVersion?: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
   detail?: string;
   installCommand?: string;
   canInstall?: boolean;

@@ -1670,17 +1670,19 @@
                   </div>
                   <div class="data-primary">
                     <strong>{tool.name}</strong>
-                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}</span>
+                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion}` : ""}</span>
                   </div>
-                  <StatusPill tone={tool.state === "ready" ? "success" : tool.state === "missing" ? "warning" : "neutral"} label={tool.state} />
-                  {#if tool.state !== "ready"}
+                  <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : tool.state === "missing" ? "warning" : "neutral"} label={tool.updateAvailable ? "update available" : tool.state} />
+                  {#if tool.updateAvailable && tool.installCommand}
+                    <button class="secondary" on:click={() => copyText(tool.installCommand!)}>Copy update preview</button>
+                  {:else if tool.state !== "ready"}
                     {#if tool.canInstall}
                       <button class="secondary" on:click={() => requestToolInstall(tool)}>Review install</button>
                     {:else}
                       <button class="secondary" disabled={!tool.documentationUrl} on:click={() => openProjectUrl(tool.documentationUrl)}>View instructions</button>
                     {/if}
                   {/if}
-                  {#if tool.installCommand}
+                  {#if tool.installCommand && !tool.updateAvailable}
                     <button class="icon-button" title="Copy install command" on:click={() => copyText(tool.installCommand!)}><Icon name="copy" size={15} /></button>
                   {/if}
                 </div>
@@ -2382,10 +2384,12 @@
             <div class="tool-row">
               <div class={`state-icon ${tool.state}`}><Icon name={tool.state === "ready" ? "check" : "tools"} size={16} /></div>
               <div><strong>{tool.name}</strong><span>{tool.kind === "powershellModule" ? "PowerShell module" : "Command-line tool"}</span></div>
-              <div><small>Installed</small><span>{tool.installedVersion ?? "Not found"}</span></div>
+              <div><small>Installed</small><span>{tool.installedVersion ?? "Not found"}</span>{#if tool.updateAvailable && tool.latestVersion}<small>Latest {tool.latestVersion}</small>{/if}</div>
               <div><small>Required</small><span>{tool.minimumVersion ?? "Any"}</span></div>
-              <StatusPill tone={tool.state === "ready" ? "success" : "warning"} label={tool.state} />
-              {#if tool.state !== "ready"}
+              <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : "warning"} label={tool.updateAvailable ? "update available" : tool.state} />
+              {#if tool.updateAvailable && tool.installCommand}
+                <button class="secondary" on:click={() => copyText(tool.installCommand!)}>Copy update preview</button>
+              {:else if tool.state !== "ready"}
                 {#if tool.canInstall}<button class="secondary" on:click={() => requestToolInstall(tool)}>Review install</button>{:else}<button class="secondary" disabled={!tool.documentationUrl} on:click={() => openProjectUrl(tool.documentationUrl)}>View instructions</button>{/if}
               {/if}
             </div>

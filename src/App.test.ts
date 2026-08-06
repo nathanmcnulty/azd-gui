@@ -130,6 +130,18 @@ describe("desktop experience", () => {
     expect(within(graphRow).getByText("ready")).toBeInTheDocument();
   });
 
+  it("surfaces azd-managed updates without blocking tool readiness", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+    const azureCliRow = screen.getByText("Azure CLI").closest<HTMLElement>(".tool-row")!;
+
+    expect(within(azureCliRow).getByText("2.88.0")).toBeInTheDocument();
+    expect(within(azureCliRow).getByText("Latest 2.89.0")).toBeInTheDocument();
+    expect(within(azureCliRow).getByText("update available")).toBeInTheDocument();
+    expect(within(azureCliRow).getByRole("button", { name: "Copy update preview" })).toBeEnabled();
+  });
+
   it("offers an external-terminal fallback for interactive local hooks", async () => {
     render(App);
 

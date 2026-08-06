@@ -2,8 +2,80 @@ use crate::{
     command_runner::{capture, CommandSpec, Executable},
     models::{ToolInstallPlan, ToolStatus},
 };
+use serde::Deserialize;
 use serde_json::Value;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
+
+#[derive(Debug, Deserialize)]
+struct AzdToolInventoryItem {
+    id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AzdToolUpdateItem {
+    id: String,
+    #[serde(default)]
+    latest_version: String,
+    #[serde(default)]
+    update_available: bool,
+}
+
+fn parse_azd_tool_inventory(value: &str) -> Option<HashMap<String, AzdToolInventoryItem>> {
+    let items: Vec<AzdToolInventoryItem> = serde_json::from_str(value).ok()?;
+    Some(
+        items
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect(),
+    )
+}
+
+fn parse_azd_tool_updates(value: &str) -> Option<HashMap<String, AzdToolUpdateItem>> {
+    let items: Vec<AzdToolUpdateItem> = serde_json::from_str(value).ok()?;
+    Some(
+        items
+            .into_iter()
+            .map(|item| (item.id.clone(), item))
+            .collect(),
+    )
+}
+
+async fn azd_tool_inventory() -> Option<HashMap<String, AzdToolInventoryItem>> {
+    let output = capture(
+        CommandSpec::new(
+            Executable::Azd,
+            ["tool", "list", "--output", "json", "--no-prompt"],
+        ),
+        Duration::from_secs(30),
+    )
+    .await
+    .ok()?;
+    output
+        .success
+        .then(|| parse_azd_tool_inventory(output.stdout.trim()))
+        .flatten()
+}
+
+async fn azd_tool_updates() -> Option<HashMap<String, AzdToolUpdateItem>> {
+    let output = capture(
+        CommandSpec::new(
+            Executable::Azd,
+            ["tool", "check", "--output", "json", "--no-prompt"],
+        ),
+        Duration::from_secs(30),
+    )
+    .await
+    .ok()?;
+    output
+        .success
+        .then(|| parse_azd_tool_updates(output.stdout.trim()))
+        .flatten()
+}
 
 async fn version(
     executable: Executable,
@@ -46,8 +118,8 @@ async fn powershell_module_version(name: &str) -> Option<String> {
     output.success.then(|| output.stdout.trim().to_string())
 }
 
-pub async fn check_all() -> Vec<ToolStatus> {
-    let (azd, az, pwsh, az_module, graph_module) = tokio::join!(
+pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
+    let (azd, az, pwsh, az_module, graph_module, azd_inventory, azd_updates) = tokio::join!(
         version(Executable::Azd, ["version", "--output", "json"]),
         version(Executable::AzureCli, ["version", "--output", "json"]),
         version(
@@ -60,8 +132,49 @@ pub async fn check_all() -> Vec<ToolStatus> {
             ]
         ),
         powershell_module_version("Az.Accounts"),
-        powershell_module_version("Microsoft.Graph.Authentication")
+        powershell_module_version("Microsoft.Graph.Authentication"),
+        async {
+            if include_azd_updates {
+                azd_tool_inventory().await
+            } else {
+                None
+            }
+        },
+        async {
+            if include_azd_updates {
+                azd_tool_updates().await
+            } else {
+                None
+            }
+        }
     );
+    let azd_inventory = azd_inventory.unwrap_or_default();
+    let azd_updates = azd_updates.unwrap_or_default();
+    let inventory_azure_cli = azd_inventory.get("az-cli").and_then(|item| {
+        (item.status.eq_ignore_ascii_case("installed") && !item.version.is_empty())
+            .then(|| item.version.clone())
+    });
+    let mut azure_cli = tool(
+        "az-cli",
+        "Azure CLI",
+        "tool",
+        "2.60.0",
+        inventory_azure_cli.or(az),
+        "azdTool",
+        Some("az-cli"),
+    );
+    if let Some(update) = azd_updates.get("az-cli") {
+        azure_cli.latest_version =
+            (!update.latest_version.is_empty()).then(|| update.latest_version.clone());
+        azure_cli.update_available = update.update_available;
+        if update.update_available {
+            azure_cli.detail = Some(
+                "A newer version is available. Preview the platform-specific update with azd tool before applying it in a terminal."
+                    .into(),
+            );
+            azure_cli.install_command = Some("azd tool upgrade az-cli --dry-run".into());
+        }
+    }
     vec![
         tool(
             "azd",
@@ -72,15 +185,7 @@ pub async fn check_all() -> Vec<ToolStatus> {
             "manual",
             None,
         ),
-        tool(
-            "az-cli",
-            "Azure CLI",
-            "tool",
-            "2.60.0",
-            az,
-            "azdTool",
-            Some("az-cli"),
-        ),
+        azure_cli,
         tool("pwsh", "PowerShell", "tool", "7.4.0", pwsh, "manual", None),
         tool(
             "Az.Accounts",
@@ -150,6 +255,8 @@ fn tool(
         required: id == "azd",
         state: state.into(),
         installed_version: installed.filter(|value| !value.is_empty()),
+        latest_version: None,
+        update_available: false,
         detail: None,
         install_provider: Some(provider.into()),
         install_id: install_id.map(Into::into),
@@ -242,7 +349,32 @@ pub fn install_spec(id: &str) -> Option<CommandSpec> {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_plan, install_spec, tool};
+    use super::{
+        install_plan, install_spec, parse_azd_tool_inventory, parse_azd_tool_updates, tool,
+    };
+
+    #[test]
+    fn parses_public_azd_tool_inventory_and_update_contracts() {
+        let inventory = parse_azd_tool_inventory(
+            r#"[{"id":"az-cli","name":"Azure CLI","category":"cli","priority":"recommended","status":"Installed","version":"2.85.0"}]"#,
+        )
+        .unwrap();
+        let updates = parse_azd_tool_updates(
+            r#"[{"id":"az-cli","name":"Azure CLI","installedVersion":"2.85.0","latestVersion":"2.89.0","updateAvailable":true}]"#,
+        )
+        .unwrap();
+
+        assert_eq!(inventory["az-cli"].status, "Installed");
+        assert_eq!(inventory["az-cli"].version, "2.85.0");
+        assert_eq!(updates["az-cli"].latest_version, "2.89.0");
+        assert!(updates["az-cli"].update_available);
+    }
+
+    #[test]
+    fn rejects_invalid_azd_tool_json_without_affecting_fallback_detection() {
+        assert!(parse_azd_tool_inventory("not json").is_none());
+        assert!(parse_azd_tool_updates("{}").is_none());
+    }
 
     #[test]
     fn approved_install_plan_matches_the_executed_script() {

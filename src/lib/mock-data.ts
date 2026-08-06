@@ -388,10 +388,15 @@ export const mockTools: ToolStatus[] = [
     kind: "tool",
     minimumVersion: "2.60.0",
     installedVersion: "2.88.0",
+    latestVersion: "2.89.0",
+    updateAvailable: true,
     required: false,
     state: "ready",
     installProvider: "azdTool",
-    canInstall: true
+    canInstall: false,
+    installCommand: "azd tool upgrade az-cli --dry-run",
+    documentationUrl:
+      "https://learn.microsoft.com/azure/developer/azure-developer-cli/development-tools"
   },
   {
     id: "pwsh",
