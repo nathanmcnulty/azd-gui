@@ -21,7 +21,13 @@ describe("azd project state", () => {
         endpoint: "https://web.example.com/",
         language: "node",
         projectPath: "./src/web",
-        resources: [{ id: resourceId, portalUrl: `https://portal.azure.com/#resource${resourceId}` }]
+        resources: [{
+          id: resourceId,
+          portalUrl: `https://portal.azure.com/#resource${resourceId}`,
+          name: "web",
+          type: "Microsoft.App/containerApps",
+          resourceGroup: "rg-app"
+        }]
       }
     ]);
   });

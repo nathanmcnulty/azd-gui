@@ -5,7 +5,15 @@ export interface ProjectServiceResult {
   endpoint?: string;
   language?: string;
   projectPath?: string;
-  resources: { id: string; portalUrl: string }[];
+  resources: ProjectResourceResult[];
+}
+
+export interface ProjectResourceResult {
+  id: string;
+  portalUrl: string;
+  name: string;
+  type: string;
+  resourceGroup: string;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -41,6 +49,25 @@ export function azurePortalUrl(resourceId: string): string | null {
   return `https://portal.azure.com/#resource${encodeURI(candidate)}`;
 }
 
+function projectResource(resourceId: string): ProjectResourceResult | null {
+  const portalUrl = azurePortalUrl(resourceId);
+  if (!portalUrl) return null;
+  const segments = resourceId.split("/").filter(Boolean);
+  const providersIndex = segments.findIndex((segment) => segment.toLowerCase() === "providers");
+  const provider = providersIndex >= 0 ? segments[providersIndex + 1] : undefined;
+  const resourceSegments = providersIndex >= 0 ? segments.slice(providersIndex + 2) : [];
+  const typeSegments = resourceSegments.filter((_, index) => index % 2 === 0);
+  const nameSegments = resourceSegments.filter((_, index) => index % 2 === 1);
+
+  return {
+    id: resourceId,
+    portalUrl,
+    name: nameSegments.at(-1) ?? segments.at(-1) ?? resourceId,
+    type: provider ? [provider, ...typeSegments].join("/") : "Resource group",
+    resourceGroup: segments[3] ?? ""
+  };
+}
+
 export function projectServices(state: AzdProjectState | null | undefined): ProjectServiceResult[] {
   const services = record(state?.services);
   if (!services) return [];
@@ -55,8 +82,8 @@ export function projectServices(state: AzdProjectState | null | undefined): Proj
       const resources = resourceIds.flatMap((value) => {
         const id = text(value);
         if (!id) return [];
-        const portalUrl = azurePortalUrl(id);
-        return portalUrl ? [{ id, portalUrl }] : [];
+        const resource = projectResource(id);
+        return resource ? [resource] : [];
       });
 
       return [{

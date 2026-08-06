@@ -181,6 +181,12 @@
     ? operationEvents.filter((event) => event.operationId === activeOperationId).at(-1) ?? null
     : null;
   $: deploymentServices = projectServices(projectDeploymentResult?.state);
+  $: workspaceServices = projectServices(projectState);
+  $: workspaceResourceCount = workspaceServices.reduce(
+    (count, service) => count + service.resources.length,
+    0
+  );
+  $: workspaceEndpointCount = workspaceServices.filter((service) => service.endpoint).length;
   $: {
     const mergedOperations = new Map(
       projectOperationHistory.map((event) => [event.operationId, event])
@@ -1100,13 +1106,18 @@
     }
   }
 
-  async function openProjectWorkspace(project: import("./lib/types").ProjectSummary) {
-    selectedEntry = null;
-    projectPreview = null;
-    projectDeploymentResult = null;
+  async function openProjectWorkspace(
+    project: import("./lib/types").ProjectSummary,
+    preserveView = false
+  ) {
+    if (!preserveView) {
+      selectedEntry = null;
+      projectPreview = null;
+      projectDeploymentResult = null;
+      projectTab = "overview";
+    }
     selectedProject = project;
     activeNav = "projects";
-    projectTab = "overview";
     environmentEditorOpen = false;
     environmentError = "";
     environmentConfigurationLoaded = false;
@@ -1143,7 +1154,7 @@
   }
 
   function refreshSelectedProject() {
-    if (selectedProject) void openProjectWorkspace(selectedProject);
+    if (selectedProject) void openProjectWorkspace(selectedProject, true);
   }
 
   function applyProjectEnvironments(environments: ProjectEnvironment[]) {
@@ -2171,10 +2182,60 @@
               {/each}
             </div>
           {:else}
-            <div class="resource-state">
-              <div class="section-toolbar"><div><h2>Structured azd state</h2><p>Resource endpoints and service details returned by <code>azd show --output json</code>.</p></div><button class="secondary" on:click={refreshSelectedProject}><Icon name="refresh" size={14} /> Refresh</button></div>
-              <pre>{JSON.stringify(projectState ?? {}, null, 2)}</pre>
-            </div>
+            <section class="resource-state" aria-label="Project resources">
+              <div class="section-toolbar">
+                <div><h2>Services and Azure resources</h2><p>Current state returned by <code>azd show --output json</code> for {selectedProject.environment ?? "the active environment"}.</p></div>
+                <button class="secondary" on:click={refreshSelectedProject}><Icon name="refresh" size={14} /> Refresh</button>
+              </div>
+              {#if projectState}
+                <div class="resource-summary" aria-label="Resource summary">
+                  <div><strong>{workspaceServices.length}</strong><span>Service{workspaceServices.length === 1 ? "" : "s"}</span></div>
+                  <div><strong>{workspaceEndpointCount}</strong><span>Public endpoint{workspaceEndpointCount === 1 ? "" : "s"}</span></div>
+                  <div><strong>{workspaceResourceCount}</strong><span>Azure resource{workspaceResourceCount === 1 ? "" : "s"}</span></div>
+                </div>
+                {#if workspaceServices.length > 0}
+                  <div class="project-resource-grid">
+                    {#each workspaceServices as service}
+                      <article class="project-resource-service">
+                        <header>
+                          <div><h3>{service.name}</h3>{#if service.projectPath}<small>{service.projectPath}</small>{/if}</div>
+                          {#if service.language}<StatusPill tone="neutral" label={service.language} />{/if}
+                        </header>
+                        <div class="resource-endpoint">
+                          <span>Public endpoint</span>
+                          {#if service.endpoint}
+                            <code title={service.endpoint}>{service.endpoint}</code>
+                            <button class="secondary compact" on:click={() => openProjectUrl(service.endpoint)}>Open endpoint</button>
+                          {:else}
+                            <p>No public endpoint returned.</p>
+                          {/if}
+                        </div>
+                        <div class="azure-resource-list">
+                          <div class="azure-resource-list-title"><strong>Azure resources</strong><span>{service.resources.length}</span></div>
+                          {#if service.resources.length === 0}
+                            <p>No resource IDs were returned for this service.</p>
+                          {/if}
+                          {#each service.resources as resource}
+                            <div class="azure-resource-row">
+                              <div><strong>{resource.name}</strong><span>{resource.type}</span><small>{resource.resourceGroup}</small></div>
+                              <button class="secondary compact" aria-label={`Open ${resource.name} in Azure`} on:click={() => openProjectUrl(resource.portalUrl)}>Open in Azure</button>
+                            </div>
+                          {/each}
+                        </div>
+                      </article>
+                    {/each}
+                  </div>
+                {:else}
+                  <div class="callout info"><Icon name="cloud" size={17} /><div><strong>No service records were returned</strong><p>This can be normal for infrastructure-only templates. The raw azd state remains available below.</p></div></div>
+                {/if}
+                <details class="raw-project-state">
+                  <summary>Raw azd state</summary>
+                  <pre>{JSON.stringify(projectState, null, 2)}</pre>
+                </details>
+              {:else}
+                <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Project state is unavailable</strong><p>Refresh after confirming this folder and environment can be read by <code>azd show</code>. Details are available in Output.</p></div></div>
+              {/if}
+            </section>
           {/if}
         {:else}
           <div class="page-header"><div><span class="eyebrow">LOCAL WORKSPACES</span><h1>Projects</h1><p>Environments, deployments, and Azure resources managed through azd.</p></div><button class="primary" on:click={() => openLocalProject(false)}><Icon name="folder" size={16} /> Open local project</button></div>
