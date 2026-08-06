@@ -10,6 +10,7 @@ import {
   mockProjectEnvironmentValues
 } from "./mock-data";
 import type {
+  AppSettings,
   AzureDiscovery,
   AzdProjectState,
   BootstrapData,
@@ -39,13 +40,40 @@ function createPreviewEnvironmentValueState(): Record<string, ProjectEnvironment
 }
 let previewProjectEnvironmentValues = createPreviewEnvironmentValueState();
 
+const previewSettingsKey = "azd-gui.settings";
+
+function readPreviewSettings(): AppSettings {
+  try {
+    const stored = window.localStorage.getItem(previewSettingsKey);
+    if (!stored) return structuredClone(mockBootstrap.settings);
+    const value = JSON.parse(stored) as Partial<AppSettings>;
+    if (
+      !["system", "dark", "light"].includes(value.theme ?? "") ||
+      typeof value.navigationExpanded !== "boolean"
+    ) {
+      return structuredClone(mockBootstrap.settings);
+    }
+    return value as AppSettings;
+  } catch {
+    return structuredClone(mockBootstrap.settings);
+  }
+}
+
 export async function bootstrap(): Promise<BootstrapData> {
   if (!isTauri()) {
     previewProjectEnvironments = structuredClone(mockProjectEnvironments);
     previewProjectEnvironmentValues = createPreviewEnvironmentValueState();
-    return structuredClone(mockBootstrap);
+    return { ...structuredClone(mockBootstrap), settings: readPreviewSettings() };
   }
   return invoke<BootstrapData>("bootstrap");
+}
+
+export async function saveAppSettings(settings: AppSettings): Promise<void> {
+  if (!isTauri()) {
+    window.localStorage.setItem(previewSettingsKey, JSON.stringify(settings));
+    return;
+  }
+  await invoke("save_app_settings", { settings });
 }
 
 export async function chooseFolder(): Promise<string | null> {

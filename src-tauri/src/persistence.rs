@@ -1,6 +1,6 @@
 use crate::{
     error::{AppError, AppResult},
-    models::{CatalogSource, OperationEvent, ProjectSummary},
+    models::{AppSettings, CatalogSource, OperationEvent, ProjectSummary},
 };
 use rusqlite::{params, Connection};
 use std::{path::Path, sync::Mutex};
@@ -49,6 +49,11 @@ impl Database {
             );
             CREATE TABLE IF NOT EXISTS wizard_drafts (
                 project_key TEXT PRIMARY KEY,
+                values_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS app_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
                 values_json TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -207,6 +212,32 @@ impl Database {
         Ok(Some(serde_json::from_str(&value)?))
     }
 
+    pub fn app_settings(&self) -> AppResult<AppSettings> {
+        let connection = self.lock()?;
+        let mut statement =
+            connection.prepare("SELECT values_json FROM app_settings WHERE id = 1")?;
+        let mut rows = statement.query([])?;
+        let Some(row) = rows.next()? else {
+            return Ok(AppSettings::default());
+        };
+        let value: String = row.get(0)?;
+        Ok(serde_json::from_str(&value)?)
+    }
+
+    pub fn save_app_settings(&self, settings: &AppSettings) -> AppResult<()> {
+        self.lock()?.execute(
+            "INSERT INTO app_settings (id, values_json, updated_at)
+             VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+             values_json=excluded.values_json, updated_at=excluded.updated_at",
+            params![
+                serde_json::to_string(settings)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
         let outcome_json = event
             .outcome
@@ -296,8 +327,35 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::Database;
-    use crate::models::{OperationEvent, OperationOutcome, ProjectSummary};
+    use crate::models::{
+        AppSettings, OperationEvent, OperationOutcome, ProjectSummary, ThemePreference,
+    };
     use tempfile::tempdir;
+
+    #[test]
+    fn application_settings_default_and_persist_across_reopen() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite");
+        {
+            let database = Database::open(&path).unwrap();
+            assert_eq!(database.app_settings().unwrap(), AppSettings::default());
+            database
+                .save_app_settings(&AppSettings {
+                    theme: ThemePreference::Dark,
+                    navigation_expanded: false,
+                })
+                .unwrap();
+        }
+
+        let database = Database::open(&path).unwrap();
+        assert_eq!(
+            database.app_settings().unwrap(),
+            AppSettings {
+                theme: ThemePreference::Dark,
+                navigation_expanded: false,
+            }
+        );
+    }
 
     #[test]
     fn terminal_operation_updates_project_attention_and_persists_outcome() {

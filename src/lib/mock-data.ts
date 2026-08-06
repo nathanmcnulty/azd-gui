@@ -622,6 +622,10 @@ export const mockBootstrap: BootstrapData = {
   tools: mockTools,
   connections: mockConnections,
   projects: mockProjects,
+  settings: {
+    theme: "system",
+    navigationExpanded: true
+  },
   platform: "windows",
   appVersion: "0.1.0",
   isNative: false

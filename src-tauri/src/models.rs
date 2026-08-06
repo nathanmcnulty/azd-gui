@@ -373,6 +373,30 @@ pub struct ProjectEnvironmentValueInput {
     pub value: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    System,
+    Dark,
+    Light,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub theme: ThemePreference,
+    pub navigation_expanded: bool,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            theme: ThemePreference::System,
+            navigation_expanded: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapData {
@@ -380,6 +404,7 @@ pub struct BootstrapData {
     pub tools: Vec<ToolStatus>,
     pub connections: Vec<ConnectionStatus>,
     pub projects: Vec<ProjectSummary>,
+    pub settings: AppSettings,
     pub platform: String,
     pub app_version: String,
     pub is_native: bool,

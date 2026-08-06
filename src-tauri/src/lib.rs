@@ -17,8 +17,8 @@ use crate::{
     command_runner::{spawn_operation, OperationManager},
     error::{AppError, AppResult},
     models::{
-        AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus, OperationEvent,
-        PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
+        AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
+        OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
         ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
         TemplateInspection, TemplateManifest, ToolInstallPlan, ToolStatus,
     },
@@ -64,10 +64,16 @@ async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
         tools,
         connections,
         projects: state.database.projects()?,
+        settings: state.database.app_settings()?,
         platform: platform_name(),
         app_version: env!("CARGO_PKG_VERSION").into(),
         is_native: true,
     })
+}
+
+#[tauri::command]
+fn save_app_settings(state: State<'_, AppState>, settings: AppSettings) -> AppResult<()> {
+    state.database.save_app_settings(&settings)
 }
 
 #[tauri::command]
@@ -671,7 +677,8 @@ pub fn run() {
             record_operation,
             get_operation_history,
             save_wizard_draft,
-            load_wizard_draft
+            load_wizard_draft,
+            save_app_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running Azure Deployment Studio");

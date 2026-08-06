@@ -5,6 +5,7 @@ import App from "./App.svelte";
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  document.documentElement.dataset.theme = "";
 });
 
 describe("desktop experience", () => {
@@ -312,12 +313,29 @@ describe("desktop experience", () => {
     expect(projects).toHaveAttribute("aria-current", "page");
     expect(projects).toHaveAttribute("title", "Projects");
     expect(screen.getByRole("button", { name: /expand navigation/i })).toBeInTheDocument();
-    expect(window.localStorage.getItem("azd-gui.navigation.expanded")).toBe("false");
+    expect(JSON.parse(window.localStorage.getItem("azd-gui.settings") ?? "{}"))
+      .toMatchObject({ navigationExpanded: false });
 
     firstRender.unmount();
     render(App);
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /expand navigation/i })).toBeInTheDocument();
     });
+  });
+
+  it("persists the selected theme", async () => {
+    const firstRender = render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
+    await fireEvent.click(screen.getByRole("button", { name: "dark" }));
+
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(JSON.parse(window.localStorage.getItem("azd-gui.settings") ?? "{}"))
+      .toMatchObject({ theme: "dark" });
+
+    firstRender.unmount();
+    document.documentElement.dataset.theme = "";
+    render(App);
+
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
   });
 });
