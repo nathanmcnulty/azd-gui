@@ -4,6 +4,7 @@ import type {
   Catalog,
   ConnectionStatus,
   OperationEvent,
+  ProjectEnvironment,
   ProjectSummary,
   ToolStatus
 } from "./types";
@@ -517,6 +518,23 @@ export const mockProjects: ProjectSummary[] = [
     revision: "21b45a1",
     lastOperation: "Yesterday",
     state: "attention"
+  }
+];
+
+export const mockProjectEnvironments: ProjectEnvironment[] = [
+  {
+    name: "dev",
+    dotEnvPath: "C:\\Deployments\\maester-lab\\.azure\\dev\\.env",
+    hasLocal: true,
+    hasRemote: false,
+    isDefault: true
+  },
+  {
+    name: "test",
+    dotEnvPath: "C:\\Deployments\\maester-lab\\.azure\\test\\.env",
+    hasLocal: true,
+    hasRemote: false,
+    isDefault: false
   }
 ];
 

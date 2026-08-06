@@ -6,6 +6,7 @@
     bootstrap,
     cancelOperation,
     chooseFolder,
+    createProjectEnvironment,
     discoverAzureScope,
     inspectGitHubTemplate,
     inspectLocalTemplate,
@@ -24,7 +25,8 @@
     getOperationHistory,
     listProjectEnvironments,
     recordOperation,
-    runPermissionChecks
+    runPermissionChecks,
+    selectProjectEnvironment
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
   import type {
@@ -36,6 +38,7 @@
     ConnectionStatus,
     OperationEvent,
     PermissionCheckResult,
+    ProjectEnvironment,
     ToolStatus,
     WizardPage,
     WizardPlan,
@@ -86,10 +89,16 @@
   let selectedProject: import("./lib/types").ProjectSummary | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: Record<string, unknown> | null = null;
-  let projectEnvironments: Record<string, unknown> | null = null;
+  let projectEnvironments: ProjectEnvironment[] = [];
   let projectOperationHistory: OperationEvent[] = [];
   let projectOperations: OperationEvent[] = [];
   let projectLoading = false;
+  let environmentEditorOpen = false;
+  let environmentBusy = false;
+  let environmentError = "";
+  let environmentName = "";
+  let environmentSubscription = "";
+  let environmentLocation = "";
   let catalogSourceOpen = false;
   let catalogSourceUrl = "";
   let catalogPreview: Catalog | null = null;
@@ -875,6 +884,8 @@
     selectedProject = project;
     activeNav = "projects";
     projectTab = "overview";
+    environmentEditorOpen = false;
+    environmentError = "";
     projectLoading = true;
     const [stateResult, environmentsResult, historyResult] = await Promise.allSettled([
       getProjectState(project.path, project.environment),
@@ -883,7 +894,11 @@
     ]);
     projectState = stateResult.status === "fulfilled" ? stateResult.value : null;
     projectEnvironments =
-      environmentsResult.status === "fulfilled" ? environmentsResult.value : null;
+      environmentsResult.status === "fulfilled"
+        ? environmentsResult.value
+        : project.environment
+          ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
+          : [];
     projectOperationHistory = historyResult.status === "fulfilled" ? historyResult.value : [];
     const failures = [stateResult, environmentsResult, historyResult].filter(
       (result) => result.status === "rejected"
@@ -902,16 +917,77 @@
     if (selectedProject) void openProjectWorkspace(selectedProject);
   }
 
-  function environmentRows(): { name: string; isDefault?: boolean }[] {
-    const values = projectEnvironments?.environments;
-    return Array.isArray(values)
-      ? values.filter(
-          (value): value is { name: string; isDefault?: boolean } =>
-            typeof value === "object" && value !== null && typeof (value as { name?: unknown }).name === "string"
-        )
-      : selectedProject?.environment
-        ? [{ name: selectedProject.environment, isDefault: true }]
-        : [];
+  function applyProjectEnvironments(environments: ProjectEnvironment[]) {
+    projectEnvironments = environments;
+    const current = environments.find((environment) => environment.isDefault);
+    if (!current || !selectedProject) return;
+    selectedProject = { ...selectedProject, environment: current.name };
+    data = {
+      ...data,
+      projects: data.projects.map((project) =>
+        project.path === selectedProject?.path ? { ...project, environment: current.name } : project
+      )
+    };
+  }
+
+  function openEnvironmentEditor() {
+    environmentName = "";
+    environmentSubscription =
+      data.connections.find((connection) => connection.id === "azd")?.subscriptionId ?? "";
+    environmentLocation = "";
+    environmentError = "";
+    environmentEditorOpen = true;
+  }
+
+  async function refreshEnvironmentProjectState(projectPath: string, environment: string) {
+    try {
+      projectState = await getProjectState(projectPath, environment);
+    } catch (error) {
+      projectState = null;
+      addSystemLog(
+        `The environment changed, but azd project state could not be refreshed: ${String(error)}`,
+        "warning"
+      );
+      outputOpen = true;
+    }
+  }
+
+  async function createEnvironment() {
+    if (!selectedProject || environmentBusy || !environmentName.trim()) return;
+    environmentBusy = true;
+    environmentError = "";
+    try {
+      const environments = await createProjectEnvironment(
+        selectedProject.path,
+        environmentName.trim(),
+        environmentSubscription.trim() || undefined,
+        environmentLocation.trim() || undefined
+      );
+      applyProjectEnvironments(environments);
+      addSystemLog(`Created and selected azd environment '${environmentName.trim()}'.`, "success");
+      environmentEditorOpen = false;
+      await refreshEnvironmentProjectState(selectedProject.path, environmentName.trim());
+    } catch (error) {
+      environmentError = String(error);
+    } finally {
+      environmentBusy = false;
+    }
+  }
+
+  async function selectEnvironment(environment: ProjectEnvironment) {
+    if (!selectedProject || environmentBusy || environment.isDefault) return;
+    environmentBusy = true;
+    environmentError = "";
+    try {
+      const environments = await selectProjectEnvironment(selectedProject.path, environment.name);
+      applyProjectEnvironments(environments);
+      addSystemLog(`Selected azd environment '${environment.name}'.`, "success");
+      await refreshEnvironmentProjectState(selectedProject.path, environment.name);
+    } catch (error) {
+      environmentError = String(error);
+    } finally {
+      environmentBusy = false;
+    }
   }
 
   async function runProjectAction(action: "provision" | "deploy" | "refresh" | "down") {
@@ -1620,11 +1696,41 @@
               </section>
             </div>
           {:else if projectTab === "environments"}
-            <div class="table-card simple-table">
-              <div class="simple-table-header"><span>Environment</span><span>Status</span><span>Project</span></div>
-              {#each environmentRows() as environment}
-                <div class="simple-table-row"><strong>{environment.name}</strong><StatusPill tone={environment.isDefault ? "success" : "neutral"} label={environment.isDefault ? "Current" : "Available"} /><span>{selectedProject.name}</span></div>
-              {/each}
+            <div class="environment-management">
+              <div class="environment-toolbar">
+                <div><h2>Project environments</h2><p>azd owns the values under <code>.azure</code>; the app only invokes supported environment commands.</p></div>
+                <button class="primary" disabled={environmentBusy} on:click={openEnvironmentEditor}><Icon name="plus" size={15} /> New environment</button>
+              </div>
+              {#if environmentEditorOpen}
+                <form class="environment-form" on:submit|preventDefault={createEnvironment}>
+                  <label><span>Environment name</span><input bind:value={environmentName} required maxlength="64" pattern={"[A-Za-z0-9()._-]{1,64}"} placeholder="staging" /></label>
+                  <label><span>Subscription ID <small>Optional</small></span><input bind:value={environmentSubscription} placeholder="00000000-0000-0000-0000-000000000000" /></label>
+                  <label><span>Azure location <small>Optional</small></span><input bind:value={environmentLocation} placeholder="westus2" /></label>
+                  <div class="environment-form-actions">
+                    <button type="button" class="secondary" disabled={environmentBusy} on:click={() => (environmentEditorOpen = false)}>Cancel</button>
+                    <button type="submit" class="primary" disabled={environmentBusy || !environmentName.trim()}>{environmentBusy ? "Creating…" : "Create environment"}</button>
+                  </div>
+                </form>
+              {/if}
+              {#if environmentError}<div class="inline-error" role="alert">{environmentError}</div>{/if}
+              <div class="table-card simple-table environment-table">
+                <div class="simple-table-header"><span>Environment</span><span>Status</span><span>Storage</span><span>Action</span></div>
+                {#if projectEnvironments.length === 0}
+                  <div class="empty-state"><Icon name="cloud" size={28} /><h2>No environments</h2><p>Create an azd environment before provisioning or deploying this project.</p></div>
+                {/if}
+                {#each projectEnvironments as environment}
+                  <div class="simple-table-row" aria-current={environment.isDefault ? "true" : undefined}>
+                    <strong>{environment.name}</strong>
+                    <StatusPill tone={environment.isDefault ? "success" : "neutral"} label={environment.isDefault ? "Current" : "Available"} />
+                    <span>{environment.hasLocal && environment.hasRemote ? "Local + remote" : environment.hasLocal ? "Local" : environment.hasRemote ? "Remote" : "Not materialized"}</span>
+                    {#if environment.isDefault}
+                      <span class="current-environment-label">Selected</span>
+                    {:else}
+                      <button class="secondary compact" disabled={environmentBusy} aria-label={`Use ${environment.name} environment`} on:click={() => selectEnvironment(environment)}>Use environment</button>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
             </div>
           {:else if projectTab === "operations"}
             <div class="table-card operations-list">
@@ -1755,7 +1861,7 @@
     <button on:click={() => (outputOpen = !outputOpen)}><Icon name="terminal" size={13} /> {operationState === "running" ? "azd running" : "Output"}</button>
     <div class="status-spacer"></div>
     <button on:click={() => navigate("connections")}><span class={`status-dot ${data.connections.some((c) => c.state === "connected") ? "online" : ""}`}></span>{data.connections.filter((c) => c.state === "connected").length} connected</button>
-    <button on:click={() => navigate("projects")}><Icon name="cloud" size={13} /> {data.projects[0]?.environment ?? "No environment"}</button>
+    <button on:click={() => navigate("projects")}><Icon name="cloud" size={13} /> {selectedProject?.environment ?? data.projects[0]?.environment ?? "No environment"}</button>
     <span>{data.platform}</span>
   </footer>
 </div>

@@ -319,6 +319,21 @@ pub struct ProjectSummary {
     pub state: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectEnvironment {
+    #[serde(alias = "Name")]
+    pub name: String,
+    #[serde(default, alias = "DotEnvPath")]
+    pub dot_env_path: String,
+    #[serde(default, alias = "HasLocal")]
+    pub has_local: bool,
+    #[serde(default, alias = "HasRemote")]
+    pub has_remote: bool,
+    #[serde(default, alias = "IsDefault")]
+    pub is_default: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapData {

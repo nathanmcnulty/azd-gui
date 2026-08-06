@@ -13,21 +13,22 @@ use std::{
 };
 use uuid::Uuid;
 
-fn validate_environment_name(value: &str) -> AppResult<()> {
+pub(crate) fn validate_environment_name(value: &str) -> AppResult<()> {
     if value.is_empty()
         || value.len() > 64
         || !value
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "-_".contains(character))
+            .all(|character| character.is_ascii_alphanumeric() || "-()_.".contains(character))
     {
         return Err(AppError::Invalid(
-            "Environment name may contain letters, numbers, hyphens, and underscores.".into(),
+            "Environment name may contain letters, numbers, hyphens, underscores, periods, and parentheses."
+                .into(),
         ));
     }
     Ok(())
 }
 
-fn validate_location(value: &str) -> AppResult<()> {
+pub(crate) fn validate_location(value: &str) -> AppResult<()> {
     if value.is_empty()
         || value.len() > 64
         || !value
@@ -39,7 +40,7 @@ fn validate_location(value: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_optional_guid(label: &str, value: Option<&str>) -> AppResult<()> {
+pub(crate) fn validate_optional_guid(label: &str, value: Option<&str>) -> AppResult<()> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Ok(());
     };
