@@ -413,7 +413,10 @@ export const mockTools: ToolStatus[] = [
     installProvider: "psResource",
     installId: "Microsoft.Graph",
     canInstall: true,
-    installCommand: "Install-PSResource Microsoft.Graph -Scope CurrentUser -TrustRepository"
+    installCommand:
+      'pwsh -NoLogo -NoProfile -NonInteractive -Command "Install-PSResource Microsoft.Graph -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense"',
+    documentationUrl:
+      "https://learn.microsoft.com/powershell/module/microsoft.powershell.psresourceget/install-psresource?view=powershellget-3.x"
   }
 ];
 

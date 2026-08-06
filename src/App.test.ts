@@ -102,6 +102,34 @@ describe("desktop experience", () => {
     });
   });
 
+  it("requires review before a vetted per-user module installation", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Review install" }));
+
+    const review = screen.getByRole("dialog", {
+      name: /review Microsoft Graph PowerShell installation/i
+    });
+    expect(within(review).getByText("PowerShell Gallery (PSGallery)")).toBeInTheDocument();
+    expect(within(review).getByText("Current user")).toBeInTheDocument();
+    expect(within(review).getByText("Current-user PowerShell module path")).toBeInTheDocument();
+    expect(
+      within(review).getByText(/Install-PSResource Microsoft\.Graph.*-Quiet -AcceptLicense/)
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(within(review).getByRole("button", { name: /install for current user/i })).toHaveFocus();
+    });
+
+    await fireEvent.click(within(review).getByRole("button", { name: /install for current user/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: /review Microsoft Graph/i })).not.toBeInTheDocument();
+    });
+    const graphRow = screen.getByText("Microsoft Graph PowerShell").closest<HTMLElement>(".tool-row")!;
+    expect(within(graphRow).getAllByText("2.0.0")).toHaveLength(2);
+    expect(within(graphRow).getByText("ready")).toBeInTheDocument();
+  });
+
   it("offers an external-terminal fallback for interactive local hooks", async () => {
     render(App);
 

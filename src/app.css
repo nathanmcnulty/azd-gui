@@ -2963,6 +2963,77 @@ button.compact {
   background: var(--panel);
 }
 
+.install-dialog {
+  width: min(680px, calc(100% - 40px));
+}
+
+.install-plan-details {
+  display: grid;
+  margin: 18px 0 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--border);
+}
+
+.install-plan-details > div {
+  display: grid;
+  min-width: 0;
+  padding: 10px 12px;
+  gap: 3px;
+  background: var(--panel);
+}
+
+.install-plan-details > .full {
+  grid-column: 1 / -1;
+}
+
+.install-plan-details dt,
+.install-command span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.install-plan-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-bright);
+}
+
+.install-command {
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--input);
+}
+
+.install-command > div {
+  display: flex;
+  min-height: 34px;
+  padding: 0 8px 0 12px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.install-command > code {
+  display: block;
+  padding: 12px;
+  overflow-wrap: anywhere;
+  color: var(--text-bright);
+  white-space: pre-wrap;
+}
+
+.install-safety {
+  margin-bottom: 0;
+}
+
 .catalog-preview {
   display: flex;
   margin-top: 16px;

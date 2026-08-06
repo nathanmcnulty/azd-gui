@@ -117,6 +117,20 @@ pub struct ToolStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ToolInstallPlan {
+    pub id: String,
+    pub tool_name: String,
+    pub provider: String,
+    pub action: String,
+    pub source: String,
+    pub scope: String,
+    pub destination: String,
+    pub command: String,
+    pub documentation_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ConnectionRequirement {
     pub id: String,
     pub name: String,

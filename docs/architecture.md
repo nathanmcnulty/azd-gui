@@ -17,6 +17,8 @@ Rust owns all privileged behavior:
 
 The hidden `azd vs-server` protocol is intentionally not used.
 
+Tool installation is a two-step typed flow. The renderer requests an application-owned `ToolInstallPlan` and displays its provider, source, scope, destination, exact command, and documentation. A separate confirmation starts the corresponding registered `CommandSpec`; tool IDs that are not in the native non-elevated registry cannot produce either a plan or an executable command.
+
 ## Deployment flow
 
 1. Select a bundled catalog entry, external catalog entry, direct GitHub repository, or local folder.
