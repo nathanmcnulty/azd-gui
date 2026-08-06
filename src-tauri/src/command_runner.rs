@@ -36,7 +36,17 @@ impl Executable {
     fn command(self) -> &'static str {
         match self {
             Self::Azd => "azd",
-            Self::AzureCli => "az",
+            Self::AzureCli => {
+                #[cfg(windows)]
+                {
+                    // The official Windows MSI exposes Azure CLI through this command shim.
+                    "az.cmd"
+                }
+                #[cfg(not(windows))]
+                {
+                    "az"
+                }
+            }
             Self::PowerShell => "pwsh",
             Self::Git => "git",
             #[cfg(test)]
@@ -83,6 +93,17 @@ impl CommandSpec {
             .any(|arg| arg.contains('\0') || arg.len() > 16_384)
         {
             return Err(AppError::Invalid("Unsafe process argument".into()));
+        }
+        #[cfg(windows)]
+        if matches!(self.executable, Executable::AzureCli)
+            && self.args.iter().any(|arg| {
+                arg.chars()
+                    .any(|character| "&|<>^()%!\"\r\n".contains(character))
+            })
+        {
+            return Err(AppError::Invalid(
+                "Unsafe character in Azure CLI argument".into(),
+            ));
         }
         if let Some(cwd) = &self.cwd {
             if !cwd.is_absolute() || !cwd.is_dir() {
@@ -466,6 +487,38 @@ mod tests {
     use super::{capture, terminal_outcome, CommandSpec, Executable};
     use crate::error::AppError;
     use std::time::Duration;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_azure_cli_uses_the_command_shim_from_path() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("az.cmd"),
+            "@echo off\r\necho {\"azure-cli\":\"9.8.7\"}\r\n",
+        )
+        .unwrap();
+        let output = capture(
+            CommandSpec::new(Executable::AzureCli, ["version", "--output", "json"])
+                .env("PATH", directory.path().display().to_string()),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("9.8.7"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_azure_cli_rejects_command_shell_metacharacters() {
+        let spec = CommandSpec::new(
+            Executable::AzureCli,
+            ["rest", "--url", "https://example.test/?safe=true&run=other"],
+        );
+
+        assert!(matches!(spec.validate(), Err(AppError::Invalid(_))));
+    }
 
     #[cfg(windows)]
     fn shell(command: &'static str) -> CommandSpec {
