@@ -16,6 +16,7 @@ import type {
   Catalog,
   CatalogSource,
   ConnectionStatus,
+  ExternalTerminalLaunch,
   OperationEvent,
   PermissionCheckRequest,
   PermissionCheckResult,
@@ -54,7 +55,9 @@ export async function chooseFolder(): Promise<string | null> {
 
 export async function inspectLocalTemplate(path: string): Promise<TemplateInspection> {
   if (!isTauri()) {
-    const entry = structuredClone(mockBootstrap.catalog.entries[0]);
+    const entry = structuredClone(
+      mockBootstrap.catalog.entries.find((candidate) => candidate.id === "maester-automation")!
+    );
     entry.source = "local";
     entry.trusted = false;
     return {
@@ -62,8 +65,11 @@ export async function inspectLocalTemplate(path: string): Promise<TemplateInspec
       sourcePath: path,
       azureYamlFound: true,
       manifestSource: "inferred",
-      interactiveHooks: false,
-      warnings: ["Local templates are unvetted. Review hooks before deploying."]
+      interactiveHooks: true,
+      warnings: [
+        "Local templates are unvetted. Review hooks before deploying.",
+        "Interactive hooks were detected. Use the external terminal if input is required."
+      ]
     };
   }
   return invoke<TemplateInspection>("inspect_local_template", { path });
@@ -71,7 +77,9 @@ export async function inspectLocalTemplate(path: string): Promise<TemplateInspec
 
 export async function inspectGitHubTemplate(url: string): Promise<TemplateInspection> {
   if (!isTauri()) {
-    const entry = structuredClone(mockBootstrap.catalog.entries[0]);
+    const entry = structuredClone(
+      mockBootstrap.catalog.entries.find((candidate) => candidate.id === "maester-automation")!
+    );
     entry.id = "github-template";
     entry.title = url.split("/").filter(Boolean).at(-1) ?? "GitHub template";
     entry.repository = url;
@@ -183,6 +191,19 @@ export async function startAzdOperation(
 ): Promise<string> {
   if (!isTauri()) return `mock-${action}-${Date.now()}`;
   return invoke<string>("start_azd_operation", { action, projectPath, environment });
+}
+
+export async function openExternalTerminal(
+  projectPath: string,
+  environment?: string
+): Promise<ExternalTerminalLaunch> {
+  if (!isTauri()) {
+    return {
+      workingDirectory: projectPath,
+      command: environment ? `azd up --environment ${environment}` : "azd up"
+    };
+  }
+  return invoke<ExternalTerminalLaunch>("open_external_terminal", { projectPath, environment });
 }
 
 export async function prepareDeployment(request: PrepareDeploymentRequest): Promise<ProjectSummary> {

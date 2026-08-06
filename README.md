@@ -18,6 +18,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 - Exact-commit template caching, `azd init`, environment value application, preflight preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
 - Project workspaces with environment management, lifecycle history, service endpoints, and validated Azure portal links from `azd show`.
+- Explicit external-terminal fallback for interactive hooks, opened in a validated azd project with a copyable interactive `azd up` command.
 - Browser preview mode for UI development without Rust or Azure credentials.
 
 ## Development
@@ -79,7 +80,7 @@ Template manifest resolution is:
 2. An embedded `azd-gui.json`.
 3. Safe inference from `azure.yaml`.
 
-Inference never creates executable commands. Unvetted interactive hooks are reported and can be run in an external terminal instead.
+Inference never creates executable commands. Unvetted interactive hooks are reported and can be run in an external terminal instead. The renderer cannot select a terminal executable or pass a shell command; Rust chooses from fixed platform providers after validating the project and environment.
 
 ## Security model
 
