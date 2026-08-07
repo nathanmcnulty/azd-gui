@@ -320,6 +320,7 @@ export interface CatalogSource {
 export interface PrepareDeploymentRequest {
   templateId: string;
   sourceMode: string;
+  sourceTrustAccepted: boolean;
   sourcePath?: string;
   sourceRevision?: string;
   destination: string;

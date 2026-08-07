@@ -201,6 +201,12 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
     expect(await screen.findByText(/interactive hooks detected/i)).toBeInTheDocument();
+    expect(screen.getByText(/local source can change/i)).toBeInTheDocument();
+    expect(screen.getByText(/inferred from azure.yaml/i)).toBeInTheDocument();
+    const continueButton = screen.getByRole("button", { name: /continue/i });
+    expect(continueButton).toBeDisabled();
+    await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
+    expect(continueButton).toBeEnabled();
     await fireEvent.click(screen.getByRole("button", { name: /open external terminal/i }));
 
     expect(await screen.findByText("External terminal opened")).toBeInTheDocument();

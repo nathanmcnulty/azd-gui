@@ -121,6 +121,15 @@ export function valuesRemovedByPlan(previous: WizardPlan, next: WizardPlan): str
     .flatMap((page) => page.group?.fields.map((field) => field.id) ?? []);
 }
 
+export function sensitiveFieldIds(entry: CatalogEntry | null): Set<string> {
+  return new Set(
+    (entry?.manifest?.configuration.groups ?? [])
+      .flatMap((group) => group.fields)
+      .filter((field) => field.sensitive || field.type === "secret")
+      .map((field) => field.id)
+  );
+}
+
 export function environmentValuesForPlan(plan: WizardPlan, values: WizardValues) {
   return Object.fromEntries(
     plan.pages
