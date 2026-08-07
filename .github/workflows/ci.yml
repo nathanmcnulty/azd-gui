@@ -1,49 +1,65 @@
-name: CI
+name: Manual validation
+run-name: Validate ${{ github.ref_name }} on ${{ inputs.runner }}
 
+# Development validation is local by default. This workflow intentionally has
+# no push or pull_request trigger so ordinary development consumes no hosted
+# runner minutes. Select one platform only when remote validation is necessary.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Platform that genuinely needs hosted validation
+        required: true
+        default: windows-latest
+        type: choice
+        options:
+          - windows-latest
+          - ubuntu-24.04
+          - macos-latest
 
 permissions:
   contents: read
 
-jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run ci
+concurrency:
+  group: manual-validation-${{ github.ref }}-${{ inputs.runner }}
+  cancel-in-progress: true
 
-  native:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+jobs:
+  validate:
+    name: Validate (${{ inputs.runner }})
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
+
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
           components: rustfmt, clippy
+
       - name: Install Linux native dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - run: npm ci
-      - run: npm run build
-      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-      - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      - run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate frontend
+        run: npm run ci
+
+      - name: Check Rust formatting
+        run: npm run format:native
+
+      - name: Lint native code
+        run: npm run lint:native
+
+      - name: Test native code
+        run: npm run test:native
