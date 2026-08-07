@@ -15,8 +15,8 @@ import type {
   AzdProjectState,
   BootstrapData,
   Catalog,
-  CatalogSource,
   ConnectionStatus,
+  ExternalCatalogPreview,
   ExternalTerminalLaunch,
   OperationEvent,
   PermissionCheckRequest,
@@ -32,6 +32,7 @@ import type {
 } from "./types";
 
 let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+let previewCatalogReview: (ExternalCatalogPreview & { sourceUrl: string }) | null = null;
 function createPreviewEnvironmentValueState(): Record<string, ProjectEnvironmentValue[]> {
   return {
     dev: structuredClone(mockProjectEnvironmentValues),
@@ -127,24 +128,44 @@ export async function inspectGitHubTemplate(url: string): Promise<TemplateInspec
   return invoke<TemplateInspection>("inspect_github_template", { url });
 }
 
-export async function previewExternalCatalog(url: string): Promise<Catalog> {
+export async function previewExternalCatalog(url: string): Promise<ExternalCatalogPreview> {
   if (!isTauri()) {
     const catalog = structuredClone(mockBootstrap.catalog);
     catalog.id = "external-preview";
     catalog.title = "External catalog preview";
     catalog.entries = catalog.entries.map((entry) => ({
       ...entry,
+      id: `external-${catalog.id}.${entry.id}`,
       source: "external",
       trusted: false
     }));
-    return catalog;
+    previewCatalogReview = {
+      catalog,
+      reviewToken: `preview-${catalog.id}`,
+      sourceUrl: url
+    };
+    return {
+      catalog: structuredClone(catalog),
+      reviewToken: previewCatalogReview.reviewToken
+    };
   }
-  return invoke<Catalog>("preview_external_catalog", { url });
+  return invoke<ExternalCatalogPreview>("preview_external_catalog", { url });
 }
 
-export async function saveCatalogSource(source: CatalogSource): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("save_catalog_source", { source });
+export async function saveCatalogSource(url: string, reviewToken: string): Promise<Catalog> {
+  if (!isTauri()) {
+    const review = previewCatalogReview;
+    previewCatalogReview = null;
+    if (
+      !review ||
+      review.reviewToken !== reviewToken ||
+      review.sourceUrl !== url
+    ) {
+      throw new Error("Catalog review expired. Preview the source again.");
+    }
+    return structuredClone(review.catalog);
+  }
+  return invoke<Catalog>("save_catalog_source", { url, reviewToken });
 }
 
 export async function refreshTools(): Promise<ToolStatus[]> {
