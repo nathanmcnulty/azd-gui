@@ -55,19 +55,19 @@ The Windows build uses the installed WebView2 runtime and does not install a fix
 
 ## Signed Windows releases
 
-The `Signed Windows release` workflow runs for `v*` tags and by manual dispatch. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, and signs the installer.
+The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It validates the frontend and native code once on Windows before building. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, and signs the installer.
 
 The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub Environment. The signing endpoint, account name, and certificate profile are non-secret workflow configuration. Security-sensitive Azure actions are pinned to immutable commits.
 
 ## Validation
 
 ```powershell
-npm run ci
-npm run format:native
-npm run test:native
+npm run verify
 ```
 
-The CI matrix compiles and tests Windows, macOS, and Linux. Live Azure authentication and deployment checks remain manual because CI must not contain interactive user credentials.
+Local validation is the normal development path. Pull requests and branch pushes do not start GitHub Actions. The `Manual validation` workflow must be explicitly dispatched for one selected platform when hosted validation is genuinely necessary; validating all three platforms requires three intentional dispatches. Tagged releases run the Windows validation, build, and signing workflow once. Live Azure authentication and deployment checks remain manual because automation must not contain interactive user credentials.
+
+See [docs/actions-policy.md](docs/actions-policy.md) for the hosted-runner budget policy and release checklist.
 
 ## Catalog contracts
 
