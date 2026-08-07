@@ -28,7 +28,6 @@
     getOperationHistory,
     getProjectEnvironmentValues,
     listProjectEnvironments,
-    recordOperation,
     runPermissionChecks,
     saveAppSettings,
     selectProjectEnvironment,
@@ -917,7 +916,6 @@
         projectPath &&
         ["up", "provision", "preview", "deploy", "refresh", "show", "down"].includes(event.kind)
       ) {
-        void recordOperation(event, projectPath);
         const projectState = event.state === "succeeded" ? "ready" : "attention";
         data = {
           ...data,

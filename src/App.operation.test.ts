@@ -46,8 +46,7 @@ vi.mock("./lib/bridge", async (importOriginal) => {
         }
       };
     },
-    getOperationHistory: async () => [],
-    recordOperation: async () => undefined
+    getOperationHistory: async () => []
   };
 });
 

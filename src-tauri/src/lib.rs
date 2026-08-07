@@ -14,7 +14,7 @@ mod tools;
 
 use crate::{
     azd::{AzdClient, SystemAzdClient},
-    command_runner::{spawn_operation, OperationManager},
+    command_runner::{spawn_operation, OperationManager, OperationPersistence},
     error::{AppError, AppResult},
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
@@ -28,12 +28,12 @@ use std::{
     collections::{HashMap, HashSet},
     io::BufRead,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Manager, State};
 
 pub struct AppState {
-    database: Database,
+    database: Arc<Database>,
     operations: OperationManager,
     template_cache: PathBuf,
     inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
@@ -134,7 +134,13 @@ fn install_tool(app: AppHandle, state: State<'_, AppState>, id: String) -> AppRe
             "{id} has no vetted non-elevated installation strategy."
         ))
     })?;
-    spawn_operation(app, state.operations.clone(), format!("install:{id}"), spec)
+    spawn_operation(
+        app,
+        state.operations.clone(),
+        format!("install:{id}"),
+        spec,
+        None,
+    )
 }
 
 #[tauri::command]
@@ -171,6 +177,7 @@ fn start_login(
         state.operations.clone(),
         format!("login:{provider_id}"),
         spec,
+        None,
     )
 }
 
@@ -191,7 +198,16 @@ fn start_azd_operation(
     }
     let client = SystemAzdClient;
     let spec = client.lifecycle_command(&action, &canonical, environment.as_deref())?;
-    spawn_operation(app, state.operations.clone(), action, spec)
+    spawn_operation(
+        app,
+        state.operations.clone(),
+        action,
+        spec,
+        Some(OperationPersistence::new(
+            state.database.clone(),
+            canonical.display().to_string(),
+        )),
+    )
 }
 
 #[tauri::command]
@@ -476,33 +492,6 @@ async fn set_project_environment_values(
 }
 
 #[tauri::command]
-fn record_operation(
-    state: State<'_, AppState>,
-    event: OperationEvent,
-    project_path: String,
-) -> AppResult<()> {
-    if ![
-        "up",
-        "provision",
-        "preview",
-        "deploy",
-        "refresh",
-        "show",
-        "down",
-    ]
-    .contains(&event.kind.as_str())
-    {
-        return Err(AppError::Invalid(
-            "Only azd lifecycle operations are persisted.".into(),
-        ));
-    }
-    let canonical = std::fs::canonicalize(project_path)?;
-    state
-        .database
-        .record_operation(&event, &canonical.display().to_string())
-}
-
-#[tauri::command]
 fn get_operation_history(
     state: State<'_, AppState>,
     project_path: String,
@@ -644,7 +633,7 @@ pub fn run() {
             let template_cache = app_data.join("cache").join("templates");
             std::fs::create_dir_all(&template_cache)?;
             app.manage(AppState {
-                database,
+                database: Arc::new(database),
                 operations: OperationManager::default(),
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
@@ -674,7 +663,6 @@ pub fn run() {
             select_project_environment,
             get_project_environment_values,
             set_project_environment_values,
-            record_operation,
             get_operation_history,
             save_wizard_draft,
             load_wizard_draft,
@@ -705,7 +693,7 @@ mod draft_tests {
     use super::{catalog, draft_keys, sanitized_draft, AppState, Database, OperationManager};
     use std::{
         collections::{HashMap, HashSet},
-        sync::Mutex,
+        sync::{Arc, Mutex},
     };
     use tempfile::tempdir;
 
@@ -745,7 +733,7 @@ mod draft_tests {
     fn resolves_sensitive_fields_from_bundled_and_inspected_manifests() {
         let directory = tempdir().unwrap();
         let state = AppState {
-            database: Database::open(&directory.path().join("state.sqlite")).unwrap(),
+            database: Arc::new(Database::open(&directory.path().join("state.sqlite")).unwrap()),
             operations: OperationManager::default(),
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),

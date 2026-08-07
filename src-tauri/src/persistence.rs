@@ -1,6 +1,7 @@
 use crate::{
     error::{AppError, AppResult},
     models::{AppSettings, CatalogSource, OperationEvent, ProjectSummary},
+    redaction::redact,
 };
 use rusqlite::{params, Connection};
 use std::{path::Path, sync::Mutex};
@@ -239,10 +240,32 @@ impl Database {
     }
 
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
+        if ![
+            "up",
+            "provision",
+            "preview",
+            "deploy",
+            "refresh",
+            "show",
+            "down",
+        ]
+        .contains(&event.kind.as_str())
+            || !["succeeded", "failed", "cancelled"].contains(&event.state.as_str())
+        {
+            return Err(AppError::Invalid(
+                "Only terminal azd lifecycle operations are persisted.".into(),
+            ));
+        }
+        let message = redact(&event.message);
         let outcome_json = event
             .outcome
-            .as_ref()
-            .map(serde_json::to_string)
+            .clone()
+            .map(|mut outcome| {
+                outcome.resource_state = redact(&outcome.resource_state);
+                outcome.summary = redact(&outcome.summary);
+                outcome.guidance = redact(&outcome.guidance);
+                serde_json::to_string(&outcome)
+            })
             .transpose()?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
@@ -259,7 +282,7 @@ impl Database {
                 event.kind,
                 event.state,
                 event.timestamp,
-                event.message,
+                message,
                 outcome_json
             ],
         )?;
@@ -422,5 +445,38 @@ mod tests {
         let outcome = history[0].outcome.as_ref().unwrap();
         assert_eq!(outcome.resource_state, "possiblyModified");
         assert!(outcome.retryable);
+    }
+
+    #[test]
+    fn operation_history_redacts_messages_at_the_storage_boundary() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let event = OperationEvent {
+            operation_id: "operation-secret".into(),
+            kind: "preview".into(),
+            state: "failed".into(),
+            timestamp: "2026-08-05T12:00:00Z".into(),
+            stream: "system".into(),
+            level: "error".into(),
+            message: "token=super-secret-value".into(),
+            progress: None,
+            outcome: Some(OperationOutcome {
+                resource_state: "unchanged".into(),
+                summary: "password=super-secret-value".into(),
+                guidance: "Retry without Authorization: Bearer abcdefghijklmnopqrstuvwxyz".into(),
+                retryable: true,
+            }),
+        };
+
+        database
+            .record_operation(&event, directory.path().to_str().unwrap())
+            .unwrap();
+        let history = database
+            .operation_history(directory.path().to_str().unwrap())
+            .unwrap();
+        let serialized = serde_json::to_string(&history).unwrap();
+        assert!(!serialized.contains("super-secret-value"));
+        assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
+        assert!(serialized.contains("[REDACTED]"));
     }
 }
