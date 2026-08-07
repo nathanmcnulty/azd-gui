@@ -3,6 +3,7 @@ import { bundledCatalog } from "./mock-data";
 import {
   calculateWizardPlan,
   environmentValuesForPlan,
+  sensitiveFieldIds,
   validateField,
   valuesRemovedByPlan,
   visibleFields
@@ -43,5 +44,18 @@ describe("wizard planning", () => {
     expect(visibleFields(fields, { enableTeams: false }).map((field) => field.id)).not.toContain("teamsWebhook");
     const webhook = fields.find((field) => field.id === "teamsWebhook")!;
     expect(validateField(webhook, "")).toContain("required");
+  });
+
+  it("treats neutral field names as sensitive when the manifest says so", () => {
+    const entry = structuredClone(bundledCatalog.entries[0]);
+    entry.manifest!.configuration.groups[0].fields.push({
+      id: "neutralValue",
+      environmentVariable: "NEUTRAL_VALUE",
+      label: "Neutral value",
+      type: "text",
+      sensitive: true
+    });
+
+    expect(sensitiveFieldIds(entry)).toContain("neutralValue");
   });
 });

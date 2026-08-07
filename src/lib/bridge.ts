@@ -89,6 +89,7 @@ export async function inspectLocalTemplate(path: string): Promise<TemplateInspec
     );
     entry.source = "local";
     entry.trusted = false;
+    entry.commit = "local";
     return {
       entry,
       sourcePath: path,

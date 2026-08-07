@@ -465,6 +465,8 @@ pub struct PrepareDeploymentRequest {
     pub template_id: String,
     pub source_mode: String,
     #[serde(default)]
+    pub source_trust_accepted: bool,
+    #[serde(default)]
     pub source_path: Option<String>,
     #[serde(default)]
     pub source_revision: Option<String>,

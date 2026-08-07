@@ -62,6 +62,7 @@
   import {
     calculateWizardPlan,
     environmentValuesForPlan,
+    sensitiveFieldIds,
     valuesRemovedByPlan,
     visibleFields
   } from "./lib/wizard";
@@ -154,6 +155,7 @@
   let azureDiscoveryError = "";
   let manualAzureScope = false;
   let activeStepReady = false;
+  let sourceTrustAccepted = false;
   const operationResolvers = new Map<
     string,
     { resolve: (event: OperationEvent) => void; reject: (error: Error) => void }
@@ -163,6 +165,7 @@
   const operationEnvironments = new Map<string, string | undefined>();
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
+  $: sensitiveWizardFields = sensitiveFieldIds(selectedEntry);
   $: selectedProjectConfigurationFields = selectedProject?.templateId
     ? data.catalog.entries
         .find((entry) => entry.id === selectedProject?.templateId)
@@ -291,7 +294,7 @@
           !selectedTenantMismatch
       );
     } else if (page.kind === "overview") {
-      activeStepReady = selectedPlatformSupported;
+      activeStepReady = selectedPlatformSupported && Boolean(selectedEntry?.trusted || sourceTrustAccepted);
     } else if (page.kind === "prerequisites") {
       activeStepReady = requiredToolsReady;
     } else if (page.kind === "connections") {
@@ -373,6 +376,7 @@
   function startWizard(entry: CatalogEntry) {
     selectedEntry = entry;
     selectedInspection = null;
+    sourceTrustAccepted = Boolean(entry.trusted);
     terminalLaunch = null;
     wizardValues = initializeValues(entry);
     wizardPlan = calculateWizardPlan(entry, wizardValues);
@@ -398,6 +402,13 @@
   }
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    if (
+      id === "sourceMode" ||
+      id === "sourcePath" ||
+      (id === "projectPath" && wizardValues.sourceMode === "existingProject")
+    ) {
+      sourceTrustAccepted = false;
+    }
     wizardValues = { ...wizardValues, [id]: value };
     preflightRan = false;
     permissionCheckResults = [];
@@ -415,14 +426,10 @@
 
   async function saveCurrentDraft() {
     if (!selectedEntry) return;
-    const sensitive = new Set(
-      (selectedEntry.manifest?.configuration.groups ?? [])
-        .flatMap((group) => group.fields)
-        .filter((field) => field.sensitive || field.type === "secret")
-        .map((field) => field.id)
-    );
     const values = Object.fromEntries(
-      Object.entries(wizardValues).filter(([key, value]) => !sensitive.has(key) && value !== undefined)
+      Object.entries(wizardValues).filter(
+        ([key, value]) => !sensitiveWizardFields.has(key) && value !== undefined
+      )
     );
     await saveWizardDraft(selectedEntry.id, values);
   }
@@ -448,6 +455,7 @@
             : await inspectLocalTemplate(sourcePath));
         selectedEntry = inspection.entry;
         selectedInspection = inspection;
+        sourceTrustAccepted = false;
         for (const group of selectedEntry.manifest?.configuration.groups ?? []) {
           for (const field of group.fields) {
             if (wizardValues[field.id] === undefined && field.default !== undefined) {
@@ -687,6 +695,10 @@
     if (!selectedEntry || activeOperationId) return;
     preflightRan = false;
     outputOpen = true;
+    if (!selectedEntry.trusted && !sourceTrustAccepted) {
+      addSystemLog("Review and accept the unvetted source before preflight.", "error");
+      return;
+    }
     if (!selectedPlatformSupported) {
       addSystemLog(`This template does not support ${data.platform}.`, "error");
       return;
@@ -783,6 +795,7 @@
       const project = await prepareDeployment({
         templateId: selectedEntry.id,
         sourceMode: String(wizardValues.sourceMode ?? "catalog"),
+        sourceTrustAccepted: Boolean(selectedEntry.trusted || sourceTrustAccepted),
         sourcePath: String(wizardValues.sourcePath || "") || undefined,
         sourceRevision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit,
         destination: projectPath,
@@ -1649,7 +1662,7 @@
               <div class="overview-main">
                 <div class="row">
                   <h2>{selectedEntry.title}</h2>
-                  <StatusPill tone="success" label="Pinned revision" />
+                  <StatusPill tone={selectedEntry.commit === "local" ? "warning" : "success"} label={selectedEntry.commit === "local" ? "Mutable local source" : "Pinned revision"} />
                 </div>
                 <p>{selectedEntry.description}</p>
                 <dl class="metadata">
@@ -1657,15 +1670,38 @@
                   <div><dt>Commit</dt><dd><code>{selectedEntry.commit}</code></dd></div>
                   {#if selectedEntry.subdirectory}<div><dt>Template path</dt><dd>{selectedEntry.subdirectory}</dd></div>{/if}
                   <div><dt>Platforms</dt><dd>{selectedEntry.platforms.join(", ")}</dd></div>
-                  <div><dt>Manifest</dt><dd>Catalog-reviewed metadata</dd></div>
+                  <div>
+                    <dt>Manifest</dt>
+                    <dd>{selectedInspection?.manifestSource === "inferred" ? "Inferred from azure.yaml" : selectedInspection?.manifestSource === "embedded" ? "Embedded template metadata" : "Catalog-reviewed metadata"}</dd>
+                  </div>
                 </dl>
                 <div class="tag-row">{#each selectedEntry.tags as tag}<span class="tag">{tag}</span>{/each}</div>
               </div>
             </div>
-            <div class="callout info">
-              <Icon name="check" size={18} />
-              <div><strong>Source integrity</strong><p>The deployment will use this exact commit. Future repository changes do not alter this project.</p></div>
-            </div>
+            {#if !selectedEntry.trusted}
+              <label class="toggle-line card">
+                <input
+                  type="checkbox"
+                  checked={sourceTrustAccepted}
+                  on:change={(event) => (sourceTrustAccepted = event.currentTarget.checked)}
+                />
+                <span>
+                  <strong>I trust this unvetted source</strong>
+                  <small>I understand that azd may execute code and hooks from this local folder or pinned repository revision.</small>
+                </span>
+              </label>
+            {/if}
+            {#if selectedEntry.commit === "local"}
+              <div class="callout warning">
+                <Icon name="warning" size={18} />
+                <div><strong>Local source can change</strong><p>The app inspected this folder, but local files can change before execution. Review changes and accept trust again after selecting a different source.</p></div>
+              </div>
+            {:else}
+              <div class="callout info">
+                <Icon name="check" size={18} />
+                <div><strong>Source integrity</strong><p>The deployment will use this exact commit. Future repository changes do not alter this project.</p></div>
+              </div>
+            {/if}
             {#if selectedInspection?.interactiveHooks}
               <div class="callout warning interactive-hook-warning">
                 <Icon name="warning" size={18} />
@@ -1861,11 +1897,11 @@
                     <label>
                       <span>{field.label}{#if field.required} <em>Required</em>{/if}</span>
                       <input
-                        type={field.type === "secret" ? "password" : "text"}
+                        type={sensitiveWizardFields.has(field.id) ? "password" : "text"}
                         value={String(wizardValues[field.id] ?? "")}
                         on:input={(e) => setWizardValue(field.id, e.currentTarget.value)}
                         placeholder={field.placeholder ?? ""}
-                        autocomplete={field.type === "secret" ? "new-password" : "off"}
+                        autocomplete={sensitiveWizardFields.has(field.id) ? "new-password" : "off"}
                       />
                       {#if field.help}<small>{field.help}</small>{/if}
                       {#if field.sensitive}<small class="sensitive-note">This value is never saved in the app draft or logs.</small>{/if}
@@ -1932,7 +1968,7 @@
                 <h3>Template values</h3>
                 <dl class="summary-list columns">
                   {#each Object.entries(wizardValues).filter(([key]) => !["projectPath", "subscriptionId", "tenantId"].includes(key)) as [key, value]}
-                    <div><dt>{key}</dt><dd>{key.toLowerCase().includes("secret") || key.toLowerCase().includes("webhook") ? "••••••••" : String(value)}</dd></div>
+                    <div><dt>{key}</dt><dd>{sensitiveWizardFields.has(key) ? "••••••••" : String(value)}</dd></div>
                   {/each}
                 </dl>
               </section>

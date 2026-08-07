@@ -1,8 +1,9 @@
 use crate::{
+    azd::{AzdClient, SystemAzdClient},
     catalog::{entry_by_id, template_path},
     command_runner::{capture, CommandSpec, Executable},
     error::{AppError, AppResult},
-    models::{PrepareDeploymentRequest, ProjectSummary},
+    models::{PrepareDeploymentRequest, ProjectEnvironment, ProjectSummary},
     persistence::Database,
 };
 use chrono::Utc;
@@ -26,6 +27,25 @@ pub(crate) fn validate_environment_name(value: &str) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_source_trust(request: &PrepareDeploymentRequest) -> AppResult<()> {
+    if matches!(
+        request.source_mode.as_str(),
+        "github" | "localTemplate" | "existingProject"
+    ) && !request.source_trust_accepted
+    {
+        return Err(AppError::Invalid(
+            "Unvetted sources require explicit trust before materialization.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn environment_exists(environments: &[ProjectEnvironment], name: &str) -> bool {
+    environments
+        .iter()
+        .any(|environment| environment.name == name)
 }
 
 pub(crate) fn validate_location(value: &str) -> AppResult<()> {
@@ -315,6 +335,7 @@ pub async fn prepare(
     database: &Database,
 ) -> AppResult<ProjectSummary> {
     validate_template_id(&request.template_id)?;
+    validate_source_trust(&request)?;
     validate_environment_name(&request.environment)?;
     validate_location(&request.location)?;
     validate_optional_guid("Tenant ID", request.tenant.as_deref())?;
@@ -446,7 +467,13 @@ pub async fn prepare(
         ));
     }
 
-    if existing_project && !destination.join(".azure").is_dir() {
+    let existing_environment_missing = if existing_project {
+        let environments = SystemAzdClient.environment_list(&destination).await?;
+        !environment_exists(&environments, &request.environment)
+    } else {
+        false
+    };
+    if existing_environment_missing {
         let mut args = vec![
             "env".into(),
             "new".into(),
@@ -512,8 +539,14 @@ pub async fn prepare(
 
 #[cfg(test)]
 mod tests {
-    use super::{environment_assignments, validate_optional_guid, validate_resource_group};
-    use crate::{catalog::entry_by_id, models::PrepareDeploymentRequest};
+    use super::{
+        environment_assignments, environment_exists, validate_optional_guid,
+        validate_resource_group, validate_source_trust,
+    };
+    use crate::{
+        catalog::entry_by_id,
+        models::{PrepareDeploymentRequest, ProjectEnvironment},
+    };
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -521,6 +554,7 @@ mod tests {
         PrepareDeploymentRequest {
             template_id: "myworkid".into(),
             source_mode: "catalog".into(),
+            source_trust_accepted: false,
             source_path: None,
             source_revision: None,
             destination: "/tmp/myworkid".into(),
@@ -601,5 +635,27 @@ mod tests {
         );
         assert!(validate_resource_group(Some("invalid.")).is_err());
         assert!(validate_resource_group(Some("rg-valid_(dev)")).is_ok());
+    }
+
+    #[test]
+    fn requires_explicit_trust_for_unvetted_sources() {
+        let mut request = myworkid_request();
+        request.source_mode = "github".into();
+        assert!(validate_source_trust(&request).is_err());
+        request.source_trust_accepted = true;
+        assert!(validate_source_trust(&request).is_ok());
+    }
+
+    #[test]
+    fn checks_the_requested_environment_instead_of_the_azure_folder() {
+        let environments = vec![ProjectEnvironment {
+            name: "dev".into(),
+            dot_env_path: String::new(),
+            has_local: true,
+            has_remote: false,
+            is_default: true,
+        }];
+        assert!(environment_exists(&environments, "dev"));
+        assert!(!environment_exists(&environments, "staging"));
     }
 }
