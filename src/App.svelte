@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import AppSidebar from "./components/AppSidebar.svelte";
+  import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
+  import CommandPalette from "./components/CommandPalette.svelte";
   import Icon from "./components/Icon.svelte";
+  import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
+  import OutputPanel from "./components/OutputPanel.svelte";
   import StatusPill from "./components/StatusPill.svelte";
   import {
     bootstrap,
@@ -1465,76 +1470,21 @@
     </div>
   </header>
 
-  <aside class:collapsed={!navigationExpanded} class="sidebar">
-    {#if selectedEntry && wizardPlan}
-      <div class="sidebar-heading">
-        <span>DEPLOYMENT</span>
-        <button aria-label="Close deployment" title="Close deployment" on:click={() => (selectedEntry = null)}><Icon name="close" size={15} /></button>
-      </div>
-      <div class="wizard-template" title={selectedEntry.title}>
-        <div class="template-monogram">{selectedEntry.title.slice(0, 2).toUpperCase()}</div>
-        <div class="wizard-template-details">
-          <strong>{selectedEntry.title}</strong>
-          <span>{selectedEntry.commit.slice(0, 8)}</span>
-        </div>
-      </div>
-      <nav class="step-list" aria-label="Deployment steps">
-        {#each wizardPlan.pages as page, index}
-          <button
-            class:active={activeStep === index}
-            class:complete={index < activeStep || page.complete}
-            disabled={index > activeStep}
-            on:click={() => (activeStep = index)}
-            aria-current={activeStep === index ? "step" : undefined}
-            aria-label={`${index + 1}. ${page.title}`}
-            title={page.title}
-          >
-            <span class="step-marker">
-              {#if index < activeStep}<Icon name="check" size={12} />{:else}{index + 1}{/if}
-            </span>
-            <span class="step-copy">
-              <strong>{page.title}</strong>
-              <small>{page.description}</small>
-            </span>
-          </button>
-        {/each}
-      </nav>
-    {:else}
-      <div class="sidebar-heading navigation-heading"><span>NAVIGATION</span></div>
-      <nav class="sidebar-nav" aria-label="Primary navigation">
-        {#each navigation as item}
-          <button
-            class:active={activeNav === item.id}
-            aria-current={activeNav === item.id ? "page" : undefined}
-            aria-label={item.id === "connections" ? `${item.label}, ${connectionAttentionCount} require attention` : item.id === "projects" ? `${item.label}, ${data.projects.length} projects` : item.label}
-            title={item.label}
-            on:click={() => navigate(item.id)}
-          >
-            <Icon name={item.icon} size={18} />
-            <span class="nav-label">{item.label}</span>
-            {#if item.id === "connections"}
-              <span class="nav-count">{connectionAttentionCount}</span>
-            {:else if item.id === "projects"}
-              <span class="nav-count">{data.projects.length}</span>
-            {/if}
-          </button>
-        {/each}
-      </nav>
-    {/if}
-    <div class="sidebar-footer">
-      <div class="sidebar-versions" aria-hidden={!navigationExpanded}>
-        <span>azd {data.tools.find((tool) => tool.id === "azd")?.installedVersion ?? "not found"}</span>
-        <span>App {data.appVersion}</span>
-      </div>
-      <button
-        class="navigation-toggle"
-        aria-label={navigationExpanded ? "Collapse navigation" : "Expand navigation"}
-        aria-expanded={navigationExpanded}
-        title={navigationExpanded ? "Collapse navigation" : "Expand navigation"}
-        on:click={toggleNavigation}
-      ><Icon name="chevron" size={15} /></button>
-    </div>
-  </aside>
+  <AppSidebar
+    {selectedEntry}
+    {wizardPlan}
+    bind:activeStep
+    {navigation}
+    {activeNav}
+    expanded={navigationExpanded}
+    {connectionAttentionCount}
+    projectCount={data.projects.length}
+    azdVersion={data.tools.find((tool) => tool.id === "azd")?.installedVersion ?? "not found"}
+    appVersion={data.appVersion}
+    onNavigate={navigate}
+    onCloseDeployment={() => (selectedEntry = null)}
+    onToggle={toggleNavigation}
+  />
 
   <main class="workspace">
     {#if terminalLaunch}
@@ -2480,26 +2430,14 @@
   </main>
 
   {#if outputOpen}
-    <section class="output-panel" aria-label="Operation output">
-      <header>
-        <div><Icon name="terminal" size={15} /><strong>OUTPUT</strong><span>azd</span></div>
-        <div>
-          {#if activeOperationId}<button class="output-cancel" on:click={stopOperation}>Cancel {activeOperationKind ?? "operation"}</button>{/if}
-          <button title="Clear output" on:click={() => (operationEvents = [])}>Clear</button>
-          <button aria-label="Close output" on:click={() => (outputOpen = false)}><Icon name="close" size={15} /></button>
-        </div>
-      </header>
-      <div class="output-lines" aria-live="polite">
-        {#if operationEvents.length === 0}<div class="empty-output">Run a check or deployment to see output.</div>{/if}
-        {#each operationEvents as event}
-          <div class={`output-line ${event.level}`}>
-            <time>{new Date(event.timestamp).toLocaleTimeString([], { hour12: false })}</time>
-            <span class="stream">{event.stream ?? "system"}</span>
-            <span>{event.message}</span>
-          </div>
-        {/each}
-      </div>
-    </section>
+    <OutputPanel
+      events={operationEvents}
+      {activeOperationId}
+      {activeOperationKind}
+      onCancel={stopOperation}
+      onClear={() => (operationEvents = [])}
+      onClose={() => (outputOpen = false)}
+    />
   {/if}
 
   <footer class="statusbar">
@@ -2512,87 +2450,27 @@
 </div>
 
 {#if installPlan}
-  <div class="modal-backdrop" role="presentation" on:click={() => { if (!installingToolId) installPlan = null; }}>
-    <dialog open class="source-dialog install-dialog" aria-label={`Review ${installPlan.toolName} installation`} aria-describedby="install-review-description" on:click|stopPropagation>
-      <header>
-        <div><span class="eyebrow">INSTALLATION APPROVAL</span><h2>Review before installing</h2></div>
-        <button class="icon-button" aria-label="Close install review" disabled={Boolean(installingToolId)} on:click={() => (installPlan = null)}><Icon name="close" size={16} /></button>
-      </header>
-      <p id="install-review-description">The app will run only this registered, non-elevated installation action.</p>
-      <dl class="install-plan-details">
-        <div><dt>Action</dt><dd>{installPlan.action}</dd></div>
-        <div><dt>Provider</dt><dd>{installPlan.provider}</dd></div>
-        <div><dt>Source</dt><dd>{installPlan.source}</dd></div>
-        <div><dt>Scope</dt><dd>{installPlan.scope}</dd></div>
-        <div class="full"><dt>Destination</dt><dd>{installPlan.destination}</dd></div>
-      </dl>
-      <div class="install-command">
-        <div><span>Exact command</span><button class="icon-button" aria-label="Copy install command" title="Copy install command" on:click={() => copyText(installPlan!.command)}><Icon name="copy" size={15} /></button></div>
-        <code>{installPlan.command}</code>
-      </div>
-      <div class="callout info install-safety"><Icon name="check" size={17} /><div><strong>No administrator elevation</strong><p>This writes to the current-user PowerShell module path. Tokens and credentials are not involved.</p></div></div>
-      <footer>
-        <button class="secondary" disabled={Boolean(installingToolId)} on:click={() => (installPlan = null)}>Cancel</button>
-        <button class="text-button" on:click={() => openProjectUrl(installPlan!.documentationUrl)}>Official documentation</button>
-        <div class="footer-spacer"></div>
-        <button id="confirm-tool-install" class="primary" disabled={Boolean(installingToolId)} on:click={confirmToolInstall}>{installingToolId ? "Installing…" : "Install for current user"}</button>
-      </footer>
-    </dialog>
-  </div>
+  <InstallReviewDialog
+    plan={installPlan}
+    installing={Boolean(installingToolId)}
+    onClose={() => (installPlan = null)}
+    onConfirm={confirmToolInstall}
+    onCopy={copyText}
+    onOpenDocumentation={openProjectUrl}
+  />
 {/if}
 
 {#if commandPaletteOpen}
-  <div class="modal-backdrop" role="presentation" on:click={() => (commandPaletteOpen = false)}>
-    <dialog open class="command-palette" aria-label="Command palette" on:click|stopPropagation>
-      <label><Icon name="search" size={17} /><input id="command-query" bind:value={commandQuery} placeholder="Type a command" /></label>
-      <div>
-        {#each commands.filter((command) => command.label.toLowerCase().includes(commandQuery.toLowerCase())) as command}
-          <button on:click={() => { command.action(); commandPaletteOpen = false; commandQuery = ""; }}>
-            <Icon name="chevron" size={14} /><span>{command.label}</span>
-          </button>
-        {/each}
-      </div>
-      <footer><span><kbd>↑↓</kbd> navigate</span><span><kbd>Enter</kbd> select</span><span><kbd>Esc</kbd> close</span></footer>
-    </dialog>
-  </div>
+  <CommandPalette bind:query={commandQuery} {commands} onClose={() => (commandPaletteOpen = false)} />
 {/if}
 
 {#if catalogSourceOpen}
-  <div class="modal-backdrop" role="presentation" on:click={() => (catalogSourceOpen = false)}>
-    <dialog open class="source-dialog" aria-label="Add catalog source" on:click|stopPropagation>
-      <header>
-        <div><span class="eyebrow">EXTERNAL CATALOG</span><h2>Add a catalog source</h2></div>
-        <button class="icon-button" aria-label="Close" on:click={() => (catalogSourceOpen = false)}><Icon name="close" size={16} /></button>
-      </header>
-      <p>Enter a direct HTTPS catalog URL or a GitHub repository containing <code>azd-gui.catalog.json</code>.</p>
-      <label class="field">
-        <span>Catalog URL</span>
-        <input bind:value={catalogSourceUrl} placeholder="https://github.com/owner/catalog-repository" />
-      </label>
-      {#if catalogSourceError}
-        <div class="callout warning"><Icon name="warning" size={16} /><div><strong>Could not preview source</strong><p>{catalogSourceError}</p></div></div>
-      {/if}
-      {#if catalogPreview}
-        <div class="catalog-preview">
-          <div><strong>{catalogPreview.catalog.title}</strong><span>{catalogPreview.catalog.entries.length} pinned template(s)</span></div>
-          <StatusPill tone="warning" label="Review required" />
-        </div>
-        <div class="preview-entries">
-          {#each catalogPreview.catalog.entries.slice(0, 4) as entry}
-            <div><span>{entry.title}</span><code>{entry.commit.slice(0, 8)}</code></div>
-          {/each}
-        </div>
-        <div class="callout warning"><Icon name="warning" size={16} /><div><strong>Trust this publisher?</strong><p>Templates can run hooks during deployment. Verify the source and pinned revisions before adding it.</p></div></div>
-      {/if}
-      <footer>
-        <button class="secondary" on:click={() => (catalogSourceOpen = false)}>Cancel</button>
-        <div class="footer-spacer"></div>
-        {#if catalogPreview}
-          <button class="primary" on:click={trustCatalogSource}>Trust and add</button>
-        {:else}
-          <button class="primary" disabled={!catalogSourceUrl.trim()} on:click={previewCatalogSource}>Preview source</button>
-        {/if}
-      </footer>
-    </dialog>
-  </div>
+  <CatalogSourceDialog
+    bind:sourceUrl={catalogSourceUrl}
+    preview={catalogPreview}
+    error={catalogSourceError}
+    onClose={() => (catalogSourceOpen = false)}
+    onPreview={previewCatalogSource}
+    onTrust={trustCatalogSource}
+  />
 {/if}
