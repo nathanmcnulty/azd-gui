@@ -343,11 +343,6 @@
     if ((event.ctrlKey || event.metaKey) && (event.key === "p" || event.key === "k")) {
       event.preventDefault();
       commandPaletteOpen = true;
-      setTimeout(() => document.getElementById("command-query")?.focus(), 0);
-    }
-    if (event.key === "Escape") {
-      commandPaletteOpen = false;
-      if (!installingToolId) installPlan = null;
     }
   }
 
@@ -613,7 +608,6 @@
   async function requestToolInstall(tool: ToolStatus) {
     try {
       installPlan = await previewToolInstall(tool.id);
-      setTimeout(() => document.getElementById("confirm-tool-install")?.focus(), 0);
     } catch (error) {
       addSystemLog(`Could not prepare installation: ${String(error)}`, "error");
       outputOpen = true;

@@ -91,23 +91,37 @@ describe("desktop experience", () => {
     expect(within(results).getAllByText("passed")).toHaveLength(2);
   });
 
-  it("opens the command palette from the keyboard", async () => {
+  it("navigates the command palette by keyboard and restores focus", async () => {
     render(App);
-    await fireEvent.keyDown(document, { key: "p", ctrlKey: true });
+    const trigger = screen.getByRole("button", { name: /search projects, templates, and commands/i });
+    trigger.focus();
+    await fireEvent.click(trigger);
 
-    await waitFor(() => {
-      expect(screen.getByRole("dialog", { name: /command palette/i })).toBeInTheDocument();
-    });
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText(/type a command/i)).toHaveFocus();
-    });
+    const query = await screen.findByRole("combobox", { name: /search commands/i });
+    await waitFor(() => expect(query).toHaveFocus());
+    await fireEvent.keyDown(query, { key: "ArrowDown" });
+    expect(screen.getByRole("option", { name: /open projects/i })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await fireEvent.keyDown(query, { key: "Enter" });
+    expect(await screen.findByRole("heading", { name: "Projects" })).toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+
+    await fireEvent.keyDown(document, { key: "p", ctrlKey: true });
+    const reopenedQuery = await screen.findByRole("combobox", { name: /search commands/i });
+    await fireEvent.keyDown(reopenedQuery, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: /command palette/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 
   it("requires review before a vetted per-user module installation", async () => {
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: "Tools" }));
-    await fireEvent.click(screen.getByRole("button", { name: "Review install" }));
+    const reviewInstall = screen.getByRole("button", { name: "Review install" });
+    reviewInstall.focus();
+    await fireEvent.click(reviewInstall);
 
     const review = screen.getByRole("dialog", {
       name: /review Microsoft Graph PowerShell installation/i
@@ -122,7 +136,18 @@ describe("desktop experience", () => {
       expect(within(review).getByRole("button", { name: /install for current user/i })).toHaveFocus();
     });
 
-    await fireEvent.click(within(review).getByRole("button", { name: /install for current user/i }));
+    await fireEvent.keyDown(within(review).getByRole("button", { name: /install for current user/i }), {
+      key: "Escape"
+    });
+    expect(screen.queryByRole("dialog", { name: /review Microsoft Graph/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(reviewInstall).toHaveFocus());
+
+    await fireEvent.click(reviewInstall);
+    const reopenedReview = screen.getByRole("dialog", {
+      name: /review Microsoft Graph PowerShell installation/i
+    });
+
+    await fireEvent.click(within(reopenedReview).getByRole("button", { name: /install for current user/i }));
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: /review Microsoft Graph/i })).not.toBeInTheDocument();
     });
@@ -348,11 +373,19 @@ describe("desktop experience", () => {
   it("adds, reviews, and removes an external catalog without replacing bundled entries", async () => {
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
-    await fireEvent.click(
-      screen.getByRole("button", { name: /add HTTPS or GitHub source/i })
-    );
+    const addSource = screen.getByRole("button", { name: /add HTTPS or GitHub source/i });
+    addSource.focus();
+    await fireEvent.click(addSource);
 
-    const dialog = screen.getByRole("dialog", { name: /add catalog source/i });
+    let dialog = screen.getByRole("dialog", { name: /add catalog source/i });
+    const sourceInput = within(dialog).getByPlaceholderText(/github.com\/owner/i);
+    await waitFor(() => expect(sourceInput).toHaveFocus());
+    await fireEvent.keyDown(sourceInput, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(addSource).toHaveFocus());
+
+    await fireEvent.click(addSource);
+    dialog = screen.getByRole("dialog", { name: /add catalog source/i });
     await fireEvent.input(within(dialog).getByPlaceholderText(/github.com\/owner/i), {
       target: { value: "https://example.com/azd-gui.catalog.json" }
     });

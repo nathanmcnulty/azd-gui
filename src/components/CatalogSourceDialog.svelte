@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import StatusPill from "./StatusPill.svelte";
   import type { ExternalCatalogPreview } from "../lib/types";
@@ -9,10 +10,25 @@
   export let onClose: () => void;
   export let onPreview: () => void | Promise<void>;
   export let onTrust: () => void | Promise<void>;
+
+  let sourceInput: HTMLInputElement;
+
+  onMount(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    sourceInput.focus();
+    return () => queueMicrotask(() => previousFocus?.isConnected && previousFocus.focus());
+  });
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
+    }
+  }
 </script>
 
 <div class="modal-backdrop" role="presentation" on:click={onClose}>
-  <dialog open class="source-dialog" aria-label="Add catalog source" on:click|stopPropagation>
+  <dialog open class="source-dialog" aria-label="Add catalog source" on:click|stopPropagation on:keydown={handleKeydown}>
     <header>
       <div><span class="eyebrow">EXTERNAL CATALOG</span><h2>Add a catalog source</h2></div>
       <button class="icon-button" aria-label="Close" on:click={onClose}><Icon name="close" size={16} /></button>
@@ -20,7 +36,7 @@
     <p>Enter a direct HTTPS catalog URL or a GitHub repository containing <code>azd-gui.catalog.json</code>.</p>
     <label class="field">
       <span>Catalog URL</span>
-      <input bind:value={sourceUrl} placeholder="https://github.com/owner/catalog-repository" />
+      <input bind:this={sourceInput} bind:value={sourceUrl} placeholder="https://github.com/owner/catalog-repository" />
     </label>
     {#if error}
       <div class="callout warning"><Icon name="warning" size={16} /><div><strong>Could not preview source</strong><p>{error}</p></div></div>
