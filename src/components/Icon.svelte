@@ -20,6 +20,7 @@
     | "play"
     | "plus"
     | "stop"
+    | "maximize"
     | "external" = "home";
   export let size = 20;
 
@@ -44,6 +45,7 @@
     play: ["m8 5 11 7-11 7V5Z"],
     plus: ["M12 5v14", "M5 12h14"],
     stop: ["M6 6h12v12H6z"],
+    maximize: ["M8 3H3v5", "M16 3h5v5", "M8 21H3v-5", "M16 21h5v-5"],
     external: ["M14 4h6v6", "m20 4-9 9", "M18 13v7H4V6h7"]
   };
 </script>
