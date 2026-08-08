@@ -168,6 +168,11 @@ export async function saveCatalogSource(url: string, reviewToken: string): Promi
   return invoke<Catalog>("save_catalog_source", { url, reviewToken });
 }
 
+export async function removeCatalogSource(id: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("remove_catalog_source", { id });
+}
+
 export async function refreshTools(): Promise<ToolStatus[]> {
   if (!isTauri()) return structuredClone(mockBootstrap.tools);
   return invoke<ToolStatus[]>("check_tools");

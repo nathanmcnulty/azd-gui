@@ -114,6 +114,7 @@ async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
     }
     Ok(BootstrapData {
         catalog,
+        catalog_sources: state.database.catalog_sources()?,
         tools,
         connections,
         projects: state.database.projects()?,
@@ -309,6 +310,11 @@ fn save_catalog_source(
         accepted_catalog: Some(accepted_catalog.clone()),
     })?;
     Ok(accepted_catalog)
+}
+
+#[tauri::command]
+fn remove_catalog_source(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.database.remove_catalog_source(&id)
 }
 
 #[tauri::command]
@@ -713,6 +719,7 @@ pub fn run() {
             open_external_terminal,
             preview_external_catalog,
             save_catalog_source,
+            remove_catalog_source,
             prepare_deployment,
             get_project_state,
             list_project_environments,

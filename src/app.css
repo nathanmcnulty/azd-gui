@@ -2041,6 +2041,22 @@ button.compact {
   font-size: 11px;
 }
 
+.catalog-source-row > div:first-child {
+  min-width: 0;
+}
+
+.catalog-source-row > div:first-child span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-source-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
 .wizard-template {
   display: grid;
   padding: 4px 12px 14px;
