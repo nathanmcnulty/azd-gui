@@ -1,6 +1,7 @@
 use crate::{
     error::{AppError, AppResult},
     models::{OperationEvent, OperationOutcome},
+    persistence::Database,
     redaction::redact,
 };
 use chrono::Utc;
@@ -138,6 +139,30 @@ pub struct OperationManager {
     cancellations: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
 }
 
+#[derive(Clone)]
+pub struct OperationPersistence {
+    database: Arc<Database>,
+    project_path: String,
+}
+
+impl OperationPersistence {
+    pub fn new(database: Arc<Database>, project_path: String) -> Self {
+        Self {
+            database,
+            project_path,
+        }
+    }
+
+    fn record(&self, event: &OperationEvent) {
+        if let Err(error) = self.database.record_operation(event, &self.project_path) {
+            eprintln!(
+                "Could not persist operation {}: {error}",
+                event.operation_id
+            );
+        }
+    }
+}
+
 impl OperationManager {
     pub async fn cancel(&self, operation_id: &str) -> bool {
         self.cancellations
@@ -187,21 +212,31 @@ fn emit_event(
     level: &str,
     message: impl Into<String>,
     progress: Option<u8>,
-) {
-    let _ = app.emit(
-        "operation-event",
-        OperationEvent {
-            operation_id: operation_id.into(),
-            kind: kind.into(),
-            state: state.into(),
-            timestamp: Utc::now().to_rfc3339(),
-            stream: stream.into(),
-            level: level.into(),
-            message: redact(&message.into()),
-            progress,
-            outcome: terminal_outcome(kind, state),
-        },
-    );
+) -> OperationEvent {
+    let event = OperationEvent {
+        operation_id: operation_id.into(),
+        kind: kind.into(),
+        state: state.into(),
+        timestamp: Utc::now().to_rfc3339(),
+        stream: stream.into(),
+        level: level.into(),
+        message: redact(&message.into()),
+        progress,
+        outcome: terminal_outcome(kind, state),
+    };
+    let _ = app.emit("operation-event", event.clone());
+    event
+}
+
+fn operation_timeout(kind: &str) -> Duration {
+    match kind {
+        "up" | "provision" | "deploy" | "down" => Duration::from_secs(4 * 60 * 60),
+        "preview" => Duration::from_secs(60 * 60),
+        "refresh" | "show" => Duration::from_secs(30 * 60),
+        _ if kind.starts_with("login:") => Duration::from_secs(15 * 60),
+        _ if kind.starts_with("install:") => Duration::from_secs(30 * 60),
+        _ => Duration::from_secs(60 * 60),
+    }
 }
 
 fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
@@ -291,6 +326,7 @@ pub fn spawn_operation(
     operations: OperationManager,
     kind: impl Into<String>,
     spec: CommandSpec,
+    persistence: Option<OperationPersistence>,
 ) -> AppResult<String> {
     spec.validate()?;
     let operation_id = Uuid::new_v4().to_string();
@@ -318,7 +354,7 @@ pub fn spawn_operation(
         let mut command = match spec.process() {
             Ok(command) => command,
             Err(error) => {
-                emit_event(
+                let event = emit_event(
                     &app,
                     &operation_id,
                     &kind,
@@ -328,6 +364,10 @@ pub fn spawn_operation(
                     error.to_string(),
                     None,
                 );
+                if let Some(persistence) = persistence.as_ref() {
+                    persistence.record(&event);
+                }
+                operations.cancellations.lock().await.remove(&operation_id);
                 return;
             }
         };
@@ -343,7 +383,7 @@ pub fn spawn_operation(
                 } else {
                     error.to_string()
                 };
-                emit_event(
+                let event = emit_event(
                     &app,
                     &operation_id,
                     &kind,
@@ -353,6 +393,9 @@ pub fn spawn_operation(
                     message,
                     None,
                 );
+                if let Some(persistence) = persistence.as_ref() {
+                    persistence.record(&event);
+                }
                 operations.cancellations.lock().await.remove(&operation_id);
                 return;
             }
@@ -376,7 +419,7 @@ pub fn spawn_operation(
         let stdout_id = operation_id.clone();
         let stdout_kind = kind.clone();
         let stdout_progress = last_progress.clone();
-        let stdout_task = tauri::async_runtime::spawn(async move {
+        let mut stdout_task = tauri::async_runtime::spawn(async move {
             if let Some(stdout) = stdout {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -400,7 +443,7 @@ pub fn spawn_operation(
         let stderr_app = app.clone();
         let stderr_id = operation_id.clone();
         let stderr_kind = kind.clone();
-        let stderr_task = tauri::async_runtime::spawn(async move {
+        let mut stderr_task = tauri::async_runtime::spawn(async move {
             if let Some(stderr) = stderr {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -419,6 +462,9 @@ pub fn spawn_operation(
         });
 
         let mut cancelled = false;
+        let mut timed_out = false;
+        let timeout = tokio::time::sleep(operation_timeout(&kind));
+        tokio::pin!(timeout);
         let status = tokio::select! {
             value = child.wait() => value,
             _ = &mut cancel_receiver => {
@@ -426,13 +472,26 @@ pub fn spawn_operation(
                 let _ = child.kill().await;
                 child.wait().await
             }
+            _ = &mut timeout => {
+                timed_out = true;
+                let _ = child.kill().await;
+                child.wait().await
+            }
         };
-        let _ = stdout_task.await;
-        let _ = stderr_task.await;
+        if tokio::time::timeout(Duration::from_secs(5), async {
+            let _ = (&mut stdout_task).await;
+            let _ = (&mut stderr_task).await;
+        })
+        .await
+        .is_err()
+        {
+            stdout_task.abort();
+            stderr_task.abort();
+        }
         operations.cancellations.lock().await.remove(&operation_id);
         let terminal_progress = last_progress.load(Ordering::Relaxed);
 
-        if cancelled {
+        let event = if cancelled {
             emit_event(
                 &app,
                 &operation_id,
@@ -442,7 +501,18 @@ pub fn spawn_operation(
                 "warning",
                 "Operation cancelled.",
                 Some(terminal_progress),
-            );
+            )
+        } else if timed_out {
+            emit_event(
+                &app,
+                &operation_id,
+                &kind,
+                "failed",
+                "system",
+                "error",
+                "Operation exceeded its time limit and was stopped.",
+                Some(terminal_progress),
+            )
         } else {
             match status {
                 Ok(status) if status.success() => emit_event(
@@ -476,6 +546,9 @@ pub fn spawn_operation(
                     Some(terminal_progress),
                 ),
             }
+        };
+        if let Some(persistence) = persistence {
+            persistence.record(&event);
         }
     });
 
@@ -484,7 +557,7 @@ pub fn spawn_operation(
 
 #[cfg(test)]
 mod tests {
-    use super::{capture, terminal_outcome, CommandSpec, Executable};
+    use super::{capture, operation_timeout, terminal_outcome, CommandSpec, Executable};
     use crate::error::AppError;
     use std::time::Duration;
 
@@ -587,5 +660,12 @@ mod tests {
     #[test]
     fn non_lifecycle_operations_do_not_claim_resource_outcomes() {
         assert!(terminal_outcome("login:azd", "failed").is_none());
+    }
+
+    #[test]
+    fn operation_deadlines_are_bounded_by_operation_kind() {
+        assert_eq!(operation_timeout("login:azd"), Duration::from_secs(15 * 60));
+        assert_eq!(operation_timeout("preview"), Duration::from_secs(60 * 60));
+        assert_eq!(operation_timeout("up"), Duration::from_secs(4 * 60 * 60));
     }
 }

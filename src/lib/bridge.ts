@@ -431,14 +431,6 @@ export async function setProjectEnvironmentValues(
   await invoke("set_project_environment_values", { projectPath, environment, values });
 }
 
-export async function recordOperation(
-  event: OperationEvent,
-  projectPath: string
-): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("record_operation", { event, projectPath });
-}
-
 export async function getOperationHistory(projectPath: string): Promise<OperationEvent[]> {
   if (!isTauri()) return structuredClone(mockOperationHistory);
   return invoke<OperationEvent[]>("get_operation_history", { projectPath });
