@@ -16,7 +16,7 @@
   export let navigation: NavItem[];
   export let activeNav: NavId;
   export let expanded: boolean;
-  export let connectionAttentionCount: number;
+  export let connectedConnectionCount: number;
   export let projectCount: number;
   export let azdVersion: string;
   export let appVersion: string;
@@ -66,14 +66,14 @@
         <button
           class:active={activeNav === item.id}
           aria-current={activeNav === item.id ? "page" : undefined}
-          aria-label={item.id === "connections" ? `${item.label}, ${connectionAttentionCount} require attention` : item.id === "projects" ? `${item.label}, ${projectCount} projects` : item.label}
+          aria-label={item.id === "connections" ? `${item.label}, ${connectedConnectionCount} connected` : item.id === "projects" ? `${item.label}, ${projectCount} projects` : item.label}
           title={item.label}
           on:click={() => onNavigate(item.id)}
         >
           <Icon name={item.icon} size={22} />
           <span class="nav-label">{item.label}</span>
           {#if item.id === "connections"}
-            <span class="nav-count">{connectionAttentionCount}</span>
+            <span class="nav-count">{connectedConnectionCount}</span>
           {:else if item.id === "projects"}
             <span class="nav-count">{projectCount}</span>
           {/if}

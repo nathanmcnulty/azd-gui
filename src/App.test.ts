@@ -208,12 +208,18 @@ describe("desktop experience", () => {
   it("shows azd credential expiration in the Connections center", async () => {
     render(App);
 
-    await fireEvent.click(screen.getByRole("button", { name: /^Connections,/ }));
+    const connectionsButton = screen.getByRole("button", { name: "Connections, 3 connected" });
+    await fireEvent.click(connectionsButton);
     const azdCard = screen
       .getByRole("heading", { name: "Azure Developer CLI" })
       .closest<HTMLElement>(".connection-card")!;
+    const powerShellCard = screen
+      .getByRole("heading", { name: "Azure PowerShell" })
+      .closest<HTMLElement>(".connection-card")!;
 
     expect(document.querySelector(".connection-icon")).not.toBeInTheDocument();
+    expect(within(azdCard).getByText("connected")).toHaveClass("success");
+    expect(within(powerShellCard).getByText("disconnected")).toHaveClass("danger");
     expect(within(azdCard).getByText("Expires")).toBeInTheDocument();
     expect(
       within(azdCard).getByText(new Date("2030-01-15T18:30:00Z").toLocaleString())
