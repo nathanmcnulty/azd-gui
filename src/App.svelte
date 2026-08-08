@@ -266,7 +266,7 @@
     .every(connectionMeetsRequirements);
   $: selectedPlatformSupported =
     !selectedEntry || selectedEntry.platforms.includes(data.platform);
-  $: connectionAttentionCount = data.connections.filter((connection) => connection.state !== "connected").length;
+  $: connectedConnectionCount = data.connections.filter((connection) => connection.state === "connected").length;
   $: tenantMismatch =
     new Set(
       data.connections
@@ -1614,7 +1614,7 @@
     {navigation}
     {activeNav}
     expanded={navigationExpanded}
-    {connectionAttentionCount}
+    {connectedConnectionCount}
     projectCount={data.projects.length}
     azdVersion={data.tools.find((tool) => tool.id === "azd")?.installedVersion ?? "not found"}
     appVersion={data.appVersion}
@@ -1859,7 +1859,10 @@
                     {/if}
                     {#if missingScopes.length}<small class="scope-warning">Missing scopes: {missingScopes.join(", ")}</small>{/if}
                   </div>
-                  <StatusPill tone={connection.state === "connected" && missingScopes.length === 0 ? "success" : "warning"} label={missingScopes.length ? "scope update required" : connection.state} />
+                  <StatusPill
+                    tone={missingScopes.length || connection.state === "expired" ? "warning" : connection.state === "connected" ? "success" : connection.state === "checking" ? "neutral" : "danger"}
+                    label={missingScopes.length ? "scope update required" : connection.state}
+                  />
                   <button class="secondary" on:click={() => connect(connection)}>
                     {connection.state === "connected" ? (missingScopes.length ? "Update scopes" : "Reconnect") : "Connect"}
                   </button>
@@ -2512,7 +2515,7 @@
         <div class="connection-grid">
           {#each data.connections as connection}
             <article class="connection-card">
-              <div class="row"><h2>{connection.name}</h2><StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} /></div>
+              <div class="row"><h2>{connection.name}</h2><StatusPill tone={connection.state === "connected" ? "success" : connection.state === "expired" ? "warning" : connection.state === "checking" ? "neutral" : "danger"} label={connection.state} /></div>
               <p>{connection.account ?? "No active account detected"}</p>
               <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Expires</dt><dd>{connection.expiresOn ? new Date(connection.expiresOn).toLocaleString() : "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div>{#if connection.id === "graphPowerShell"}<div><dt>Granted scopes</dt><dd title={connection.grantedScopes?.join(", ")}>{connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "—"}</dd></div>{/if}</dl>
               <button class="secondary full-width" on:click={() => connect(connection)}>{connection.state === "connected" ? "Reconnect" : "Connect"}</button>

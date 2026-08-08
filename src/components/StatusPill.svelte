@@ -5,7 +5,7 @@
   export let dot = true;
 </script>
 
-<span class:dot class={`status-pill ${tone}`}>
+<span class={`status-pill ${tone}${dot ? " has-dot" : ""}`}>
   {#if !dot && tone === "success"}<Icon name="check" size={13} />{/if}
   {label}
 </span>
