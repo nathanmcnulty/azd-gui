@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { connectionMeetsRequirements, missingRequestedScopes } from "./connections";
+import {
+  connectionMeetsRequirements,
+  missingRequestedScopes,
+  retainGrantedGraphScopes
+} from "./connections";
 import type { ConnectionStatus } from "./types";
 
 function graphConnection(overrides: Partial<ConnectionStatus> = {}): ConnectionStatus {
@@ -47,5 +51,21 @@ describe("connection scope requirements", () => {
 
   it("requires reconnecting an expired provider", () => {
     expect(connectionMeetsRequirements(graphConnection({ state: "expired" }))).toBe(false);
+  });
+
+  it("retains confirmed Graph scopes when refresh finds the persisted user context", () => {
+    const current = [graphConnection()];
+    const refreshed = [graphConnection({ grantedScopes: [] })];
+
+    expect(retainGrantedGraphScopes(current, refreshed)[0].grantedScopes).toEqual([
+      "application.readwrite.all"
+    ]);
+  });
+
+  it("does not retain Graph scopes for a disconnected refresh", () => {
+    const current = [graphConnection()];
+    const refreshed = [graphConnection({ state: "disconnected", grantedScopes: [] })];
+
+    expect(retainGrantedGraphScopes(current, refreshed)[0].grantedScopes).toEqual([]);
   });
 });
