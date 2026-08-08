@@ -15,6 +15,12 @@ export interface ExternalCatalogPreview {
   reviewToken: string;
 }
 
+export interface CatalogSourceSummary {
+  id: string;
+  label: string;
+  url: string;
+}
+
 export interface CatalogEntry {
   id: string;
   title: string;
@@ -304,6 +310,7 @@ export interface AppSettings {
 
 export interface BootstrapData {
   catalog: Catalog;
+  catalogSources: CatalogSourceSummary[];
   tools: ToolStatus[];
   connections: ConnectionStatus[];
   projects: ProjectSummary[];

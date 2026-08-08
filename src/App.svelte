@@ -26,6 +26,7 @@
     startAzdOperation,
     login,
     previewExternalCatalog,
+    removeCatalogSource,
     saveCatalogSource,
     loadWizardDraft,
     saveWizardDraft,
@@ -45,6 +46,7 @@
     BootstrapData,
     Catalog,
     CatalogEntry,
+    CatalogSourceSummary,
     ConfigurationField,
     ConnectionStatus,
     ExternalCatalogPreview,
@@ -154,6 +156,7 @@
   let catalogSourceUrl = "";
   let catalogPreview: ExternalCatalogPreview | null = null;
   let catalogSourceError = "";
+  let pendingCatalogRemovalId: string | null = null;
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let azureDiscovery: AzureDiscovery | null = null;
   let azureDiscoveryLoading = false;
@@ -1411,31 +1414,71 @@
     }
   }
 
+  function openCatalogSource(source?: CatalogSourceSummary) {
+    catalogSourceUrl = source?.url ?? "";
+    catalogPreview = null;
+    catalogSourceError = "";
+    catalogSourceOpen = true;
+  }
+
   async function trustCatalogSource() {
     if (!catalogPreview) return;
-    const acceptedCatalog = await saveCatalogSource(
-      catalogSourceUrl.trim(),
-      catalogPreview.reviewToken
-    );
-    const externalEntries = acceptedCatalog.entries.map((entry) => ({
-      ...entry,
-      source: "external" as const,
-      trusted: true
-    }));
-    const acceptedPrefix = `external-${acceptedCatalog.id}.`;
-    data = {
-      ...data,
-      catalog: {
-        ...data.catalog,
-        entries: [
-          ...data.catalog.entries.filter((entry) => !entry.id.startsWith(acceptedPrefix)),
-          ...externalEntries
-        ]
-      }
-    };
-    catalogSourceOpen = false;
-    catalogSourceUrl = "";
-    catalogPreview = null;
+    catalogSourceError = "";
+    const sourceUrl = catalogSourceUrl.trim();
+    try {
+      const previousSource = data.catalogSources.find((source) => source.url === sourceUrl);
+      const acceptedCatalog = await saveCatalogSource(sourceUrl, catalogPreview.reviewToken);
+      const removedPrefixes = [
+        `external-${acceptedCatalog.id}.`,
+        previousSource ? `external-${previousSource.id}.` : ""
+      ].filter(Boolean);
+      const externalEntries = acceptedCatalog.entries.map((entry) => ({
+        ...entry,
+        source: "external" as const,
+        trusted: true
+      }));
+      data = {
+        ...data,
+        catalog: {
+          ...data.catalog,
+          entries: [
+            ...data.catalog.entries.filter(
+              (entry) => !removedPrefixes.some((prefix) => entry.id.startsWith(prefix))
+            ),
+            ...externalEntries
+          ]
+        },
+        catalogSources: [
+          ...data.catalogSources.filter(
+            (source) => source.url !== sourceUrl && source.id !== acceptedCatalog.id
+          ),
+          { id: acceptedCatalog.id, label: acceptedCatalog.title, url: sourceUrl }
+        ].sort((left, right) => left.label.localeCompare(right.label))
+      };
+      catalogSourceOpen = false;
+      catalogSourceUrl = "";
+      catalogPreview = null;
+    } catch (error) {
+      catalogSourceError = String(error);
+    }
+  }
+
+  async function removeTrustedCatalog(source: CatalogSourceSummary) {
+    try {
+      await removeCatalogSource(source.id);
+      const prefix = `external-${source.id}.`;
+      data = {
+        ...data,
+        catalog: {
+          ...data.catalog,
+          entries: data.catalog.entries.filter((entry) => !entry.id.startsWith(prefix))
+        },
+        catalogSources: data.catalogSources.filter((candidate) => candidate.id !== source.id)
+      };
+      pendingCatalogRemovalId = null;
+    } catch (error) {
+      addSystemLog(`Could not remove catalog source: ${String(error)}`, "error");
+    }
   }
 
   const commands = [
@@ -2014,7 +2057,7 @@
       <section class="page">
         <div class="page-header">
           <div><span class="eyebrow">TRUSTED SOURCES</span><h1>Template catalog</h1><p>Reviewed, pinned azd deployments that can be configured before any code runs.</p></div>
-          <button class="secondary" on:click={() => (catalogSourceOpen = true)}><Icon name="github" size={16} /> Add source</button>
+          <button class="secondary" on:click={() => openCatalogSource()}><Icon name="github" size={16} /> Add source</button>
         </div>
         <div class="catalog-toolbar">
           <label><Icon name="search" size={15} /><input bind:value={catalogQuery} placeholder="Filter templates and tags" /></label>
@@ -2417,8 +2460,22 @@
         </div>
         <div class="settings-group">
           <h2>Catalog sources</h2>
-          <div class="setting-row"><div><strong>Active catalogs</strong><span>Bundled catalog available offline · {data.catalog.entries.length} pinned templates</span></div><StatusPill tone="success" label="Trusted" /></div>
-          <button class="secondary" on:click={() => (catalogSourceOpen = true)}><Icon name="github" size={15} /> Add HTTPS or GitHub source</button>
+          <div class="setting-row"><div><strong>Bundled catalog</strong><span>Available offline · {data.catalog.entries.filter((entry) => entry.source !== "external").length} pinned templates</span></div><StatusPill tone="success" label="Trusted" /></div>
+          {#each data.catalogSources as source}
+            <div class="setting-row catalog-source-row">
+              <div><strong>{source.label}</strong><span>{source.url} · {data.catalog.entries.filter((entry) => entry.id.startsWith(`external-${source.id}.`)).length} pinned templates</span></div>
+              <div class="catalog-source-actions">
+                <button class="secondary compact" on:click={() => openCatalogSource(source)}>Review latest</button>
+                {#if pendingCatalogRemovalId === source.id}
+                  <button class="secondary compact" on:click={() => (pendingCatalogRemovalId = null)}>Cancel</button>
+                  <button class="danger compact" on:click={() => removeTrustedCatalog(source)}>Confirm remove</button>
+                {:else}
+                  <button class="danger compact" on:click={() => (pendingCatalogRemovalId = source.id)}>Remove</button>
+                {/if}
+              </div>
+            </div>
+          {/each}
+          <button class="secondary" on:click={() => openCatalogSource()}><Icon name="github" size={15} /> Add HTTPS or GitHub source</button>
         </div>
         <div class="settings-group">
           <h2>Privacy</h2>

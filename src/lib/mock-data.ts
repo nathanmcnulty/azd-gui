@@ -619,6 +619,7 @@ export const mockOperationHistory: OperationEvent[] = [
 
 export const mockBootstrap: BootstrapData = {
   catalog: bundledCatalog,
+  catalogSources: [],
   tools: mockTools,
   connections: mockConnections,
   projects: mockProjects,

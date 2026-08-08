@@ -345,7 +345,7 @@ describe("desktop experience", () => {
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
   });
 
-  it("reviews and adds an external catalog without replacing active entries", async () => {
+  it("adds, reviews, and removes an external catalog without replacing bundled entries", async () => {
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
     await fireEvent.click(
@@ -364,7 +364,23 @@ describe("desktop experience", () => {
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument();
     });
-    const activeCatalogs = screen.getByText("Active catalogs").closest<HTMLElement>(".setting-row")!;
-    expect(within(activeCatalogs).getByText(/6 pinned templates/i)).toBeInTheDocument();
+    const externalSource = screen.getByText("External catalog preview").closest<HTMLElement>(".setting-row")!;
+    expect(within(externalSource).getByText(/3 pinned templates/i)).toBeInTheDocument();
+    expect(screen.getByText("Bundled catalog").closest<HTMLElement>(".setting-row")).toHaveTextContent(
+      "3 pinned templates"
+    );
+
+    await fireEvent.click(within(externalSource).getByRole("button", { name: /review latest/i }));
+    const refreshDialog = screen.getByRole("dialog", { name: /add catalog source/i });
+    expect(within(refreshDialog).getByPlaceholderText(/github.com\/owner/i)).toHaveValue(
+      "https://example.com/azd-gui.catalog.json"
+    );
+    await fireEvent.click(within(refreshDialog).getByRole("button", { name: /cancel/i }));
+
+    await fireEvent.click(within(externalSource).getByRole("button", { name: /^remove$/i }));
+    await fireEvent.click(within(externalSource).getByRole("button", { name: /confirm remove/i }));
+    await waitFor(() => expect(screen.queryByText("External catalog preview")).not.toBeInTheDocument());
+    await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
+    expect(screen.getAllByRole("button", { name: /configure deployment/i })).toHaveLength(3);
   });
 });

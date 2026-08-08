@@ -1,7 +1,7 @@
 use crate::{
     catalog,
     error::{AppError, AppResult},
-    models::{AppSettings, CatalogSource, OperationEvent, ProjectSummary},
+    models::{AppSettings, CatalogSource, CatalogSourceSummary, OperationEvent, ProjectSummary},
     redaction::redact,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -172,10 +172,17 @@ impl Database {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
-        self.lock()?.execute(
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM catalog_sources WHERE url = ?1 AND id != ?2",
+            params![source.url, source.id],
+        )?;
+        transaction.execute(
             "INSERT INTO catalog_sources (id, label, url, trusted, pinned_revision, accepted_catalog_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(url) DO UPDATE SET label=excluded.label, trusted=excluded.trusted,
+             ON CONFLICT(id) DO UPDATE SET label=excluded.label, url=excluded.url,
+             trusted=excluded.trusted,
              pinned_revision=excluded.pinned_revision, accepted_catalog_json=excluded.accepted_catalog_json",
             params![
                 source.id,
@@ -186,6 +193,36 @@ impl Database {
                 accepted_catalog
             ],
         )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn catalog_sources(&self) -> AppResult<Vec<CatalogSourceSummary>> {
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, label, url FROM catalog_sources
+             WHERE trusted = 1 AND accepted_catalog_json IS NOT NULL
+             ORDER BY label COLLATE NOCASE, id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(CatalogSourceSummary {
+                id: row.get(0)?,
+                label: row.get(1)?,
+                url: row.get(2)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
+    }
+
+    pub fn remove_catalog_source(&self, id: &str) -> AppResult<()> {
+        let removed = self
+            .lock()?
+            .execute("DELETE FROM catalog_sources WHERE id = ?1", [id])?;
+        if removed == 0 {
+            return Err(AppError::Invalid(format!(
+                "Catalog source is not registered: {id}"
+            )));
+        }
         Ok(())
     }
 
@@ -418,7 +455,8 @@ impl Database {
 mod tests {
     use super::{column_exists, Database, SCHEMA_VERSION};
     use crate::models::{
-        AppSettings, OperationEvent, OperationOutcome, ProjectSummary, ThemePreference,
+        AppSettings, CatalogSource, OperationEvent, OperationOutcome, ProjectSummary,
+        ThemePreference,
     };
     use rusqlite::Connection;
     use tempfile::tempdir;
@@ -485,6 +523,40 @@ mod tests {
                 navigation_expanded: false,
             }
         );
+    }
+
+    #[test]
+    fn catalog_sources_refresh_identity_and_can_be_removed() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let url = "https://example.com/azd-gui.catalog.json";
+        let first = CatalogSource {
+            id: "first".into(),
+            label: "First catalog".into(),
+            url: url.into(),
+            trusted: true,
+            pinned_revision: None,
+            accepted_catalog: None,
+        };
+        database.save_catalog_source(&first).unwrap();
+
+        let second = CatalogSource {
+            id: "second".into(),
+            label: "Second catalog".into(),
+            url: url.into(),
+            trusted: true,
+            pinned_revision: None,
+            accepted_catalog: Some(crate::catalog::bundled_catalog().unwrap()),
+        };
+        database.save_catalog_source(&second).unwrap();
+
+        let sources = database.catalog_sources().unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, second.id);
+        assert_eq!(sources[0].label, second.label);
+        database.remove_catalog_source(&second.id).unwrap();
+        assert!(database.catalog_sources().unwrap().is_empty());
+        assert!(database.remove_catalog_source(&second.id).is_err());
     }
 
     #[test]

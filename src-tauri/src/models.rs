@@ -17,6 +17,14 @@ pub struct ExternalCatalogPreview {
     pub review_token: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogSourceSummary {
+    pub id: String,
+    pub label: String,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {
@@ -408,6 +416,7 @@ impl Default for AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct BootstrapData {
     pub catalog: Catalog,
+    pub catalog_sources: Vec<CatalogSourceSummary>,
     pub tools: Vec<ToolStatus>,
     pub connections: Vec<ConnectionStatus>,
     pub projects: Vec<ProjectSummary>,
