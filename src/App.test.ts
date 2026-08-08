@@ -344,4 +344,27 @@ describe("desktop experience", () => {
 
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
   });
+
+  it("reviews and adds an external catalog without replacing active entries", async () => {
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
+    await fireEvent.click(
+      screen.getByRole("button", { name: /add HTTPS or GitHub source/i })
+    );
+
+    const dialog = screen.getByRole("dialog", { name: /add catalog source/i });
+    await fireEvent.input(within(dialog).getByPlaceholderText(/github.com\/owner/i), {
+      target: { value: "https://example.com/azd-gui.catalog.json" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: /preview source/i }));
+
+    expect(await within(dialog).findByText("External catalog preview")).toBeInTheDocument();
+    await fireEvent.click(within(dialog).getByRole("button", { name: /trust and add/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument();
+    });
+    const activeCatalogs = screen.getByText("Active catalogs").closest<HTMLElement>(".setting-row")!;
+    expect(within(activeCatalogs).getByText(/6 pinned templates/i)).toBeInTheDocument();
+  });
 });
