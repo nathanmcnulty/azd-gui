@@ -2412,7 +2412,6 @@
         <div class="connection-grid">
           {#each data.connections as connection}
             <article class="connection-card">
-              <div class={`connection-icon ${connection.state}`}><Icon name="connections" size={21} /></div>
               <div class="row"><h2>{connection.name}</h2><StatusPill tone={connection.state === "connected" ? "success" : "warning"} label={connection.state} /></div>
               <p>{connection.account ?? "No active account detected"}</p>
               <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Expires</dt><dd>{connection.expiresOn ? new Date(connection.expiresOn).toLocaleString() : "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div>{#if connection.id === "graphPowerShell"}<div><dt>Granted scopes</dt><dd title={connection.grantedScopes?.join(", ")}>{connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "—"}</dd></div>{/if}</dl>
