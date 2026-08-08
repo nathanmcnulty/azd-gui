@@ -180,6 +180,7 @@ code {
     "status status" 22px /
     250px minmax(0, 1fr);
   background: var(--bg);
+  transition: grid-template-columns 180ms ease;
 }
 
 .app-shell.output-open {
@@ -324,23 +325,35 @@ kbd {
   min-height: 0;
   flex-direction: column;
   flex: 1;
-  padding: 1px 8px;
+  padding: 1px 6px;
   gap: 2px;
 }
 
 .sidebar-nav button {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto;
-  min-height: 30px;
-  padding: 0 8px;
+  display: flex;
+  min-height: 40px;
+  padding: 0 9px;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
+  overflow: hidden;
   cursor: pointer;
   color: var(--muted);
   text-align: left;
   border: 0;
   border-radius: 4px;
   background: transparent;
+}
+
+.sidebar-nav button > .icon {
+  flex: 0 0 auto;
+}
+
+.nav-label {
+  overflow: hidden;
+  opacity: 1;
+  text-overflow: ellipsis;
+  transition: opacity 100ms ease;
+  white-space: nowrap;
 }
 
 .sidebar-nav button:hover {
@@ -358,6 +371,7 @@ kbd {
 }
 
 .nav-count {
+  margin-left: auto;
   min-width: 18px;
   padding: 1px 5px;
   text-align: center;
@@ -419,30 +433,30 @@ kbd {
 }
 
 .sidebar.collapsed .navigation-heading {
-  display: none;
+  visibility: hidden;
 }
 
 .sidebar.collapsed .sidebar-heading > span,
-.sidebar.collapsed .nav-label,
 .sidebar.collapsed .sidebar-versions,
 .sidebar.collapsed .wizard-template-details,
 .sidebar.collapsed .step-copy {
   display: none;
 }
 
+.sidebar.collapsed .nav-label {
+  visibility: hidden;
+  opacity: 0;
+}
+
 .sidebar.collapsed .sidebar-nav {
   padding: 1px 6px;
-  align-items: center;
 }
 
 .sidebar.collapsed .sidebar-nav button {
   position: relative;
-  display: grid;
   width: 40px;
   min-height: 40px;
-  padding: 0;
-  grid-template-columns: 1fr;
-  place-items: center;
+  padding: 0 9px;
 }
 
 .sidebar.collapsed .sidebar-nav button.active::before {
@@ -460,6 +474,7 @@ kbd {
   top: 2px;
   right: 1px;
   min-width: 14px;
+  margin-left: 0;
   padding: 0 3px;
   line-height: 14px;
 }
@@ -1887,22 +1902,6 @@ button.compact {
   background: var(--panel);
 }
 
-.connection-icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  margin-bottom: 14px;
-  place-items: center;
-  color: var(--muted);
-  border-radius: 5px;
-  background: var(--panel-hover);
-}
-
-.connection-icon.connected {
-  color: var(--success);
-  background: var(--success-bg);
-}
-
 .connection-card h2 {
   margin-bottom: 0;
 }
@@ -1919,6 +1918,7 @@ button.compact {
   display: grid;
   min-height: 25px;
   grid-template-columns: 90px minmax(0, 1fr);
+  column-gap: 8px;
 }
 
 .connection-card dt {
@@ -3180,20 +3180,17 @@ button.compact {
   }
 
   .sidebar:not(.collapsed) .navigation-heading {
-    display: none;
+    visibility: hidden;
   }
 
   .sidebar:not(.collapsed) .sidebar-nav {
     padding: 1px 6px;
-    align-items: center;
   }
 
   .sidebar:not(.collapsed) .sidebar-nav button {
     width: 40px;
     min-height: 40px;
-    padding: 0;
-    grid-template-columns: 1fr;
-    place-items: center;
+    padding: 0 9px;
   }
 
   .titlebar {

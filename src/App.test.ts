@@ -213,6 +213,7 @@ describe("desktop experience", () => {
       .getByRole("heading", { name: "Azure Developer CLI" })
       .closest<HTMLElement>(".connection-card")!;
 
+    expect(document.querySelector(".connection-icon")).not.toBeInTheDocument();
     expect(within(azdCard).getByText("Expires")).toBeInTheDocument();
     expect(
       within(azdCard).getByText(new Date("2030-01-15T18:30:00Z").toLocaleString())

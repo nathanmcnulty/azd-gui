@@ -70,7 +70,7 @@
           title={item.label}
           on:click={() => onNavigate(item.id)}
         >
-          <Icon name={item.icon} size={18} />
+          <Icon name={item.icon} size={22} />
           <span class="nav-label">{item.label}</span>
           {#if item.id === "connections"}
             <span class="nav-count">{connectionAttentionCount}</span>
