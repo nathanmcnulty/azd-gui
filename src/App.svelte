@@ -63,7 +63,8 @@
   } from "./lib/types";
   import {
     connectionMeetsRequirements,
-    missingRequestedScopes
+    missingRequestedScopes,
+    retainGrantedGraphScopes
   } from "./lib/connections";
   import { projectServices } from "./lib/project-state";
   import {
@@ -644,12 +645,16 @@
 
   async function checkConnections() {
     azureDiscovery = null;
+    const currentConnections = data.connections;
     data = {
       ...data,
       connections: data.connections.map((connection) => ({ ...connection, state: "checking" }))
     };
     try {
-      data = { ...data, connections: await refreshConnections() };
+      data = {
+        ...data,
+        connections: retainGrantedGraphScopes(currentConnections, await refreshConnections())
+      };
     } catch (error) {
       addSystemLog(`Connection check failed: ${String(error)}`, "error");
     }
@@ -662,6 +667,16 @@
       const operationId = await login(provider.id, provider.scopes ?? [], deviceCode);
       if (data.isNative) {
         await waitForOperation(operationId);
+        if (provider.id === "graphPowerShell" && provider.scopes?.length) {
+          data = {
+            ...data,
+            connections: data.connections.map((connection) =>
+              connection.id === "graphPowerShell"
+                ? { ...connection, grantedScopes: [...(provider.scopes ?? [])] }
+                : connection
+            )
+          };
+        }
         await checkConnections();
       } else {
         data = {

@@ -102,6 +102,19 @@ async fn json_status(spec: CommandSpec) -> Option<Value> {
     serde_json::from_str(&output.stdout).ok()
 }
 
+fn graph_context_spec() -> CommandSpec {
+    CommandSpec::new(
+        Executable::PowerShell,
+        [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$c=Get-MgContext -ErrorAction SilentlyContinue; if(!$c){$p=Join-Path (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.mg') 'mg.authrecord.json'; if(Test-Path -LiteralPath $p){try{$r=Get-Content -LiteralPath $p -Raw -ErrorAction Stop|ConvertFrom-Json; if($r.username -and $r.tenantId){$c=[pscustomobject]@{Account=$r.username;TenantId=$r.tenantId;Scopes=@()}}}catch{}}}; if($c){[pscustomobject]@{account=$c.Account;tenantId=$c.TenantId;scopes=@($c.Scopes)}|ConvertTo-Json -Compress}",
+        ],
+    )
+}
+
 pub async fn check_all() -> Vec<ConnectionStatus> {
     let azd_client = SystemAzdClient;
     let (azd, az, az_ps, graph_ps) = tokio::join!(
@@ -120,16 +133,7 @@ pub async fn check_all() -> Vec<ConnectionStatus> {
                 "$c=Get-AzContext -ErrorAction SilentlyContinue; if($c){[pscustomobject]@{account=$c.Account.Id;tenantId=$c.Tenant.Id;subscriptionId=$c.Subscription.Id;subscriptionName=$c.Subscription.Name}|ConvertTo-Json -Compress}"
             ]
         )),
-        json_status(CommandSpec::new(
-            Executable::PowerShell,
-            [
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "$c=Get-MgContext -ErrorAction SilentlyContinue; if($c){[pscustomobject]@{account=$c.Account;tenantId=$c.TenantId;scopes=$c.Scopes}|ConvertTo-Json -Compress}"
-            ]
-        ))
+        json_status(graph_context_spec())
     );
     let azd_status_value = azd.ok();
     let mut azd_status = status(
@@ -307,6 +311,16 @@ mod tests {
 
         assert_eq!(scopes.len(), 2);
         assert_eq!(scopes[0], "Application.ReadWrite.All");
+    }
+
+    #[test]
+    fn graph_status_falls_back_to_the_sdk_current_user_auth_record() {
+        let spec = graph_context_spec();
+        let script = spec.args.last().unwrap();
+
+        assert!(script.contains("Get-MgContext"));
+        assert!(script.contains("mg.authrecord.json"));
+        assert!(script.contains("GetFolderPath('UserProfile')"));
     }
 
     #[test]
