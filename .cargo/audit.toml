@@ -1,0 +1,6 @@
+# RUSTSEC-2024-0429 is currently unavoidable in Tauri 2's Linux-only GTK3
+# dependency chain. GTK3 pins glib ^0.18, the proposed 0.18 backport/release
+# was declined upstream, and Tauri plans to move to GTK4 in v3.
+# Remove this exception when Tauri no longer resolves glib below 0.20.
+[advisories]
+ignore = ["RUSTSEC-2024-0429"]
