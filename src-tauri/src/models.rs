@@ -10,6 +10,13 @@ pub struct Catalog {
     pub entries: Vec<CatalogEntry>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalCatalogPreview {
+    pub catalog: Catalog,
+    pub review_token: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogEntry {

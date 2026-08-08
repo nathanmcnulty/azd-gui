@@ -1,10 +1,96 @@
 use crate::{
+    catalog,
     error::{AppError, AppResult},
     models::{AppSettings, CatalogSource, OperationEvent, ProjectSummary},
     redaction::redact,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
+
+const SCHEMA_VERSION: i64 = 1;
+
+fn column_exists(connection: &Connection, table: &str, column: &str) -> AppResult<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for name in columns {
+        if name? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate(connection: &mut Connection) -> AppResult<()> {
+    let version =
+        connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
+    if version > SCHEMA_VERSION {
+        return Err(AppError::Invalid(format!(
+            "Database schema {version} is newer than this app supports ({SCHEMA_VERSION})."
+        )));
+    }
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            environment TEXT,
+            template_id TEXT,
+            revision TEXT,
+            last_operation TEXT,
+            state TEXT NOT NULL DEFAULT 'ready'
+        );
+        CREATE TABLE IF NOT EXISTS catalog_sources (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            url TEXT NOT NULL UNIQUE,
+            trusted INTEGER NOT NULL DEFAULT 0,
+            pinned_revision TEXT,
+            accepted_catalog_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS operation_history (
+            id TEXT PRIMARY KEY,
+            project_path TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            state TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            summary TEXT,
+            outcome_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS wizard_drafts (
+            project_key TEXT PRIMARY KEY,
+            values_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS app_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            values_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        ",
+    )?;
+    if !column_exists(&transaction, "catalog_sources", "accepted_catalog_json")? {
+        transaction.execute(
+            "ALTER TABLE catalog_sources ADD COLUMN accepted_catalog_json TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(&transaction, "operation_history", "outcome_json")? {
+        transaction.execute(
+            "ALTER TABLE operation_history ADD COLUMN outcome_json TEXT",
+            [],
+        )?;
+    }
+    transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    transaction.commit()?;
+    Ok(())
+}
 
 pub struct Database {
     connection: Mutex<Connection>,
@@ -15,59 +101,9 @@ impl Database {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let connection = Connection::open(path)?;
-        connection.execute_batch(
-            "
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
-            CREATE TABLE IF NOT EXISTS projects (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                path TEXT NOT NULL UNIQUE,
-                environment TEXT,
-                template_id TEXT,
-                revision TEXT,
-                last_operation TEXT,
-                state TEXT NOT NULL DEFAULT 'ready'
-            );
-            CREATE TABLE IF NOT EXISTS catalog_sources (
-                id TEXT PRIMARY KEY,
-                label TEXT NOT NULL,
-                url TEXT NOT NULL UNIQUE,
-                trusted INTEGER NOT NULL DEFAULT 0,
-                pinned_revision TEXT,
-                accepted_catalog_json TEXT
-            );
-            CREATE TABLE IF NOT EXISTS operation_history (
-                id TEXT PRIMARY KEY,
-                project_path TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                state TEXT NOT NULL,
-                started_at TEXT NOT NULL,
-                completed_at TEXT,
-                summary TEXT,
-                outcome_json TEXT
-            );
-            CREATE TABLE IF NOT EXISTS wizard_drafts (
-                project_key TEXT PRIMARY KEY,
-                values_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS app_settings (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                values_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            ",
-        )?;
-        let _ = connection.execute(
-            "ALTER TABLE catalog_sources ADD COLUMN accepted_catalog_json TEXT",
-            [],
-        );
-        let _ = connection.execute(
-            "ALTER TABLE operation_history ADD COLUMN outcome_json TEXT",
-            [],
-        );
+        let mut connection = Connection::open(path)?;
+        connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
+        migrate(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -156,23 +192,33 @@ impl Database {
     pub fn accepted_catalogs(&self) -> AppResult<Vec<crate::models::Catalog>> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT accepted_catalog_json FROM catalog_sources
+            "SELECT id, accepted_catalog_json FROM catalog_sources
              WHERE trusted = 1 AND accepted_catalog_json IS NOT NULL",
         )?;
-        let values = statement.query_map([], |row| row.get::<_, String>(0))?;
-        values
-            .map(|value| {
-                let value = value?;
-                serde_json::from_str(&value).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(AppError::from)
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        let mut catalogs = Vec::new();
+        for (id, value) in rows {
+            let catalog = serde_json::from_str(&value)
+                .map_err(AppError::from)
+                .and_then(|catalog| {
+                    catalog::validate_external_snapshot(&catalog)?;
+                    Ok(catalog)
+                });
+            match catalog {
+                Ok(catalog) => catalogs.push(catalog),
+                Err(_) => {
+                    connection
+                        .execute("UPDATE catalog_sources SET trusted = 0 WHERE id = ?1", [id])?;
+                }
+            }
+        }
+        Ok(catalogs)
     }
 
     pub fn accepted_catalog_entry(
@@ -203,26 +249,47 @@ impl Database {
 
     pub fn load_draft(&self, project_key: &str) -> AppResult<Option<serde_json::Value>> {
         let connection = self.lock()?;
-        let mut statement =
-            connection.prepare("SELECT values_json FROM wizard_drafts WHERE project_key = ?1")?;
-        let mut rows = statement.query([project_key])?;
-        let Some(row) = rows.next()? else {
+        let value = connection
+            .query_row(
+                "SELECT values_json FROM wizard_drafts WHERE project_key = ?1",
+                [project_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
             return Ok(None);
         };
-        let value: String = row.get(0)?;
-        Ok(Some(serde_json::from_str(&value)?))
+        match serde_json::from_str(&value) {
+            Ok(value) => Ok(Some(value)),
+            Err(_) => {
+                connection.execute(
+                    "DELETE FROM wizard_drafts WHERE project_key = ?1",
+                    [project_key],
+                )?;
+                Ok(None)
+            }
+        }
     }
 
     pub fn app_settings(&self) -> AppResult<AppSettings> {
         let connection = self.lock()?;
-        let mut statement =
-            connection.prepare("SELECT values_json FROM app_settings WHERE id = 1")?;
-        let mut rows = statement.query([])?;
-        let Some(row) = rows.next()? else {
+        let value = connection
+            .query_row(
+                "SELECT values_json FROM app_settings WHERE id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(value) = value else {
             return Ok(AppSettings::default());
         };
-        let value: String = row.get(0)?;
-        Ok(serde_json::from_str(&value)?)
+        match serde_json::from_str(&value) {
+            Ok(settings) => Ok(settings),
+            Err(_) => {
+                connection.execute("DELETE FROM app_settings WHERE id = 1", [])?;
+                Ok(AppSettings::default())
+            }
+        }
     }
 
     pub fn save_app_settings(&self, settings: &AppSettings) -> AppResult<()> {
@@ -349,11 +416,51 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
-    use super::Database;
+    use super::{column_exists, Database, SCHEMA_VERSION};
     use crate::models::{
         AppSettings, OperationEvent, OperationOutcome, ProjectSummary, ThemePreference,
     };
+    use rusqlite::Connection;
     use tempfile::tempdir;
+
+    #[test]
+    fn migrates_unversioned_databases_atomically() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("legacy.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE catalog_sources (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    url TEXT NOT NULL UNIQUE,
+                    trusted INTEGER NOT NULL DEFAULT 0,
+                    pinned_revision TEXT
+                );
+                CREATE TABLE operation_history (
+                    id TEXT PRIMARY KEY,
+                    project_path TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    summary TEXT
+                );
+                ",
+            )
+            .unwrap();
+        drop(connection);
+
+        let database = Database::open(&path).unwrap();
+        let connection = database.lock().unwrap();
+        let version = connection
+            .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert!(column_exists(&connection, "catalog_sources", "accepted_catalog_json").unwrap());
+        assert!(column_exists(&connection, "operation_history", "outcome_json").unwrap());
+    }
 
     #[test]
     fn application_settings_default_and_persist_across_reopen() {
@@ -478,5 +585,49 @@ mod tests {
         assert!(!serialized.contains("super-secret-value"));
         assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(serialized.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn malformed_json_is_quarantined_instead_of_blocking_startup() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        {
+            let connection = database.lock().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO catalog_sources
+                     (id, label, url, trusted, accepted_catalog_json)
+                     VALUES ('broken', 'Broken', 'https://example.com/catalog.json', 1, '{')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO app_settings (id, values_json, updated_at)
+                     VALUES (1, '{', '2026-08-05T12:00:00Z')",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO wizard_drafts (project_key, values_json, updated_at)
+                     VALUES ('broken', '{', '2026-08-05T12:00:00Z')",
+                    [],
+                )
+                .unwrap();
+        }
+
+        assert!(database.accepted_catalogs().unwrap().is_empty());
+        assert_eq!(database.app_settings().unwrap(), AppSettings::default());
+        assert!(database.load_draft("broken").unwrap().is_none());
+        let connection = database.lock().unwrap();
+        let trusted: bool = connection
+            .query_row(
+                "SELECT trusted FROM catalog_sources WHERE id = 'broken'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!trusted);
     }
 }

@@ -42,6 +42,7 @@
     CatalogEntry,
     ConfigurationField,
     ConnectionStatus,
+    ExternalCatalogPreview,
     ExternalTerminalLaunch,
     OperationEvent,
     PermissionCheckResult,
@@ -146,7 +147,7 @@
   let missingProjectConfiguration: ConfigurationField[] = [];
   let catalogSourceOpen = false;
   let catalogSourceUrl = "";
-  let catalogPreview: Catalog | null = null;
+  let catalogPreview: ExternalCatalogPreview | null = null;
   let catalogSourceError = "";
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let azureDiscovery: AzureDiscovery | null = null;
@@ -1407,24 +1408,22 @@
 
   async function trustCatalogSource() {
     if (!catalogPreview) return;
-    await saveCatalogSource({
-      id: catalogPreview.id,
-      label: catalogPreview.title,
-      url: catalogSourceUrl.trim(),
-      trusted: true,
-      acceptedCatalog: catalogPreview
-    });
-    const externalEntries = catalogPreview.entries.map((entry) => ({
+    const acceptedCatalog = await saveCatalogSource(
+      catalogSourceUrl.trim(),
+      catalogPreview.reviewToken
+    );
+    const externalEntries = acceptedCatalog.entries.map((entry) => ({
       ...entry,
       source: "external" as const,
       trusted: true
     }));
+    const acceptedPrefix = `external-${acceptedCatalog.id}.`;
     data = {
       ...data,
       catalog: {
         ...data.catalog,
         entries: [
-          ...data.catalog.entries.filter((entry) => entry.source !== "external"),
+          ...data.catalog.entries.filter((entry) => !entry.id.startsWith(acceptedPrefix)),
           ...externalEntries
         ]
       }
@@ -2468,7 +2467,7 @@
         </div>
         <div class="settings-group">
           <h2>Catalog sources</h2>
-          <div class="setting-row"><div><strong>Bundled catalog</strong><span>Available offline · {data.catalog.entries.length} pinned templates</span></div><StatusPill tone="success" label="Trusted" /></div>
+          <div class="setting-row"><div><strong>Active catalogs</strong><span>Bundled catalog available offline · {data.catalog.entries.length} pinned templates</span></div><StatusPill tone="success" label="Trusted" /></div>
           <button class="secondary" on:click={() => (catalogSourceOpen = true)}><Icon name="github" size={15} /> Add HTTPS or GitHub source</button>
         </div>
         <div class="settings-group">
@@ -2575,11 +2574,11 @@
       {/if}
       {#if catalogPreview}
         <div class="catalog-preview">
-          <div><strong>{catalogPreview.title}</strong><span>{catalogPreview.entries.length} pinned template(s)</span></div>
+          <div><strong>{catalogPreview.catalog.title}</strong><span>{catalogPreview.catalog.entries.length} pinned template(s)</span></div>
           <StatusPill tone="warning" label="Review required" />
         </div>
         <div class="preview-entries">
-          {#each catalogPreview.entries.slice(0, 4) as entry}
+          {#each catalogPreview.catalog.entries.slice(0, 4) as entry}
             <div><span>{entry.title}</span><code>{entry.commit.slice(0, 8)}</code></div>
           {/each}
         </div>

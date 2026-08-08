@@ -18,9 +18,10 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
-        OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
-        ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        TemplateInspection, TemplateManifest, ToolInstallPlan, ToolStatus,
+        ExternalCatalogPreview, OperationEvent, PermissionCheckRequest, PermissionCheckResult,
+        PrepareDeploymentRequest, ProjectEnvironment, ProjectEnvironmentValue,
+        ProjectEnvironmentValueInput, ProjectSummary, TemplateInspection, TemplateManifest,
+        ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -37,6 +38,58 @@ pub struct AppState {
     operations: OperationManager,
     template_cache: PathBuf,
     inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
+    catalog_reviews: CatalogReviews,
+}
+
+#[derive(Clone)]
+struct PendingCatalogReview {
+    source_url: String,
+    catalog: Catalog,
+}
+
+#[derive(Default)]
+struct CatalogReviews {
+    pending: Mutex<HashMap<String, PendingCatalogReview>>,
+}
+
+impl CatalogReviews {
+    fn register(&self, source_url: String, catalog: Catalog) -> AppResult<ExternalCatalogPreview> {
+        let review_token = uuid::Uuid::new_v4().to_string();
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| AppError::Invalid("Catalog review cache is unavailable.".into()))?;
+        pending.clear();
+        pending.insert(
+            review_token.clone(),
+            PendingCatalogReview {
+                source_url,
+                catalog: catalog.clone(),
+            },
+        );
+        Ok(ExternalCatalogPreview {
+            catalog,
+            review_token,
+        })
+    }
+
+    fn accept(&self, review_token: &str, source_url: &str) -> AppResult<Catalog> {
+        let review = self
+            .pending
+            .lock()
+            .map_err(|_| AppError::Invalid("Catalog review cache is unavailable.".into()))?
+            .remove(review_token)
+            .ok_or_else(|| {
+                AppError::Invalid("Catalog review expired. Preview the source again.".into())
+            })?;
+        if review.source_url != source_url {
+            return Err(AppError::Invalid(
+                "Catalog source changed after review. Preview the source again.".into(),
+            ));
+        }
+        catalog::validate_external_snapshot(&review.catalog)?;
+        Ok(review.catalog)
+    }
 }
 
 fn platform_name() -> String {
@@ -230,29 +283,32 @@ fn open_external_terminal(
 }
 
 #[tauri::command]
-async fn preview_external_catalog(url: String) -> AppResult<Catalog> {
-    catalog::preview_external_catalog(&url).await
+async fn preview_external_catalog(
+    state: State<'_, AppState>,
+    url: String,
+) -> AppResult<ExternalCatalogPreview> {
+    let source_url = url.trim().to_string();
+    let catalog = catalog::preview_external_catalog(&source_url).await?;
+    state.catalog_reviews.register(source_url, catalog)
 }
 
 #[tauri::command]
-fn save_catalog_source(state: State<'_, AppState>, source: CatalogSource) -> AppResult<()> {
-    if !source.url.starts_with("https://") {
-        return Err(AppError::Url(
-            "Only HTTPS catalog sources are allowed.".into(),
-        ));
-    }
-    if !source.trusted {
-        return Err(AppError::Invalid(
-            "A reviewed catalog snapshot is required before trusting a source.".into(),
-        ));
-    }
-    let accepted_catalog = source.accepted_catalog.as_ref().ok_or_else(|| {
-        AppError::Invalid(
-            "A reviewed catalog snapshot is required before trusting a source.".into(),
-        )
+fn save_catalog_source(
+    state: State<'_, AppState>,
+    url: String,
+    review_token: String,
+) -> AppResult<Catalog> {
+    let source_url = url.trim().to_string();
+    let accepted_catalog = state.catalog_reviews.accept(&review_token, &source_url)?;
+    state.database.save_catalog_source(&CatalogSource {
+        id: accepted_catalog.id.clone(),
+        label: accepted_catalog.title.clone(),
+        url: source_url,
+        trusted: true,
+        pinned_revision: None,
+        accepted_catalog: Some(accepted_catalog.clone()),
     })?;
-    catalog::validate_external_snapshot(accepted_catalog)?;
-    state.database.save_catalog_source(&source)
+    Ok(accepted_catalog)
 }
 
 #[tauri::command]
@@ -637,6 +693,7 @@ pub fn run() {
                 operations: OperationManager::default(),
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
+                catalog_reviews: CatalogReviews::default(),
             });
             Ok(())
         })
@@ -689,8 +746,42 @@ mod environment_value_tests {
 }
 
 #[cfg(test)]
+mod catalog_review_tests {
+    use super::{catalog, CatalogReviews};
+
+    fn external_catalog() -> crate::models::Catalog {
+        let mut catalog = catalog::bundled_catalog().unwrap();
+        catalog.id = "review-test".into();
+        catalog.title = "Review test".into();
+        for entry in &mut catalog.entries {
+            entry.id = format!("external-review-test.{}", entry.id);
+            entry.source = Some("external".into());
+            entry.trusted = false;
+        }
+        catalog
+    }
+
+    #[test]
+    fn accepts_only_the_backend_preview_for_the_same_source_once() {
+        let reviews = CatalogReviews::default();
+        let source = "https://example.com/azd-gui.catalog.json";
+        let preview = reviews.register(source.into(), external_catalog()).unwrap();
+
+        assert!(reviews
+            .accept(&preview.review_token, "https://example.com/changed.json")
+            .is_err());
+        let preview = reviews.register(source.into(), external_catalog()).unwrap();
+        let accepted = reviews.accept(&preview.review_token, source).unwrap();
+        assert_eq!(accepted.id, preview.catalog.id);
+        assert!(reviews.accept(&preview.review_token, source).is_err());
+    }
+}
+
+#[cfg(test)]
 mod draft_tests {
-    use super::{catalog, draft_keys, sanitized_draft, AppState, Database, OperationManager};
+    use super::{
+        catalog, draft_keys, sanitized_draft, AppState, CatalogReviews, Database, OperationManager,
+    };
     use std::{
         collections::{HashMap, HashSet},
         sync::{Arc, Mutex},
@@ -737,6 +828,7 @@ mod draft_tests {
             operations: OperationManager::default(),
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
+            catalog_reviews: CatalogReviews::default(),
         };
 
         let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();

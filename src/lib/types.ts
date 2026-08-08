@@ -10,6 +10,11 @@ export interface Catalog {
   entries: CatalogEntry[];
 }
 
+export interface ExternalCatalogPreview {
+  catalog: Catalog;
+  reviewToken: string;
+}
+
 export interface CatalogEntry {
   id: string;
   title: string;
@@ -306,15 +311,6 @@ export interface BootstrapData {
   platform: Platform;
   appVersion: string;
   isNative: boolean;
-}
-
-export interface CatalogSource {
-  id: string;
-  label: string;
-  url: string;
-  trusted: boolean;
-  pinnedRevision?: string;
-  acceptedCatalog?: Catalog;
 }
 
 export interface PrepareDeploymentRequest {
