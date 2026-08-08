@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import type { ToolInstallPlan } from "../lib/types";
 
@@ -8,10 +9,25 @@
   export let onConfirm: () => void | Promise<void>;
   export let onCopy: (value: string) => void | Promise<void>;
   export let onOpenDocumentation: (url: string) => void | Promise<void>;
+
+  let confirmButton: HTMLButtonElement;
+
+  onMount(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    confirmButton.focus();
+    return () => queueMicrotask(() => previousFocus?.isConnected && previousFocus.focus());
+  });
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" && !installing) {
+      event.preventDefault();
+      onClose();
+    }
+  }
 </script>
 
 <div class="modal-backdrop" role="presentation" on:click={() => { if (!installing) onClose(); }}>
-  <dialog open class="source-dialog install-dialog" aria-label={`Review ${plan.toolName} installation`} aria-describedby="install-review-description" on:click|stopPropagation>
+  <dialog open class="source-dialog install-dialog" aria-label={`Review ${plan.toolName} installation`} aria-describedby="install-review-description" on:click|stopPropagation on:keydown={handleKeydown}>
     <header>
       <div><span class="eyebrow">INSTALLATION APPROVAL</span><h2>Review before installing</h2></div>
       <button class="icon-button" aria-label="Close install review" disabled={installing} on:click={onClose}><Icon name="close" size={16} /></button>
@@ -33,7 +49,7 @@
       <button class="secondary" disabled={installing} on:click={onClose}>Cancel</button>
       <button class="text-button" on:click={() => onOpenDocumentation(plan.documentationUrl)}>Official documentation</button>
       <div class="footer-spacer"></div>
-      <button id="confirm-tool-install" class="primary" disabled={installing} on:click={onConfirm}>{installing ? "Installing…" : "Install for current user"}</button>
+      <button bind:this={confirmButton} class="primary" disabled={installing} on:click={onConfirm}>{installing ? "Installing…" : "Install for current user"}</button>
     </footer>
   </dialog>
 </div>

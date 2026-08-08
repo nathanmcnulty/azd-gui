@@ -2922,7 +2922,8 @@ button.compact {
   background: transparent;
 }
 
-.command-palette > div button:hover {
+.command-palette > div button:hover,
+.command-palette > div button[aria-selected="true"] {
   background: var(--accent-solid);
   color: #fff;
 }
