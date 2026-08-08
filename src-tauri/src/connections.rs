@@ -236,12 +236,12 @@ pub fn login_spec(
         )),
         "graphPowerShell" => {
             let script = match (scopes.is_empty(), device_code) {
-                (true, true) => "Connect-MgGraph -UseDeviceCode",
-                (true, false) => "Connect-MgGraph",
+                (true, true) => "Connect-MgGraph -ContextScope CurrentUser -UseDeviceCode",
+                (true, false) => "Connect-MgGraph -ContextScope CurrentUser",
                 (false, true) => {
-                    "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
+                    "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
                 }
-                (false, false) => "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')",
+                (false, false) => "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')",
             };
             let spec = CommandSpec::new(
                 Executable::PowerShell,
@@ -334,11 +334,14 @@ mod tests {
         let interactive = login_spec("graphPowerShell", &[], false).unwrap();
         let device_code = login_spec("graphPowerShell", &[], true).unwrap();
 
-        assert_eq!(interactive.args.last().unwrap(), "Connect-MgGraph");
+        assert_eq!(
+            interactive.args.last().unwrap(),
+            "Connect-MgGraph -ContextScope CurrentUser"
+        );
         assert!(interactive.environment.is_empty());
         assert_eq!(
             device_code.args.last().unwrap(),
-            "Connect-MgGraph -UseDeviceCode"
+            "Connect-MgGraph -ContextScope CurrentUser -UseDeviceCode"
         );
         assert!(device_code.environment.is_empty());
     }
@@ -354,7 +357,7 @@ mod tests {
 
         assert_eq!(
             spec.args.last().unwrap(),
-            "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')"
+            "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')"
         );
         assert_eq!(
             spec.environment,
@@ -365,7 +368,7 @@ mod tests {
         );
         assert_eq!(
             device_code.args.last().unwrap(),
-            "Connect-MgGraph -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
+            "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
         );
         assert_eq!(device_code.environment, spec.environment);
     }
