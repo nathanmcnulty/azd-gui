@@ -95,11 +95,18 @@
     { id: "settings", label: "Settings", icon: "settings" }
   ];
 
+  const defaultOutputHeight = 210;
+  const minimumOutputHeight = 120;
+  const minimumWorkspaceHeight = 120;
+
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
   let activeNav: NavId = "home";
   let navigationExpanded = true;
   let outputOpen = false;
+  let outputHeight = defaultOutputHeight;
+  let outputMaximized = false;
+  let stopOutputResize: (() => void) | null = null;
   let commandPaletteOpen = false;
   let commandQuery = "";
   let catalogQuery = "";
@@ -319,6 +326,7 @@
 
   onMount(() => {
     document.addEventListener("keydown", handleGlobalKeydown);
+    window.addEventListener("resize", constrainOutputHeight);
     let unlisten: () => void = () => {};
     void (async () => {
       unlisten = await onOperationEvent(handleOperationEvent);
@@ -335,6 +343,8 @@
     })();
     return () => {
       document.removeEventListener("keydown", handleGlobalKeydown);
+      window.removeEventListener("resize", constrainOutputHeight);
+      stopOutputResize?.();
       if (draftTimer) clearTimeout(draftTimer);
       unlisten();
     };
@@ -356,6 +366,75 @@
   function toggleNavigation() {
     navigationExpanded = !navigationExpanded;
     void persistAppSettings();
+  }
+
+  function maximumOutputHeight() {
+    return Math.max(
+      minimumOutputHeight,
+      window.innerHeight - 35 - 22 - minimumWorkspaceHeight
+    );
+  }
+
+  function setOutputHeight(height: number) {
+    outputHeight = Math.min(maximumOutputHeight(), Math.max(minimumOutputHeight, height));
+  }
+
+  function constrainOutputHeight() {
+    if (!outputMaximized) setOutputHeight(outputHeight);
+  }
+
+  function startOutputResize(event: PointerEvent) {
+    if (outputMaximized) return;
+    event.preventDefault();
+    stopOutputResize?.();
+    const startY = event.clientY;
+    const startHeight = outputHeight;
+    const move = (moveEvent: PointerEvent) => {
+      setOutputHeight(startHeight + startY - moveEvent.clientY);
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+      document.documentElement.classList.remove("resizing-output");
+      stopOutputResize = null;
+    };
+    stopOutputResize = stop;
+    document.documentElement.classList.add("resizing-output");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+  }
+
+  function resizeOutputWithKeyboard(event: KeyboardEvent) {
+    if (outputMaximized) return;
+    const nextHeight =
+      event.key === "ArrowUp"
+        ? outputHeight + 16
+        : event.key === "ArrowDown"
+          ? outputHeight - 16
+          : event.key === "Home"
+            ? minimumOutputHeight
+            : event.key === "End"
+              ? maximumOutputHeight()
+              : null;
+    if (nextHeight === null) return;
+    event.preventDefault();
+    setOutputHeight(nextHeight);
+  }
+
+  function toggleOutputMaximized() {
+    outputMaximized = !outputMaximized;
+  }
+
+  function closeOutput() {
+    outputOpen = false;
+    outputMaximized = false;
+  }
+
+  function toggleOutput() {
+    if (outputOpen) closeOutput();
+    else outputOpen = true;
   }
 
   function initializeValues(entry: CatalogEntry): WizardValues {
@@ -1495,7 +1574,7 @@
     { label: "Open projects", action: () => navigate("projects") },
     { label: "Check connections", action: () => { navigate("connections"); void checkConnections(); } },
     { label: "Check tools", action: () => { navigate("tools"); void checkTools(); } },
-    { label: "Toggle output", action: () => (outputOpen = !outputOpen) },
+    { label: "Toggle output", action: toggleOutput },
     { label: "Use dark theme", action: () => setTheme("dark") },
     { label: "Use light theme", action: () => setTheme("light") }
   ];
@@ -1505,7 +1584,13 @@
   <title>{selectedEntry ? `${selectedEntry.title} — ` : ""}Azure Deployment Studio</title>
 </svelte:head>
 
-<div class="app-shell" class:output-open={outputOpen} class:nav-collapsed={!navigationExpanded}>
+<div
+  class="app-shell"
+  class:output-open={outputOpen}
+  class:output-maximized={outputMaximized}
+  class:nav-collapsed={!navigationExpanded}
+  style={`--output-height: ${outputHeight}px`}
+>
   <header class="titlebar">
     <div class="brand-button">
       <span class="brand-mark"><Icon name="cloud" size={17} /></span>
@@ -2499,14 +2584,18 @@
       events={operationEvents}
       {activeOperationId}
       {activeOperationKind}
+      maximized={outputMaximized}
       onCancel={stopOperation}
       onClear={() => (operationEvents = [])}
-      onClose={() => (outputOpen = false)}
+      onClose={closeOutput}
+      onResizeStart={startOutputResize}
+      onResizeKeydown={resizeOutputWithKeyboard}
+      onToggleMaximize={toggleOutputMaximized}
     />
   {/if}
 
   <footer class="statusbar">
-    <button on:click={() => (outputOpen = !outputOpen)}><Icon name="terminal" size={13} /> {operationState === "running" ? "azd running" : "Output"}</button>
+    <button on:click={toggleOutput}><Icon name="terminal" size={13} /> {operationState === "running" ? "azd running" : "Output"}</button>
     <div class="status-spacer"></div>
     <button on:click={() => navigate("connections")}><span class={`status-dot ${data.connections.some((c) => c.state === "connected") ? "online" : ""}`}></span>{data.connections.filter((c) => c.state === "connected").length} connected</button>
     <button on:click={() => navigate("projects")}><Icon name="cloud" size={13} /> {selectedProject?.environment ?? data.projects[0]?.environment ?? "No environment"}</button>

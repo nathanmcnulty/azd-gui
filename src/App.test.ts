@@ -220,6 +220,31 @@ describe("desktop experience", () => {
     ).toBeInTheDocument();
   });
 
+  it("resizes and maximizes the output panel", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Output" }));
+    const shell = document.querySelector<HTMLElement>(".app-shell")!;
+    const separator = screen.getByRole("button", { name: "Resize output" });
+    expect(shell.style.getPropertyValue("--output-height")).toBe("210px");
+
+    await fireEvent(
+      separator,
+      new MouseEvent("pointerdown", { bubbles: true, clientY: 500 })
+    );
+    await fireEvent(
+      window,
+      new MouseEvent("pointermove", { bubbles: true, clientY: 450 })
+    );
+    await fireEvent(window, new MouseEvent("pointerup", { bubbles: true }));
+    expect(shell.style.getPropertyValue("--output-height")).toBe("260px");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Maximize output" }));
+    expect(shell).toHaveClass("output-maximized");
+    await fireEvent.click(screen.getByRole("button", { name: "Restore output size" }));
+    expect(shell).not.toHaveClass("output-maximized");
+  });
+
   it("offers an external-terminal fallback for interactive local hooks", async () => {
     render(App);
 
