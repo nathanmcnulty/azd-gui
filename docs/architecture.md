@@ -8,7 +8,7 @@ Rust owns all privileged behavior:
 
 - `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects.
 - `command_runner.rs` enforces the executable allowlist, streams redacted operation events, and manages cancellation.
-- `azd.rs` defines the `AzdClient` lifecycle interface using supported public CLI commands.
+- `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.
 - `permissions.rs` runs only registered, read-only Azure and Microsoft Graph checks and returns structured pass, warning, or failure results.
 - `tools.rs` detects versions and exposes only vetted per-user module installers.

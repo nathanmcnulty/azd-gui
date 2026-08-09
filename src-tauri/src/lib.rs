@@ -13,7 +13,6 @@ mod terminal;
 mod tools;
 
 use crate::{
-    azd::{AzdClient, SystemAzdClient},
     command_runner::{spawn_operation, OperationManager, OperationPersistence},
     error::{AppError, AppResult},
     models::{
@@ -250,8 +249,7 @@ fn start_azd_operation(
             canonical.display()
         )));
     }
-    let client = SystemAzdClient;
-    let spec = client.lifecycle_command(&action, &canonical, environment.as_deref())?;
+    let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
     spawn_operation(
         app,
         state.operations.clone(),
@@ -331,15 +329,13 @@ async fn get_project_state(
     environment: Option<String>,
 ) -> AppResult<serde_json::Value> {
     let canonical = std::fs::canonicalize(project_path)?;
-    SystemAzdClient
-        .show(&canonical, environment.as_deref())
-        .await
+    azd::show(&canonical, environment.as_deref()).await
 }
 
 #[tauri::command]
 async fn list_project_environments(project_path: String) -> AppResult<Vec<ProjectEnvironment>> {
     let canonical = std::fs::canonicalize(project_path)?;
-    SystemAzdClient.environment_list(&canonical).await
+    azd::environment_list(&canonical).await
 }
 
 #[tauri::command]
@@ -357,16 +353,14 @@ async fn create_project_environment(
             canonical.display()
         )));
     }
-    let client = SystemAzdClient;
-    client
-        .environment_new(
-            &canonical,
-            &environment,
-            subscription.as_deref(),
-            location.as_deref(),
-        )
-        .await?;
-    let environments = client.environment_list(&canonical).await?;
+    azd::environment_new(
+        &canonical,
+        &environment,
+        subscription.as_deref(),
+        location.as_deref(),
+    )
+    .await?;
+    let environments = azd::environment_list(&canonical).await?;
     let selected = environments
         .iter()
         .find(|item| item.is_default)
@@ -390,9 +384,8 @@ async fn select_project_environment(
             canonical.display()
         )));
     }
-    let client = SystemAzdClient;
-    client.environment_select(&canonical, &environment).await?;
-    let environments = client.environment_list(&canonical).await?;
+    azd::environment_select(&canonical, &environment).await?;
+    let environments = azd::environment_list(&canonical).await?;
     let selected = environments
         .iter()
         .find(|item| item.is_default)
@@ -462,9 +455,7 @@ async fn get_project_environment_values(
             canonical.display()
         )));
     }
-    let client = SystemAzdClient;
-    let description = client
-        .environment_list(&canonical)
+    let description = azd::environment_list(&canonical)
         .await?
         .into_iter()
         .find(|item| item.name == environment)
@@ -499,8 +490,7 @@ async fn get_project_environment_values(
         let is_set = keys.contains(&field.environment_variable);
         let sensitive = field.sensitive || field.field_type == "secret";
         let value = if is_set && !sensitive {
-            client
-                .environment_get_value(&canonical, &environment, &field.environment_variable)
+            azd::environment_get_value(&canonical, &environment, &field.environment_variable)
                 .await
                 .ok()
         } else {
@@ -548,9 +538,7 @@ async fn set_project_environment_values(
         .into_iter()
         .map(|value| (value.name, value.value))
         .collect::<Vec<_>>();
-    SystemAzdClient
-        .environment_set_values(&canonical, &environment, &values)
-        .await
+    azd::environment_set_values(&canonical, &environment, &values).await
 }
 
 #[tauri::command]
