@@ -9,9 +9,15 @@ static JWT: Lazy<Regex> = Lazy::new(|| {
 static SECRET_ASSIGNMENT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|WEBHOOK|CLIENT_SECRET)[A-Z0-9_]*\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)"#).unwrap()
 });
+static ANSI_OSC: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)").unwrap());
+static ANSI_ESCAPE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])").unwrap());
 
 pub fn redact(input: &str) -> String {
-    let value = BEARER.replace_all(input, "${1}[REDACTED]");
+    let value = ANSI_OSC.replace_all(input, "");
+    let value = ANSI_ESCAPE.replace_all(&value, "");
+    let value = BEARER.replace_all(&value, "${1}[REDACTED]");
     let value = JWT.replace_all(&value, "[REDACTED_TOKEN]");
     SECRET_ASSIGNMENT
         .replace_all(&value, "${1}[REDACTED]")
@@ -35,6 +41,18 @@ mod tests {
         assert_eq!(
             redact("ordinary deployment output"),
             "ordinary deployment output"
+        );
+    }
+
+    #[test]
+    fn removes_terminal_formatting_without_removing_text() {
+        assert_eq!(
+            redact("\u{1b}[33;1mWARNING: Sign-in required.\u{1b}[0m"),
+            "WARNING: Sign-in required."
+        );
+        assert_eq!(
+            redact("Open \u{1b}]8;;https://example.com\u{7}documentation\u{1b}]8;;\u{7}"),
+            "Open documentation"
         );
     }
 }

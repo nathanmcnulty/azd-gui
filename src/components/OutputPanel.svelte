@@ -38,13 +38,12 @@
       <button aria-label="Close output" on:click={onClose}><Icon name="close" size={15} /></button>
     </div>
   </header>
-  <div class="output-lines" aria-live="polite">
+  <div class="output-lines" role="log" aria-live="polite">
     {#if events.length === 0}<div class="empty-output">Run a check or deployment to see output.</div>{/if}
     {#each events as event}
-      <div class={`output-line ${event.level}`}>
-        <time>{new Date(event.timestamp).toLocaleTimeString([], { hour12: false })}</time>
-        <span class="stream">{event.stream ?? "system"}</span>
-        <span>{event.message}</span>
+      <div class:system={event.stream === "system"} class={`output-line ${event.level}`}>
+        {#if event.stream === "system"}<time>{new Date(event.timestamp).toLocaleTimeString([], { hour12: false })}</time>{/if}
+        <span class="output-message">{event.message}</span>
       </div>
     {/each}
   </div>

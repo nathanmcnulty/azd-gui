@@ -2827,14 +2827,19 @@ html.resizing-output * {
 }
 
 .output-line {
-  display: grid;
-  grid-template-columns: 68px 48px minmax(0, 1fr);
-  gap: 9px;
+  min-height: 17px;
   color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.output-line time,
-.output-line .stream {
+.output-line.system {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.output-line time {
   color: var(--faint);
 }
 

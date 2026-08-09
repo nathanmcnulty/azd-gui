@@ -1,11 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OperationEvent } from "./lib/types";
+import type { ConnectionStatus, OperationEvent } from "./lib/types";
 
 const operationHarness = vi.hoisted(() => ({
   handler: undefined as ((event: OperationEvent) => void) | undefined,
   starts: [] as string[],
   cancellations: [] as string[],
+  logins: [] as string[],
+  connectionReads: 0,
   stateReads: 0,
   failStateRefresh: false
 }));
@@ -24,6 +26,23 @@ vi.mock("./lib/bridge", async (importOriginal) => {
     startAzdOperation: async (action: string) => {
       operationHarness.starts.push(action);
       return `native-${action}-${operationHarness.starts.length}`;
+    },
+    login: async (providerId: string) => {
+      operationHarness.logins.push(providerId);
+      return `native-login-${providerId}`;
+    },
+    refreshConnections: async () => {
+      operationHarness.connectionReads += 1;
+      const connections = structuredClone(mockBootstrap.connections) as ConnectionStatus[];
+      if (operationHarness.connectionReads > 1) {
+        const azurePowerShell = connections.find((connection) => connection.id === "azPowerShell")!;
+        azurePowerShell.state = "connected";
+        azurePowerShell.account = "nathan@example.com";
+        azurePowerShell.tenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+        azurePowerShell.subscriptionId = "11111111-1111-1111-1111-111111111111";
+        azurePowerShell.subscriptionName = "Development Subscription";
+      }
+      return connections;
     },
     cancelOperation: async (operationId: string) => {
       operationHarness.cancellations.push(operationId);
@@ -57,11 +76,38 @@ afterEach(() => {
   operationHarness.handler = undefined;
   operationHarness.starts = [];
   operationHarness.cancellations = [];
+  operationHarness.logins = [];
+  operationHarness.connectionReads = 0;
   operationHarness.stateReads = 0;
   operationHarness.failStateRefresh = false;
 });
 
 describe("structured operation results", () => {
+  it("retries a successful sign-in until the provider context is visible", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Connections,/ }));
+    const card = screen
+      .getByRole("heading", { name: "Azure PowerShell" })
+      .closest<HTMLElement>(".connection-card")!;
+    const signIn = fireEvent.click(within(card).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(operationHarness.logins).toEqual(["azPowerShell"]));
+
+    operationHarness.handler?.({
+      operationId: "native-login-azPowerShell",
+      kind: "login:azPowerShell",
+      state: "succeeded",
+      timestamp: "2026-08-08T22:16:28.000Z",
+      stream: "system",
+      level: "success",
+      message: "Operation completed successfully."
+    });
+
+    await signIn;
+    await waitFor(() => expect(within(card).getByText("connected")).toBeInTheDocument());
+    expect(operationHarness.connectionReads).toBe(2);
+  });
+
   it("requires a current infrastructure preview before azd up", async () => {
     render(App);
 
