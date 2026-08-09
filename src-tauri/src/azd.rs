@@ -4,48 +4,9 @@ use crate::{
     error::{AppError, AppResult},
     models::ProjectEnvironment,
 };
-use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::{io::Write, path::Path, time::Duration};
-
-#[async_trait]
-#[allow(dead_code)]
-pub trait AzdClient {
-    async fn version(&self) -> AppResult<Value>;
-    async fn auth_status(&self) -> AppResult<Value>;
-    async fn environment_list(&self, project: &Path) -> AppResult<Vec<ProjectEnvironment>>;
-    async fn environment_new(
-        &self,
-        project: &Path,
-        name: &str,
-        subscription: Option<&str>,
-        location: Option<&str>,
-    ) -> AppResult<()>;
-    async fn environment_select(&self, project: &Path, name: &str) -> AppResult<()>;
-    async fn environment_get_value(
-        &self,
-        project: &Path,
-        environment: &str,
-        key: &str,
-    ) -> AppResult<String>;
-    async fn environment_set_values(
-        &self,
-        project: &Path,
-        environment: &str,
-        values: &[(String, String)],
-    ) -> AppResult<()>;
-    async fn show(&self, project: &Path, environment: Option<&str>) -> AppResult<Value>;
-    fn lifecycle_command(
-        &self,
-        action: &str,
-        project: &Path,
-        environment: Option<&str>,
-    ) -> AppResult<CommandSpec>;
-}
-
-#[derive(Default)]
-pub struct SystemAzdClient;
 
 async fn command_stdout(spec: CommandSpec) -> AppResult<String> {
     let output = capture(spec, Duration::from_secs(20)).await?;
@@ -149,152 +110,137 @@ fn environment_set_file_command(
     .cwd(project))
 }
 
-#[async_trait]
-impl AzdClient for SystemAzdClient {
-    async fn version(&self) -> AppResult<Value> {
-        json_command(CommandSpec::new(
+pub async fn auth_status() -> AppResult<Value> {
+    json_command(CommandSpec::new(
+        Executable::Azd,
+        ["auth", "status", "--output", "json"],
+    ))
+    .await
+}
+
+pub async fn environment_list(project: &Path) -> AppResult<Vec<ProjectEnvironment>> {
+    json_command(
+        CommandSpec::new(
             Executable::Azd,
-            ["version", "--output", "json"],
-        ))
-        .await
-    }
-
-    async fn auth_status(&self) -> AppResult<Value> {
-        json_command(CommandSpec::new(
-            Executable::Azd,
-            ["auth", "status", "--output", "json"],
-        ))
-        .await
-    }
-
-    async fn environment_list(&self, project: &Path) -> AppResult<Vec<ProjectEnvironment>> {
-        json_command(
-            CommandSpec::new(
-                Executable::Azd,
-                ["env", "list", "--output", "json", "--no-prompt"],
-            )
-            .cwd(project),
+            ["env", "list", "--output", "json", "--no-prompt"],
         )
-        .await
-    }
+        .cwd(project),
+    )
+    .await
+}
 
-    async fn environment_new(
-        &self,
-        project: &Path,
-        name: &str,
-        subscription: Option<&str>,
-        location: Option<&str>,
-    ) -> AppResult<()> {
-        command_stdout(environment_new_command(
-            project,
-            name,
-            subscription,
-            location,
-        )?)
-        .await?;
-        Ok(())
-    }
+pub async fn environment_new(
+    project: &Path,
+    name: &str,
+    subscription: Option<&str>,
+    location: Option<&str>,
+) -> AppResult<()> {
+    command_stdout(environment_new_command(
+        project,
+        name,
+        subscription,
+        location,
+    )?)
+    .await?;
+    Ok(())
+}
 
-    async fn environment_select(&self, project: &Path, name: &str) -> AppResult<()> {
-        command_stdout(environment_select_command(project, name)?).await?;
-        Ok(())
-    }
+pub async fn environment_select(project: &Path, name: &str) -> AppResult<()> {
+    command_stdout(environment_select_command(project, name)?).await?;
+    Ok(())
+}
 
-    async fn environment_get_value(
-        &self,
-        project: &Path,
-        environment: &str,
-        key: &str,
-    ) -> AppResult<String> {
-        Ok(
-            command_stdout(environment_get_value_command(project, environment, key)?)
-                .await?
-                .trim_end()
-                .to_string(),
-        )
-    }
+pub async fn environment_get_value(
+    project: &Path,
+    environment: &str,
+    key: &str,
+) -> AppResult<String> {
+    Ok(
+        command_stdout(environment_get_value_command(project, environment, key)?)
+            .await?
+            .trim_end()
+            .to_string(),
+    )
+}
 
-    async fn environment_set_values(
-        &self,
-        project: &Path,
-        environment: &str,
-        values: &[(String, String)],
-    ) -> AppResult<()> {
-        if values.is_empty() || values.len() > 64 {
-            return Err(AppError::Invalid(
-                "Provide between 1 and 64 environment values.".into(),
-            ));
+pub async fn environment_set_values(
+    project: &Path,
+    environment: &str,
+    values: &[(String, String)],
+) -> AppResult<()> {
+    if values.is_empty() || values.len() > 64 {
+        return Err(AppError::Invalid(
+            "Provide between 1 and 64 environment values.".into(),
+        ));
+    }
+    let mut file = tempfile::Builder::new().prefix("azd-gui-env-").tempfile()?;
+    for (name, value) in values {
+        validate_environment_value_name(name)?;
+        if value.len() > 32_768 {
+            return Err(AppError::Invalid(format!(
+                "Environment value is too large: {name}"
+            )));
         }
-        let mut file = tempfile::Builder::new().prefix("azd-gui-env-").tempfile()?;
-        for (name, value) in values {
-            validate_environment_value_name(name)?;
-            if value.len() > 32_768 {
-                return Err(AppError::Invalid(format!(
-                    "Environment value is too large: {name}"
-                )));
-            }
-            writeln!(file, "{}={}", name, serde_json::to_string(value)?)?;
-        }
-        file.flush()?;
-        let output = capture(
-            environment_set_file_command(project, environment, file.path())?,
-            Duration::from_secs(30),
-        )
-        .await?;
-        if !output.success {
-            return Err(AppError::Command(
-                "azd rejected an environment value; values were withheld from diagnostics.".into(),
-            ));
-        }
-        Ok(())
+        writeln!(file, "{}={}", name, serde_json::to_string(value)?)?;
     }
+    file.flush()?;
+    let output = capture(
+        environment_set_file_command(project, environment, file.path())?,
+        Duration::from_secs(30),
+    )
+    .await?;
+    if !output.success {
+        return Err(AppError::Command(
+            "azd rejected an environment value; values were withheld from diagnostics.".into(),
+        ));
+    }
+    Ok(())
+}
 
-    async fn show(&self, project: &Path, environment: Option<&str>) -> AppResult<Value> {
-        let mut args: Vec<String> = vec![
-            "show".into(),
-            "--output".into(),
-            "json".into(),
-            "--no-prompt".into(),
-        ];
-        if let Some(environment) = environment {
-            args.extend(["--environment".into(), environment.into()]);
-        }
-        json_command(CommandSpec::new(Executable::Azd, args).cwd(project)).await
+pub async fn show(project: &Path, environment: Option<&str>) -> AppResult<Value> {
+    let mut args: Vec<String> = vec![
+        "show".into(),
+        "--output".into(),
+        "json".into(),
+        "--no-prompt".into(),
+    ];
+    if let Some(environment) = environment {
+        args.extend(["--environment".into(), environment.into()]);
     }
+    json_command(CommandSpec::new(Executable::Azd, args).cwd(project)).await
+}
 
-    fn lifecycle_command(
-        &self,
-        action: &str,
-        project: &Path,
-        environment: Option<&str>,
-    ) -> AppResult<CommandSpec> {
-        let mut args: Vec<String> = match action {
-            "up" => vec!["up".into()],
-            "provision" => vec!["provision".into()],
-            "preview" => vec!["provision".into(), "--preview".into()],
-            "deploy" => vec!["deploy".into(), "--all".into()],
-            "refresh" => vec!["env".into(), "refresh".into()],
-            "show" => vec!["show".into(), "--output".into(), "json".into()],
-            "down" => vec!["down".into(), "--force".into()],
-            _ => {
-                return Err(AppError::Invalid(format!(
-                    "Unsupported azd action: {action}"
-                )))
-            }
-        };
-        args.push("--no-prompt".into());
-        if let Some(environment) = environment {
-            args.extend(["--environment".into(), environment.into()]);
+pub fn lifecycle_command(
+    action: &str,
+    project: &Path,
+    environment: Option<&str>,
+) -> AppResult<CommandSpec> {
+    let mut args: Vec<String> = match action {
+        "up" => vec!["up".into()],
+        "provision" => vec!["provision".into()],
+        "preview" => vec!["provision".into(), "--preview".into()],
+        "deploy" => vec!["deploy".into(), "--all".into()],
+        "refresh" => vec!["env".into(), "refresh".into()],
+        "show" => vec!["show".into(), "--output".into(), "json".into()],
+        "down" => vec!["down".into(), "--force".into()],
+        _ => {
+            return Err(AppError::Invalid(format!(
+                "Unsupported azd action: {action}"
+            )))
         }
-        Ok(CommandSpec::new(Executable::Azd, args).cwd(project))
+    };
+    args.push("--no-prompt".into());
+    if let Some(environment) = environment {
+        args.extend(["--environment".into(), environment.into()]);
     }
+    Ok(CommandSpec::new(Executable::Azd, args).cwd(project))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         environment_get_value_command, environment_new_command, environment_select_command,
-        environment_set_file_command, json_command, AzdClient, SystemAzdClient,
+        environment_set_file_command, json_command, lifecycle_command,
     };
     use crate::command_runner::{CommandSpec, Executable};
     use crate::models::ProjectEnvironment;
@@ -302,15 +248,10 @@ mod tests {
 
     #[test]
     fn only_allows_known_lifecycle_commands() {
-        let client = SystemAzdClient;
-        let up = client
-            .lifecycle_command("up", Path::new("C:\\"), Some("dev"))
-            .unwrap();
+        let up = lifecycle_command("up", Path::new("C:\\"), Some("dev")).unwrap();
         assert_eq!(up.args, ["up", "--no-prompt", "--environment", "dev"]);
 
-        let preview = client
-            .lifecycle_command("preview", Path::new("C:\\"), Some("staging"))
-            .unwrap();
+        let preview = lifecycle_command("preview", Path::new("C:\\"), Some("staging")).unwrap();
         assert_eq!(
             preview.args,
             [
@@ -322,9 +263,7 @@ mod tests {
             ]
         );
 
-        assert!(client
-            .lifecycle_command("arbitrary-shell", Path::new("C:\\"), None)
-            .is_err());
+        assert!(lifecycle_command("arbitrary-shell", Path::new("C:\\"), None).is_err());
     }
 
     #[test]

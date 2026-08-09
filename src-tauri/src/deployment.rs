@@ -1,5 +1,5 @@
 use crate::{
-    azd::{AzdClient, SystemAzdClient},
+    azd,
     catalog::{entry_by_id, template_path},
     command_runner::{capture, CommandSpec, Executable},
     error::{AppError, AppResult},
@@ -468,7 +468,7 @@ pub async fn prepare(
     }
 
     let existing_environment_missing = if existing_project {
-        let environments = SystemAzdClient.environment_list(&destination).await?;
+        let environments = azd::environment_list(&destination).await?;
         !environment_exists(&environments, &request.environment)
     } else {
         false

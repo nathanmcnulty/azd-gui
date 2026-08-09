@@ -1,5 +1,5 @@
 use crate::{
-    azd::{AzdClient, SystemAzdClient},
+    azd,
     command_runner::{capture, CommandSpec, Executable},
     error::{AppError, AppResult},
     models::ConnectionStatus,
@@ -116,9 +116,8 @@ fn graph_context_spec() -> CommandSpec {
 }
 
 pub async fn check_all() -> Vec<ConnectionStatus> {
-    let azd_client = SystemAzdClient;
     let (azd, az, az_ps, graph_ps) = tokio::join!(
-        azd_client.auth_status(),
+        azd::auth_status(),
         json_status(CommandSpec::new(
             Executable::AzureCli,
             ["account", "show", "--output", "json"]
