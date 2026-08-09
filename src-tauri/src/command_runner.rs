@@ -124,6 +124,8 @@ impl CommandSpec {
             .args(&self.args)
             .kill_on_drop(true)
             .stdin(Stdio::null());
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }

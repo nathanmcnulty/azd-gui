@@ -98,6 +98,7 @@
   const defaultOutputHeight = 210;
   const minimumOutputHeight = 120;
   const minimumWorkspaceHeight = 120;
+  const connectionVerificationDelays = [0, 400, 1200];
 
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
@@ -739,6 +740,37 @@
     }
   }
 
+  async function verifyConnection(provider: ConnectionStatus) {
+    let latestConnections = data.connections.map((connection) =>
+      connection.id === provider.id ? { ...connection, state: "checking" as const } : connection
+    );
+    data = { ...data, connections: latestConnections };
+    for (const [attempt, delay] of connectionVerificationDelays.entries()) {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      try {
+        latestConnections = retainGrantedGraphScopes(latestConnections, await refreshConnections());
+        const refreshed = latestConnections.find((connection) => connection.id === provider.id);
+        if (refreshed?.state === "connected") {
+          data = { ...data, connections: latestConnections };
+          return;
+        }
+      } catch (error) {
+        if (attempt === connectionVerificationDelays.length - 1) {
+          latestConnections = latestConnections.map((connection) =>
+            connection.id === provider.id
+              ? { ...connection, state: "unknown", detail: `Status check failed: ${String(error)}` }
+              : connection
+          );
+        }
+      }
+    }
+    data = { ...data, connections: latestConnections };
+    addSystemLog(
+      `${provider.name} sign-in completed, but its saved context is not visible yet. Use Check all to retry.`,
+      "warning"
+    );
+  }
+
   async function connect(provider: ConnectionStatus) {
     addSystemLog(`Starting ${provider.name} sign-in.`, "info");
     outputOpen = true;
@@ -756,7 +788,7 @@
             )
           };
         }
-        await checkConnections();
+        await verifyConnection(provider);
       } else {
         data = {
           ...data,
