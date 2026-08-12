@@ -10,7 +10,7 @@
       "summary": "Discover and secure identities that can access Microsoft 365 and Azure.",
       "description": "A cross-platform deployment with conditional collection, reporting, and Microsoft Graph options.",
       "repository": "https://github.com/nathanmcnulty/azd-myworkid",
-      "commit": "913be87ebf9a569349846c3a6d9be7f4d2fdcd49",
+      "commit": "0a6f0aedbfd2bc3fee47b10f37fda47ed744286c",
       "tags": ["Identity", "Microsoft Graph", "App Service"],
       "platforms": ["windows", "macos", "linux"],
       "manifest": "manifests/myworkid.json"

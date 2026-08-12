@@ -31,12 +31,14 @@ When supported by the installed azd version, an explicit tool refresh also consu
 2. Resolve the effective manifest and compute the wizard pages.
 3. Verify prerequisite and connection state.
 4. Collect environment and template values. Sensitive values are not placed in drafts or logs.
-5. Run manifest-requested registered permission checks and stop on required failures.
-6. Resolve a remote source to a full commit and cache that exact checkout.
-7. Run `azd init` for new projects or register an environment for an existing project.
-8. Apply approved values with `azd env set`.
+5. Review the exact values and explicitly approve pinned template code execution for the current session.
+6. Run manifest-requested registered permission checks and stop on required failures.
+7. Resolve a remote source to a full commit and cache that exact checkout.
+8. Run `azd init` for new projects or register an environment for an existing project, then apply approved values with `azd env set`.
 9. Run `azd provision --preview --no-prompt`.
-10. Run `azd up --no-prompt`, stream output, and refresh project state.
+10. Run `azd up --no-prompt`, or hand off a manifest-declared interactive workflow to a validated external terminal, then refresh project state.
+
+The consent gate precedes project materialization because both `azd init` and lifecycle commands can execute template hooks. `azd provision --preview` is not treated as read-only: azd does not provide a no-hooks preview flag, so a preview can change local files, Azure resources, or directory objects. Every preview terminal outcome is therefore classified as `possiblyModified`, including success. Opening an existing project creates a fresh session consent gate before preview, provision, deployment, or resource removal; read-only project refresh remains available without that approval.
 
 Permission-check IDs are an application-owned registry. Catalogs can select a registered ID but cannot provide a command, script, URL, or executable argument. V1 can perform a live ARM subscription read, a Microsoft Graph organization read, and a Microsoft Graph PowerShell delegated-scope comparison. These checks do not capture tokens and do not mutate Azure or Microsoft Entra resources.
 
@@ -54,6 +56,8 @@ The Connections center invokes each provider's supported login:
 - `Connect-MgGraph`
 
 The provider retains its credentials. The app reads only account/tenant/status output and warns when connected tenants do not align. After a successful login process, the app keeps that provider in a checking state and performs bounded status retries so a briefly delayed credential cache does not produce a false disconnected tile or a second login. The public azd auth-status expiry is preserved and an elapsed timestamp changes the connection to `expired`, which reuses the normal reconnect gate. Microsoft Graph PowerShell status also preserves the delegated scope names returned by `Get-MgContext`; the wizard compares those names case-insensitively with manifest-requested Graph scopes and sequences a reconnect when grants are missing. A standalone Graph connection omits `-Scopes` instead of passing an empty value, while a template-guided connection passes only the manifest-requested scope names through a process-private environment value. Providers whose caches do not expose comparable scope names remain connection-status checks and are verified by registered preflight providers where applicable. Device-code login is an explicit fallback.
+
+After the deployment target is selected, connection checks and reconnects receive a validated tenant/subscription target. azd, Azure CLI, Azure PowerShell, and Microsoft Graph PowerShell receive their supported tenant parameters; Azure CLI and Azure PowerShell status are checked against the selected subscription. App-owned Azure CLI reads pass `--subscription` explicitly. The app never runs `az account set`, so it does not silently change the user's global Azure CLI default.
 
 Future app-owned MSAL authentication can be introduced behind the same provider boundary, using WAM on Windows and a system-browser loopback redirect elsewhere.
 

@@ -7,7 +7,7 @@ import type {
   WizardValues
 } from "./types";
 
-function conditionMatches(condition: FieldCondition | undefined, values: WizardValues): boolean {
+export function conditionMatches(condition: FieldCondition | undefined, values: WizardValues): boolean {
   if (!condition) return true;
   const actual = values[condition.field];
   if (condition.equals !== undefined && actual !== condition.equals) return false;
@@ -102,8 +102,8 @@ export function calculateWizardPlan(
   }
 
   pages.push(
-    standardPage("preflight", "preflight", "Run preflight", "Validate access and preview infrastructure changes."),
-    standardPage("review", "review", "Review deployment", "Confirm the project, environment, and non-secret values."),
+    standardPage("review", "review", "Review deployment", "Confirm values and approve pinned template code execution."),
+    standardPage("preflight", "preflight", "Run checks and preview", "Validate access and run the template's infrastructure preview."),
     standardPage("deploy", "deploy", "Deploy", "Run azd up and follow live progress.")
   );
 

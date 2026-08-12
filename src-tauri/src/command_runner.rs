@@ -243,6 +243,7 @@ fn operation_timeout(kind: &str) -> Duration {
 
 fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
     let mutating = matches!(kind, "up" | "provision" | "deploy" | "down");
+    let may_run_hooks = kind == "preview";
     if !mutating && !matches!(kind, "preview" | "refresh" | "show") {
         return None;
     }
@@ -258,10 +259,18 @@ fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
     };
     let (resource_state, summary, guidance, retryable) = match state {
         "succeeded" => (
-            if mutating { "changed" } else { "unchanged" },
+            if mutating {
+                "changed"
+            } else if may_run_hooks {
+                "possiblyModified"
+            } else {
+                "unchanged"
+            },
             format!("{action} completed successfully."),
             if mutating {
                 "Refresh project state to inspect the resulting Azure resources."
+            } else if may_run_hooks {
+                "Template hooks may have changed local files, Azure resources, or directory objects. Review the output and refresh project state before continuing."
             } else {
                 "No Azure resource changes were applied by this action."
             }
@@ -269,14 +278,14 @@ fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
             false,
         ),
         "failed" => (
-            if mutating {
+            if mutating || may_run_hooks {
                 "possiblyModified"
             } else {
                 "unchanged"
             },
             format!("{action} did not complete."),
-            if mutating {
-                "Review the output and template hooks before retrying. Azure may contain partial changes."
+            if mutating || may_run_hooks {
+                "Review the output and template hooks before retrying. Local files, Azure resources, or directory objects may contain partial changes."
             } else {
                 "Review the output, correct the reported issue, and retry the same action."
             }
@@ -284,14 +293,14 @@ fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
             true,
         ),
         "cancelled" => (
-            if mutating {
+            if mutating || may_run_hooks {
                 "possiblyModified"
             } else {
                 "unchanged"
             },
             format!("{action} was cancelled."),
-            if mutating {
-                "The local process stopped, but Azure operations already accepted may continue. Review the output and refresh state before retrying."
+            if mutating || may_run_hooks {
+                "The local process stopped, but template hooks or Azure operations already accepted may continue. Review the output and refresh state before retrying."
             } else {
                 "No Azure resource changes were applied by this action. Retry when ready."
             }
@@ -653,10 +662,17 @@ mod tests {
     }
 
     #[test]
-    fn failed_preview_reports_azure_unchanged() {
+    fn preview_outcomes_report_possible_hook_changes() {
+        let succeeded = terminal_outcome("preview", "succeeded").unwrap();
+        assert_eq!(succeeded.resource_state, "possiblyModified");
+        assert!(succeeded.guidance.contains("Template hooks"));
+
         let outcome = terminal_outcome("preview", "failed").unwrap();
-        assert_eq!(outcome.resource_state, "unchanged");
+        assert_eq!(outcome.resource_state, "possiblyModified");
         assert!(outcome.retryable);
+
+        let cancelled = terminal_outcome("preview", "cancelled").unwrap();
+        assert_eq!(cancelled.resource_state, "possiblyModified");
     }
 
     #[test]

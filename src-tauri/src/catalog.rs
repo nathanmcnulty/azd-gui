@@ -432,6 +432,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
     TemplateManifest {
         schema_version: "1.0".into(),
         minimum_azd_version: minimum_azd_version.clone(),
+        requires_interactive_terminal: false,
         prerequisites: vec![Prerequisite {
             id: "azd".into(),
             name: "Azure Developer CLI".into(),

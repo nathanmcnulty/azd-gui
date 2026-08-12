@@ -41,9 +41,9 @@ describe("wizard planning", () => {
     const entry = bundledCatalog.entries[2];
     const fields = entry.manifest!.configuration.groups[0].fields;
 
-    expect(visibleFields(fields, { enableTeams: false }).map((field) => field.id)).not.toContain("teamsWebhook");
-    const webhook = fields.find((field) => field.id === "teamsWebhook")!;
-    expect(validateField(webhook, "")).toContain("required");
+    expect(visibleFields(fields, {}).map((field) => field.id)).toContain("teamsChannelLink");
+    const teamsChannelLink = fields.find((field) => field.id === "teamsChannelLink")!;
+    expect(validateField(teamsChannelLink, "")).toContain("required");
   });
 
   it("treats neutral field names as sensitive when the manifest says so", () => {

@@ -1,24 +1,34 @@
 {
   "$schema": "../../schemas/azd-gui.schema.json",
   "schemaVersion": "1.0",
-  "minimumAzdVersion": "1.23.0",
+  "minimumAzdVersion": "1.23.5",
   "prerequisites": [
     {
       "id": "azd",
       "name": "Azure Developer CLI",
       "kind": "tool",
-      "minimumVersion": "1.23.0",
+      "minimumVersion": "1.23.5",
       "required": true,
       "installProvider": "manual"
     },
     {
-      "id": "Microsoft.Graph",
-      "name": "Microsoft Graph PowerShell",
-      "kind": "powershellModule",
-      "minimumVersion": "2.0.0",
+      "id": "az-cli",
+      "name": "Azure CLI",
+      "kind": "tool",
+      "minimumVersion": "2.60.0",
       "required": true,
-      "installProvider": "psResource",
-      "installId": "Microsoft.Graph"
+      "installProvider": "azdTool",
+      "installId": "az-cli",
+      "documentationUrl": "https://learn.microsoft.com/cli/azure/install-azure-cli"
+    },
+    {
+      "id": "pwsh",
+      "name": "PowerShell",
+      "kind": "tool",
+      "minimumVersion": "7.4.0",
+      "required": true,
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
     }
   ],
   "connections": [
@@ -29,31 +39,109 @@
       "reason": "Provision the Automation Account and supporting resources."
     },
     {
-      "id": "graphPowerShell",
-      "name": "Microsoft Graph PowerShell",
+      "id": "azureCli",
+      "name": "Azure CLI",
       "required": true,
-      "scopes": ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"],
-      "reason": "Create and grant the identity used for scheduled Maester tests."
+      "scopes": ["https://management.azure.com/.default", "https://graph.microsoft.com/.default"],
+      "reason": "Run the template's ARM, Microsoft Graph, role assignment, and cleanup hooks."
     }
   ],
   "configuration": {
     "groups": [
       {
-        "id": "schedule",
-        "title": "Test schedule",
+        "id": "features",
+        "title": "Maester coverage",
+        "description": "Choose the services and optional dashboard included by the template.",
         "fields": [
           {
-            "id": "schedule",
-            "environmentVariable": "MAESTER_SCHEDULE",
-            "label": "Run frequency",
+            "id": "includeWebApp",
+            "environmentVariable": "INCLUDE_WEB_APP",
+            "label": "Include secured web dashboard",
+            "type": "boolean",
+            "default": false
+          },
+          {
+            "id": "includeExchange",
+            "environmentVariable": "INCLUDE_EXCHANGE",
+            "label": "Include Exchange checks",
+            "type": "boolean",
+            "default": true
+          },
+          {
+            "id": "includeTeams",
+            "environmentVariable": "INCLUDE_TEAMS",
+            "label": "Include Teams checks",
+            "type": "boolean",
+            "default": true
+          },
+          {
+            "id": "includeAzure",
+            "environmentVariable": "INCLUDE_AZURE",
+            "label": "Include Azure checks",
+            "type": "boolean",
+            "default": true
+          }
+        ]
+      },
+      {
+        "id": "webApp",
+        "title": "Web dashboard",
+        "condition": { "field": "includeWebApp", "equals": true },
+        "fields": [
+          {
+            "id": "securityGroupObjectId",
+            "environmentVariable": "SECURITY_GROUP_OBJECT_ID",
+            "label": "Allowed security group",
+            "type": "entraObject",
+            "required": true,
+            "help": "Object ID of the Entra security group allowed through App Service Easy Auth."
+          },
+          {
+            "id": "webAppSku",
+            "environmentVariable": "WEB_APP_SKU",
+            "label": "App Service SKU",
+            "type": "text",
+            "required": true,
+            "default": "F1"
+          }
+        ]
+      },
+      {
+        "id": "notifications",
+        "title": "Notifications",
+        "fields": [
+          {
+            "id": "mailRecipient",
+            "environmentVariable": "MAIL_RECIPIENT",
+            "label": "Mail recipient",
+            "type": "text",
+            "help": "Optional recipient for Maester email notifications."
+          }
+        ]
+      },
+      {
+        "id": "advancedPermissions",
+        "title": "Advanced permissions",
+        "fields": [
+          {
+            "id": "permissionProfile",
+            "environmentVariable": "PERMISSION_PROFILE",
+            "label": "Permission profile",
             "type": "select",
             "required": true,
-            "default": "daily",
+            "default": "Extended",
             "options": [
-              { "label": "Daily", "value": "daily" },
-              { "label": "Every 12 hours", "value": "12h" },
-              { "label": "Weekly", "value": "weekly" }
+              { "label": "Extended", "value": "Extended" },
+              { "label": "Minimal", "value": "Minimal" }
             ]
+          },
+          {
+            "id": "azureRbacScopes",
+            "environmentVariable": "AZURE_RBAC_SCOPES",
+            "label": "Azure RBAC scopes",
+            "type": "text",
+            "condition": { "field": "includeAzure", "equals": true },
+            "help": "Optional semicolon-separated ARM scope IDs. The selected subscription is used when left blank."
           }
         ]
       }
@@ -61,11 +149,18 @@
   },
   "permissionChecks": [
     {
-      "id": "graph-delegated-scopes",
-      "name": "Microsoft Graph delegated scopes",
+      "id": "azure-subscription-access",
+      "name": "Azure subscription access",
+      "provider": "azure",
+      "required": true,
+      "description": "Azure CLI can complete a live ARM read of the selected enabled subscription in the selected tenant."
+    },
+    {
+      "id": "graph-directory-read",
+      "name": "Microsoft Graph directory access",
       "provider": "graph",
       "required": true,
-      "description": "The Microsoft Graph PowerShell session includes every delegated scope requested by this template."
+      "description": "Azure CLI can query Microsoft Graph for the selected tenant before setup hooks run."
     }
   ]
 }

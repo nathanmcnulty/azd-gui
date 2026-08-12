@@ -168,6 +168,27 @@ fn command_failure(label: &str, stderr: &str) -> AppError {
     }
 }
 
+fn location_spec(subscription_id: &str) -> CommandSpec {
+    let url = format!(
+        "https://management.azure.com/subscriptions/{subscription_id}/locations?api-version=2022-12-01"
+    );
+    CommandSpec::new(
+        Executable::AzureCli,
+        [
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            url.as_str(),
+            "--subscription",
+            subscription_id,
+            "--output",
+            "json",
+            "--only-show-errors",
+        ],
+    )
+}
+
 pub async fn discover(subscription_id: Option<&str>, refresh: bool) -> AppResult<AzureDiscovery> {
     let mut account_args = vec![
         "account".to_string(),
@@ -218,23 +239,7 @@ pub async fn discover(subscription_id: Option<&str>, refresh: bool) -> AppResult
         })?;
     discovery.selected_subscription_id = Some(selected.id.clone());
 
-    let locations_url = format!(
-        "https://management.azure.com/subscriptions/{}/locations?api-version=2022-12-01",
-        selected.id
-    );
-    let location_spec = CommandSpec::new(
-        Executable::AzureCli,
-        [
-            "rest",
-            "--method",
-            "get",
-            "--url",
-            locations_url.as_str(),
-            "--output",
-            "json",
-            "--only-show-errors",
-        ],
-    );
+    let location_spec = location_spec(&selected.id);
     let group_spec = CommandSpec::new(
         Executable::AzureCli,
         [
@@ -325,5 +330,15 @@ mod tests {
         ]"#;
         let groups = parse_resource_groups(json).unwrap();
         assert_eq!(groups[0].name, "Alpha-rg");
+    }
+
+    #[test]
+    fn location_discovery_targets_the_selected_subscription() {
+        let subscription = "11111111-1111-1111-1111-111111111111";
+        let spec = location_spec(subscription);
+        assert!(spec
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--subscription", subscription]));
     }
 }

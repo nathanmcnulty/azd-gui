@@ -107,11 +107,11 @@ async fn json<T: for<'de> Deserialize<'de>>(spec: CommandSpec) -> Result<T, Stri
         .map_err(|_| "The provider returned an unexpected response.".into())
 }
 
-async fn azure_subscription(subscription_id: &str) -> Result<AzureSubscription, String> {
+fn azure_subscription_spec(subscription_id: &str) -> CommandSpec {
     let url = format!(
         "https://management.azure.com/subscriptions/{subscription_id}?api-version=2022-12-01"
     );
-    json(CommandSpec::new(
+    CommandSpec::new(
         Executable::AzureCli,
         [
             "rest",
@@ -119,16 +119,21 @@ async fn azure_subscription(subscription_id: &str) -> Result<AzureSubscription, 
             "GET",
             "--url",
             &url,
+            "--subscription",
+            subscription_id,
             "--output",
             "json",
             "--only-show-errors",
         ],
-    ))
-    .await
+    )
 }
 
-async fn graph_organization() -> Result<GraphOrganizationEnvelope, String> {
-    json(CommandSpec::new(
+async fn azure_subscription(subscription_id: &str) -> Result<AzureSubscription, String> {
+    json(azure_subscription_spec(subscription_id)).await
+}
+
+fn graph_organization_spec(subscription_id: &str) -> CommandSpec {
+    CommandSpec::new(
         Executable::AzureCli,
         [
             "rest",
@@ -136,12 +141,17 @@ async fn graph_organization() -> Result<GraphOrganizationEnvelope, String> {
             "GET",
             "--url",
             "https://graph.microsoft.com/v1.0/organization?$select=id",
+            "--subscription",
+            subscription_id,
             "--output",
             "json",
             "--only-show-errors",
         ],
-    ))
-    .await
+    )
+}
+
+async fn graph_organization(subscription_id: &str) -> Result<GraphOrganizationEnvelope, String> {
+    json(graph_organization_spec(subscription_id)).await
 }
 
 async fn graph_context() -> Result<GraphContext, String> {
@@ -325,7 +335,7 @@ pub async fn run(request: PermissionCheckRequest) -> AppResult<Vec<PermissionChe
         },
         async {
             if needs_directory {
-                Some(graph_organization().await)
+                Some(graph_organization(&request.subscription_id).await)
             } else {
                 None
             }
@@ -448,5 +458,19 @@ mod tests {
         );
         assert_eq!(output.state, "warning");
         assert!(!output.blocking);
+    }
+
+    #[test]
+    fn azure_cli_permission_checks_target_the_selected_subscription() {
+        let subscription = "11111111-1111-1111-1111-111111111111";
+        for spec in [
+            azure_subscription_spec(subscription),
+            graph_organization_spec(subscription),
+        ] {
+            assert!(spec
+                .args
+                .windows(2)
+                .any(|pair| pair == ["--subscription", subscription]));
+        }
     }
 }

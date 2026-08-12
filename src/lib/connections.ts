@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from "./types";
+import type { ConnectionStatus, ConnectionTarget } from "./types";
 
 export function missingRequestedScopes(connection: ConnectionStatus): string[] {
   if (connection.id !== "graphPowerShell" || connection.state !== "connected") return [];
@@ -12,6 +12,18 @@ export function missingRequestedScopes(connection: ConnectionStatus): string[] {
 
 export function connectionMeetsRequirements(connection: ConnectionStatus): boolean {
   return connection.state === "connected" && missingRequestedScopes(connection).length === 0;
+}
+
+export function connectionMeetsTarget(
+  connection: ConnectionStatus,
+  target: ConnectionTarget
+): boolean {
+  if (!connectionMeetsRequirements(connection)) return false;
+  if (connection.tenantId?.toLowerCase() !== target.tenantId.toLowerCase()) return false;
+  if (["azureCli", "azPowerShell"].includes(connection.id)) {
+    return connection.subscriptionId?.toLowerCase() === target.subscriptionId.toLowerCase();
+  }
+  return true;
 }
 
 export function retainGrantedGraphScopes(

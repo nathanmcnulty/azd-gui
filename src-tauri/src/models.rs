@@ -79,6 +79,8 @@ pub struct TemplateManifest {
     #[serde(default)]
     pub minimum_azd_version: Option<String>,
     #[serde(default)]
+    pub requires_interactive_terminal: bool,
+    #[serde(default)]
     pub prerequisites: Vec<Prerequisite>,
     #[serde(default)]
     pub connections: Vec<ConnectionRequirement>,
@@ -157,6 +159,13 @@ pub struct ConnectionRequirement {
     #[serde(default)]
     pub scopes: Vec<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectionTarget {
+    pub tenant_id: String,
+    pub subscription_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

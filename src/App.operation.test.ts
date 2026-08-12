@@ -82,6 +82,17 @@ afterEach(() => {
   operationHarness.failStateRefresh = false;
 });
 
+async function approveProjectExecution() {
+  const approval = screen.getByRole("checkbox", {
+    name: /approve this project's template code execution/i
+  });
+  await fireEvent.click(approval);
+  expect(approval).toBeChecked();
+  await waitFor(() => {
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeEnabled();
+  });
+}
+
 describe("structured operation results", () => {
   it("retries a successful sign-in until the provider context is visible", async () => {
     render(App);
@@ -114,6 +125,7 @@ describe("structured operation results", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    await approveProjectExecution();
 
     const deploy = screen.getByRole("button", { name: /deploy with azd up/i });
     expect(deploy).toBeDisabled();
@@ -131,9 +143,9 @@ describe("structured operation results", () => {
       message: "Infrastructure preview completed successfully.",
       progress: 100,
       outcome: {
-        resourceState: "unchanged",
+        resourceState: "possiblyModified",
         summary: "Infrastructure preview completed successfully.",
-        guidance: "No Azure resource changes were applied by this action.",
+        guidance: "Template hooks may have changed local files, Azure resources, or directory objects.",
         retryable: false
       }
     });
@@ -141,7 +153,7 @@ describe("structured operation results", () => {
     await waitFor(() => expect(deploy).toBeEnabled());
     const preflight = screen.getByRole("region", { name: /deployment preflight/i });
     expect(within(preflight).getByText("Infrastructure preview completed successfully.")).toBeInTheDocument();
-    expect(within(preflight).getByText("Azure unchanged")).toBeInTheDocument();
+    expect(within(preflight).getByText("Partial changes possible")).toBeInTheDocument();
 
     await fireEvent.click(deploy);
     await waitFor(() => expect(operationHarness.starts).toEqual(["preview", "up"]));
@@ -178,6 +190,7 @@ describe("structured operation results", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    await approveProjectExecution();
     await fireEvent.click(screen.getByRole("button", { name: /run infrastructure preview/i }));
     await waitFor(() => expect(operationHarness.starts).toEqual(["preview"]));
     operationHarness.handler?.({
@@ -189,9 +202,9 @@ describe("structured operation results", () => {
       level: "success",
       message: "Infrastructure preview completed successfully.",
       outcome: {
-        resourceState: "unchanged",
+        resourceState: "possiblyModified",
         summary: "Infrastructure preview completed successfully.",
-        guidance: "No Azure resource changes were applied by this action.",
+        guidance: "Template hooks may have changed local files, Azure resources, or directory objects.",
         retryable: false
       }
     });
@@ -237,6 +250,7 @@ describe("structured operation results", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    await approveProjectExecution();
     await fireEvent.click(screen.getByRole("button", { name: /run infrastructure preview/i }));
     await waitFor(() => expect(operationHarness.starts).toEqual(["preview"]));
     operationHarness.handler?.({
@@ -248,9 +262,9 @@ describe("structured operation results", () => {
       level: "success",
       message: "Infrastructure preview completed successfully.",
       outcome: {
-        resourceState: "unchanged",
+        resourceState: "possiblyModified",
         summary: "Infrastructure preview completed successfully.",
-        guidance: "No Azure resource changes were applied by this action.",
+        guidance: "Template hooks may have changed local files, Azure resources, or directory objects.",
         retryable: false
       }
     });
@@ -289,6 +303,7 @@ describe("structured operation results", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    await approveProjectExecution();
     await fireEvent.click(screen.getByRole("button", { name: /run infrastructure preview/i }));
     await waitFor(() => expect(operationHarness.starts).toEqual(["preview"]));
 
@@ -301,9 +316,9 @@ describe("structured operation results", () => {
       level: "success",
       message: "Infrastructure preview completed successfully.",
       outcome: {
-        resourceState: "unchanged",
+        resourceState: "possiblyModified",
         summary: "Infrastructure preview completed successfully.",
-        guidance: "No Azure resource changes were applied by this action.",
+        guidance: "Template hooks may have changed local files, Azure resources, or directory objects.",
         retryable: false
       }
     });
@@ -312,8 +327,8 @@ describe("structured operation results", () => {
     });
 
     await fireEvent.click(screen.getByRole("button", { name: "environments" }));
-    const schedule = await screen.findByRole("combobox", { name: /run frequency/i });
-    await fireEvent.change(schedule, { target: { value: "weekly" } });
+    const permissionProfile = await screen.findByRole("combobox", { name: /permission profile/i });
+    await fireEvent.change(permissionProfile, { target: { value: "Minimal" } });
     await fireEvent.click(screen.getByRole("button", { name: "overview" }));
 
     expect(screen.getByRole("button", { name: /deploy with azd up/i })).toBeDisabled();
@@ -326,6 +341,7 @@ describe("structured operation results", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    await approveProjectExecution();
 
     await fireEvent.click(screen.getByRole("button", { name: /provision apply infrastructure changes/i }));
     await waitFor(() => expect(operationHarness.starts).toEqual(["provision"]));
