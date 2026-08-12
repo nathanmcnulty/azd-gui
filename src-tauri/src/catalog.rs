@@ -20,6 +20,8 @@ const ENTRA_HEALTH_MANIFEST: &str =
     include_str!("../../catalog/manifests/entra-health-monitoring.json");
 static COMMIT_REVISION: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-fA-F0-9]{40}$").expect("static commit regex"));
+const AZURE_YAML_LIMIT: usize = 2_000_000;
+const TEMPLATE_MANIFEST_LIMIT: usize = 512_000;
 
 fn reject_private_url_components(url: &Url, label: &str) -> AppResult<()> {
     if !url.username().is_empty()
@@ -65,6 +67,24 @@ fn require_response_origin(origin: &Url, response: &reqwest::Response) -> AppRes
         Err(AppError::Url(
             "The response left the original HTTPS origin.".into(),
         ))
+    }
+}
+
+fn require_payload_size(
+    declared: Option<u64>,
+    actual: Option<usize>,
+    limit: usize,
+    label: &str,
+) -> AppResult<()> {
+    if declared.is_some_and(|length| length > limit as u64)
+        || actual.is_some_and(|length| length > limit)
+    {
+        Err(AppError::Invalid(format!(
+            "{label} exceeds the {} KB limit.",
+            limit / 1_000
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -425,8 +445,17 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
         .await?
         .error_for_status()?;
     require_response_origin(&raw_origin, &azure_response)?;
-    let yaml_text = azure_response.text().await?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_text)?;
+    require_payload_size(
+        azure_response.content_length(),
+        None,
+        AZURE_YAML_LIMIT,
+        "azure.yaml",
+    )?;
+    let yaml_bytes = azure_response.bytes().await?;
+    require_payload_size(None, Some(yaml_bytes.len()), AZURE_YAML_LIMIT, "azure.yaml")?;
+    let yaml_text = std::str::from_utf8(&yaml_bytes)
+        .map_err(|_| AppError::Invalid("azure.yaml must use UTF-8 text.".into()))?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(yaml_text)?;
     let embedded_manifest = client
         .get(format!("{raw_base}/azd-gui.json"))
         .timeout(Duration::from_secs(20))
@@ -434,8 +463,21 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
         .await?;
     require_response_origin(&raw_origin, &embedded_manifest)?;
     let (manifest, manifest_source) = if embedded_manifest.status().is_success() {
+        require_payload_size(
+            embedded_manifest.content_length(),
+            None,
+            TEMPLATE_MANIFEST_LIMIT,
+            "azd-gui.json",
+        )?;
+        let manifest_bytes = embedded_manifest.bytes().await?;
+        require_payload_size(
+            None,
+            Some(manifest_bytes.len()),
+            TEMPLATE_MANIFEST_LIMIT,
+            "azd-gui.json",
+        )?;
         (
-            serde_json::from_slice::<TemplateManifest>(&embedded_manifest.bytes().await?)?,
+            serde_json::from_slice::<TemplateManifest>(&manifest_bytes)?,
             "embedded",
         )
     } else {
@@ -576,7 +618,9 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_catalog, inspect_local, normalize_catalog_url, same_origin};
+    use super::{
+        bundled_catalog, inspect_local, normalize_catalog_url, require_payload_size, same_origin,
+    };
     use std::fs;
     use tempfile::tempdir;
     use url::Url;
@@ -618,6 +662,13 @@ mod tests {
             &origin,
             &Url::parse("http://catalog.example:8443/redirected.json").unwrap()
         ));
+    }
+
+    #[test]
+    fn direct_template_payload_limits_check_headers_and_actual_bytes() {
+        assert!(require_payload_size(Some(513_000), None, 512_000, "manifest").is_err());
+        assert!(require_payload_size(None, Some(513_000), 512_000, "manifest").is_err());
+        assert!(require_payload_size(Some(512_000), Some(512_000), 512_000, "manifest").is_ok());
     }
 
     #[test]
