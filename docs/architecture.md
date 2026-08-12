@@ -8,7 +8,7 @@ Browser preview is selected only when the page is genuinely outside Tauri. If na
 
 Rust owns all privileged behavior:
 
-- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects.
+- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Its HTTP clients allow only bounded, same-origin HTTPS redirects and verify the final response origin.
 - `command_runner.rs` enforces the executable allowlist, streams redacted operation events, and manages cancellation.
 - `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.

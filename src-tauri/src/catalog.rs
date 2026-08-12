@@ -34,6 +34,40 @@ fn reject_private_url_components(url: &Url, label: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == "https"
+        && right.scheme() == "https"
+        && left.host_str() == right.host_str()
+        && left.port_or_known_default() == right.port_or_known_default()
+}
+
+fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
+    let origin = origin.clone();
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= 5 {
+                return attempt.error("Too many redirects.");
+            }
+            if same_origin(&origin, attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.error("Redirects must remain on the original HTTPS origin.")
+            }
+        }))
+        .build()
+        .map_err(AppError::from)
+}
+
+fn require_response_origin(origin: &Url, response: &reqwest::Response) -> AppResult<()> {
+    if same_origin(origin, response.url()) {
+        Ok(())
+    } else {
+        Err(AppError::Url(
+            "The response left the original HTTPS origin.".into(),
+        ))
+    }
+}
+
 fn manifest_json(path: &str) -> AppResult<&'static str> {
     match path.replace('\\', "/").as_str() {
         "manifests/myworkid.json" => Ok(MYWORKID_MANIFEST),
@@ -120,12 +154,14 @@ pub fn bundled_catalog() -> AppResult<Catalog> {
 
 pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
     let url = normalize_catalog_url(url)?;
-    let response = reqwest::Client::new()
-        .get(url)
+    let client = restricted_http_client(&url)?;
+    let response = client
+        .get(url.clone())
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await?
         .error_for_status()?;
+    require_response_origin(&url, &response)?;
     let resolved_catalog_url = response.url().clone();
     if response.content_length().unwrap_or(0) > 2_000_000 {
         return Err(AppError::Invalid("Catalog exceeds the 2 MB limit.".into()));
@@ -147,7 +183,6 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
         ));
     }
     let external_catalog_id = file.id.clone();
-    let client = reqwest::Client::new();
     let mut entries = Vec::with_capacity(file.entries.len());
     for entry in file.entries {
         validate_entry(&CatalogFileEntryRef {
@@ -177,11 +212,12 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
                 ));
             }
             let response = client
-                .get(manifest_url)
+                .get(manifest_url.clone())
                 .timeout(std::time::Duration::from_secs(20))
                 .send()
                 .await?
                 .error_for_status()?;
+            require_response_origin(&resolved_catalog_url, &response)?;
             if response.content_length().unwrap_or(0) > 512_000 {
                 return Err(AppError::Invalid(
                     "External template manifest exceeds the 512 KB limit.".into(),
@@ -380,13 +416,15 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
         "https://raw.githubusercontent.com/{}/{}/{}",
         segments[0], repository_name, commit
     );
-    let client = reqwest::Client::new();
+    let raw_origin = Url::parse(&raw_base).map_err(|error| AppError::Url(error.to_string()))?;
+    let client = restricted_http_client(&raw_origin)?;
     let azure_response = client
         .get(format!("{raw_base}/azure.yaml"))
         .timeout(Duration::from_secs(20))
         .send()
         .await?
         .error_for_status()?;
+    require_response_origin(&raw_origin, &azure_response)?;
     let yaml_text = azure_response.text().await?;
     let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_text)?;
     let embedded_manifest = client
@@ -394,6 +432,7 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
         .timeout(Duration::from_secs(20))
         .send()
         .await?;
+    require_response_origin(&raw_origin, &embedded_manifest)?;
     let (manifest, manifest_source) = if embedded_manifest.status().is_success() {
         (
             serde_json::from_slice::<TemplateManifest>(&embedded_manifest.bytes().await?)?,
@@ -537,9 +576,10 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_catalog, inspect_local, normalize_catalog_url};
+    use super::{bundled_catalog, inspect_local, normalize_catalog_url, same_origin};
     use std::fs;
     use tempfile::tempdir;
+    use url::Url;
 
     #[test]
     fn bundled_entries_are_pinned_and_trusted() {
@@ -561,6 +601,23 @@ mod tests {
             assert!(normalize_catalog_url(url).is_err());
         }
         assert!(normalize_catalog_url("https://catalog.example/azd-gui.catalog.json").is_ok());
+    }
+
+    #[test]
+    fn redirect_origins_require_https_host_and_port_alignment() {
+        let origin = Url::parse("https://catalog.example:8443/catalog.json").unwrap();
+        assert!(same_origin(
+            &origin,
+            &Url::parse("https://catalog.example:8443/redirected.json").unwrap()
+        ));
+        assert!(!same_origin(
+            &origin,
+            &Url::parse("https://other.example:8443/redirected.json").unwrap()
+        ));
+        assert!(!same_origin(
+            &origin,
+            &Url::parse("http://catalog.example:8443/redirected.json").unwrap()
+        ));
     }
 
     #[test]
