@@ -1,10 +1,12 @@
 # Azure Deployment Studio
 
-A lightweight, cross-platform desktop experience for discovering trusted [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/) templates, understanding their requirements, configuring environments, and deploying them without losing the power of the CLI.
+A lightweight Windows desktop experience for discovering trusted [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/) templates, understanding their requirements, configuring environments, and deploying them without losing the power of the CLI.
 
 The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle Chromium, store Azure tokens, or permit catalog manifests to run arbitrary commands.
 
-## Current V1
+## Windows beta
+
+The supported beta is Windows 10/11 on x64. macOS and Linux source builds are experimental development targets; they are not release-supported or included in beta acceptance yet.
 
 - Compact VS Code-inspired shell with one persistent, collapsible navigation tree for Catalog, Projects, Connections, Tools, and Settings.
 - System, light, and dark appearance preferences persisted with the navigation state.

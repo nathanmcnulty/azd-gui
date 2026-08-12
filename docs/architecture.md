@@ -1,5 +1,7 @@
 # Architecture
 
+The supported beta release target is Windows 10/11 on x64. macOS and Linux remain experimental source-build targets until they have their own packaging, signing, and acceptance gates.
+
 ## Runtime boundary
 
 The Svelte renderer owns presentation and wizard state. Small stateless controllers under `src/lib/controllers` compose connection verification, deployment approval/preparation, and project lifecycle workflows without introducing another state-management layer. They call a narrow set of typed Tauri commands through `src/lib/bridge.ts`; the bridge provides realistic preview data when the UI runs outside Tauri.

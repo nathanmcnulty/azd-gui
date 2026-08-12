@@ -33,7 +33,7 @@ Creating a `v*` tag is the only automatic Actions trigger in the repository. It 
 
 The release workflow can be dispatched manually only after selecting its explicit cost and signing confirmation. It is capped at 45 minutes, and a duplicate run for the same ref cancels the older run.
 
-macOS and Linux packaging remain local/manual until those release artifacts are actively supported. Do not add them to the tagged release workflow merely to prove that compilation is possible.
+The supported beta release target is Windows 10/11 on x64. macOS and Linux packaging remain experimental and local/manual until those release artifacts have dedicated packaging, signing, and acceptance gates. Do not add them to the tagged release workflow merely to prove that compilation is possible.
 
 ## Repository settings
 
