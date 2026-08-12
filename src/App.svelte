@@ -49,6 +49,7 @@
     CatalogSourceSummary,
     ConfigurationField,
     ConnectionStatus,
+    ConnectionTarget,
     ExternalCatalogPreview,
     ExternalTerminalLaunch,
     OperationEvent,
@@ -63,12 +64,14 @@
   } from "./lib/types";
   import {
     connectionMeetsRequirements,
+    connectionMeetsTarget,
     missingRequestedScopes,
     retainGrantedGraphScopes
   } from "./lib/connections";
   import { projectServices } from "./lib/project-state";
   import {
     calculateWizardPlan,
+    conditionMatches,
     environmentValuesForPlan,
     sensitiveFieldIds,
     valuesRemovedByPlan,
@@ -143,6 +146,7 @@
     | { projectPath: string; environment?: string; event: OperationEvent }
     | null = null;
   let projectDeploymentResult: ProjectDeploymentResult | null = null;
+  let projectExecutionAccepted = false;
   let projectLoading = false;
   let environmentEditorOpen = false;
   let environmentBusy = false;
@@ -160,6 +164,7 @@
   let rawVariableValue = "";
   let selectedProjectConfigurationFields: ConfigurationField[] = [];
   let visibleProjectConfigurationFields: ConfigurationField[] = [];
+  let projectConfigurationWizardValues: WizardValues = {};
   let missingProjectConfiguration: ConfigurationField[] = [];
   let catalogSourceOpen = false;
   let catalogSourceUrl = "";
@@ -173,6 +178,8 @@
   let manualAzureScope = false;
   let activeStepReady = false;
   let sourceTrustAccepted = false;
+  let hookExecutionAccepted = false;
+  let requiresInteractiveTerminal = false;
   const operationResolvers = new Map<
     string,
     { resolve: (event: OperationEvent) => void; reject: (error: Error) => void }
@@ -188,9 +195,7 @@
         .find((entry) => entry.id === selectedProject?.templateId)
         ?.manifest?.configuration.groups.flatMap((group) => group.fields) ?? []
     : [];
-  $: visibleProjectConfigurationFields = visibleFields(
-    selectedProjectConfigurationFields,
-    Object.fromEntries(
+  $: projectConfigurationWizardValues = Object.fromEntries(
       selectedProjectConfigurationFields.map((field) => [
         field.id,
         field.type === "boolean"
@@ -199,8 +204,14 @@
             ? (environmentConfigurationValues[field.id] ?? "").split(",").filter(Boolean)
             : environmentConfigurationValues[field.id] ?? ""
       ])
-    )
   );
+  $: visibleProjectConfigurationFields =
+    (selectedProject?.templateId
+      ? data.catalog.entries.find((entry) => entry.id === selectedProject?.templateId)?.manifest?.configuration.groups
+      : undefined
+    )
+      ?.filter((group) => conditionMatches(group.condition, projectConfigurationWizardValues))
+      .flatMap((group) => visibleFields(group.fields, projectConfigurationWizardValues)) ?? [];
   $: missingProjectConfiguration = environmentConfigurationLoaded
     ? visibleProjectConfigurationFields.filter((field) =>
         field.required &&
@@ -267,6 +278,9 @@
     .every(connectionMeetsRequirements);
   $: selectedPlatformSupported =
     !selectedEntry || selectedEntry.platforms.includes(data.platform);
+  $: requiresInteractiveTerminal = Boolean(
+    selectedEntry?.manifest?.requiresInteractiveTerminal || selectedInspection?.interactiveHooks
+  );
   $: connectedConnectionCount = data.connections.filter((connection) => connection.state === "connected").length;
   $: tenantMismatch =
     new Set(
@@ -282,16 +296,18 @@
         )
         .map((connection) => connection.tenantId?.toLowerCase())
     ).size > 1;
+  $: connectionTarget =
+    wizardValues.tenantId && wizardValues.subscriptionId
+      ? ({
+          tenantId: String(wizardValues.tenantId),
+          subscriptionId: String(wizardValues.subscriptionId)
+        } satisfies ConnectionTarget)
+      : null;
   $: selectedTenantMismatch = Boolean(
-    wizardValues.tenantId &&
+    connectionTarget &&
       requiredConnections
-        .filter(
-          (connection) => connection.required && connection.state === "connected" && connection.tenantId
-        )
-        .some(
-          (connection) =>
-            connection.tenantId?.toLowerCase() !== String(wizardValues.tenantId).toLowerCase()
-        )
+        .filter((connection) => connection.required)
+        .some((connection) => !connectionMeetsTarget(connection, connectionTarget!))
   );
   $: {
     const page = activePage;
@@ -320,6 +336,8 @@
       activeStepReady = page.blockingIssues.length === 0;
     } else if (page.kind === "preflight") {
       activeStepReady = preflightRan;
+    } else if (page.kind === "review") {
+      activeStepReady = hookExecutionAccepted;
     } else {
       activeStepReady = true;
     }
@@ -461,6 +479,7 @@
     selectedEntry = entry;
     selectedInspection = null;
     sourceTrustAccepted = Boolean(entry.trusted);
+    hookExecutionAccepted = false;
     terminalLaunch = null;
     wizardValues = initializeValues(entry);
     wizardPlan = calculateWizardPlan(entry, wizardValues);
@@ -486,6 +505,7 @@
   }
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    hookExecutionAccepted = false;
     if (
       id === "sourceMode" ||
       id === "sourcePath" ||
@@ -740,7 +760,7 @@
     }
   }
 
-  async function verifyConnection(provider: ConnectionStatus) {
+  async function verifyConnection(provider: ConnectionStatus, target?: ConnectionTarget) {
     let latestConnections = data.connections.map((connection) =>
       connection.id === provider.id ? { ...connection, state: "checking" as const } : connection
     );
@@ -748,9 +768,10 @@
     for (const [attempt, delay] of connectionVerificationDelays.entries()) {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
       try {
-        latestConnections = retainGrantedGraphScopes(latestConnections, await refreshConnections());
+        latestConnections = retainGrantedGraphScopes(latestConnections, await refreshConnections(target));
         const refreshed = latestConnections.find((connection) => connection.id === provider.id);
-        if (refreshed?.state === "connected") {
+        const targetMatches = !target || Boolean(refreshed && connectionMeetsTarget(refreshed, target));
+        if (refreshed?.state === "connected" && targetMatches) {
           data = { ...data, connections: latestConnections };
           return;
         }
@@ -766,16 +787,23 @@
     }
     data = { ...data, connections: latestConnections };
     addSystemLog(
-      `${provider.name} sign-in completed, but its saved context is not visible yet. Use Check all to retry.`,
+      target
+        ? `${provider.name} sign-in completed, but tenant ${target.tenantId} and subscription ${target.subscriptionId} are not visible yet. Use Check all to retry.`
+        : `${provider.name} sign-in completed, but its saved context is not visible yet. Use Check all to retry.`,
       "warning"
     );
   }
 
-  async function connect(provider: ConnectionStatus) {
-    addSystemLog(`Starting ${provider.name} sign-in.`, "info");
+  async function connect(provider: ConnectionStatus, target?: ConnectionTarget) {
+    addSystemLog(
+      target
+        ? `Starting ${provider.name} sign-in for tenant ${target.tenantId}.`
+        : `Starting ${provider.name} sign-in.`,
+      "info"
+    );
     outputOpen = true;
     try {
-      const operationId = await login(provider.id, provider.scopes ?? [], deviceCode);
+      const operationId = await login(provider.id, provider.scopes ?? [], deviceCode, target);
       if (data.isNative) {
         await waitForOperation(operationId);
         if (provider.id === "graphPowerShell" && provider.scopes?.length) {
@@ -788,7 +816,7 @@
             )
           };
         }
-        await verifyConnection(provider);
+        await verifyConnection(provider, target);
       } else {
         data = {
           ...data,
@@ -798,7 +826,11 @@
                   ...connection,
                   state: "connected",
                   account: "preview@example.com",
-                  tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47",
+                  tenantId: target?.tenantId ?? "72f988bf-86f1-41af-91ab-2d7cd011db47",
+                  subscriptionId:
+                    provider.id === "azureCli" || provider.id === "azPowerShell"
+                      ? target?.subscriptionId ?? connection.subscriptionId
+                      : connection.subscriptionId,
                   grantedScopes:
                     provider.id === "graphPowerShell" ? [...(provider.scopes ?? [])] : connection.grantedScopes
                 }
@@ -812,10 +844,25 @@
   }
 
   async function connectRequired() {
+    const target = connectionTarget ?? undefined;
     for (const connection of requiredConnections.filter(
-      (item) => !connectionMeetsRequirements(item)
+      (item) =>
+        !connectionMeetsRequirements(item) ||
+        Boolean(target && !connectionMeetsTarget(item, target))
     )) {
-      await connect(connection);
+      await connect(connection, target);
+    }
+  }
+
+  async function alignRequiredConnections() {
+    const target = connectionTarget;
+    if (!target) return;
+    for (const connection of requiredConnections.filter(
+      (item) =>
+        item.required &&
+        !connectionMeetsTarget(item, target)
+    )) {
+      await connect(connection, target);
     }
   }
 
@@ -825,6 +872,10 @@
     outputOpen = true;
     if (!selectedEntry.trusted && !sourceTrustAccepted) {
       addSystemLog("Review and accept the unvetted source before preflight.", "error");
+      return;
+    }
+    if (!hookExecutionAccepted) {
+      addSystemLog("Review and approve pinned template code execution before continuing.", "error");
       return;
     }
     if (!selectedPlatformSupported) {
@@ -893,7 +944,10 @@
     addSystemLog("Checked required tools, connection state, and environment inputs.", "success");
     try {
       const projectPath = await materializeProject();
-      addSystemLog("Starting azd provision --preview --no-prompt.", "info");
+      addSystemLog(
+        "Starting azd provision --preview --no-prompt. Pinned template hooks may modify local or cloud state.",
+        "warning"
+      );
       const operationId = await startAzdOperation(
         "preview",
         projectPath,
@@ -947,6 +1001,15 @@
 
   async function runDeployment(action = "up") {
     if (!selectedEntry || activeOperationId) return;
+    if (!hookExecutionAccepted) {
+      addSystemLog("Review and approve pinned template code execution before deployment.", "error");
+      return;
+    }
+    if (requiresInteractiveTerminal) {
+      addSystemLog("This template requires interactive terminal input to finish deployment.", "warning");
+      outputOpen = true;
+      return;
+    }
     operationState = "running";
     lastOperationResult = null;
     outputOpen = true;
@@ -1005,7 +1068,9 @@
               ? {
                   resourceState: ["up", "provision", "deploy", "down"].includes(action)
                     ? "changed"
-                    : "unchanged",
+                    : action === "preview"
+                      ? "possiblyModified"
+                      : "unchanged",
                   summary:
                     action === "up"
                       ? "Deployment completed successfully."
@@ -1014,7 +1079,9 @@
                         : `${action} completed successfully.`,
                   guidance: ["up", "provision", "deploy", "down"].includes(action)
                     ? "Refresh project state to inspect the resulting Azure resources."
-                    : "No Azure resource changes were applied by this action.",
+                    : action === "preview"
+                      ? "Template hooks may have changed local files, Azure resources, or directory objects. Review the output and refresh project state before continuing."
+                      : "No Azure resource changes were applied by this action.",
                   retryable: false
                 }
               : undefined
@@ -1101,7 +1168,7 @@
       activeOperationKind = null;
       operationState = "idle";
       if (preflightRan) {
-        addSystemLog("Infrastructure preview completed. No Azure changes were applied.", "success");
+        addSystemLog("Infrastructure preview completed. Review template hook output and current state before deployment.", "warning");
       }
       return;
     }
@@ -1163,7 +1230,7 @@
     const kind = activeOperationKind ?? "up";
     await cancelOperation(operationId);
     if (!data.isNative) {
-      const mutating = ["up", "provision", "deploy", "down"].includes(kind);
+      const mutating = ["up", "provision", "deploy", "down", "preview"].includes(kind);
       handleOperationEvent({
         operationId,
         kind,
@@ -1323,6 +1390,7 @@
       selectedInspection = null;
       projectPreview = null;
       projectDeploymentResult = null;
+      projectExecutionAccepted = false;
       terminalLaunch = null;
       projectTab = "overview";
     }
@@ -1448,6 +1516,11 @@
 
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
+    if (["preview", "up", "provision", "deploy", "down"].includes(action) && !projectExecutionAccepted) {
+      addSystemLog("Approve this project's template code execution before running the lifecycle action.", "warning");
+      outputOpen = true;
+      return;
+    }
     if (["preview", "up", "provision", "deploy"].includes(action) && missingProjectConfiguration.length > 0) {
       projectTab = "environments";
       environmentConfigurationError = "Set the required environment configuration before deployment.";
@@ -1818,10 +1891,10 @@
                 <div><strong>Source integrity</strong><p>The deployment will use this exact commit. Future repository changes do not alter this project.</p></div>
               </div>
             {/if}
-            {#if selectedInspection?.interactiveHooks}
+            {#if requiresInteractiveTerminal}
               <div class="callout warning interactive-hook-warning">
                 <Icon name="warning" size={18} />
-                <div><strong>Interactive hooks detected</strong><p>Guided deployment uses <code>--no-prompt</code>. If a hook requires input, finish preflight and use the external-terminal fallback.</p></div>
+                <div><strong>Interactive terminal required</strong><p>Finish the guided configuration and preview, then use the terminal handoff for prompts the output-only panel cannot answer.</p></div>
                 {#if wizardValues.sourceMode === "existingProject"}
                   <button class="secondary" disabled={terminalOpening} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={14} /> Open external terminal</button>
                 {/if}
@@ -1895,7 +1968,7 @@
                     tone={missingScopes.length || connection.state === "expired" ? "warning" : connection.state === "connected" ? "success" : connection.state === "checking" ? "neutral" : "danger"}
                     label={missingScopes.length ? "scope update required" : connection.state}
                   />
-                  <button class="secondary" on:click={() => connect(connection)}>
+                  <button class="secondary" on:click={() => connect(connection, connectionTarget ?? undefined)}>
                     {connection.state === "connected" ? (missingScopes.length ? "Update scopes" : "Reconnect") : "Connect"}
                   </button>
                 </div>
@@ -1931,6 +2004,7 @@
               <div class="callout warning">
                 <Icon name="warning" size={18} />
                 <div><strong>Selected tenant does not match</strong><p>Reconnect the required tools to this tenant or choose a subscription in their connected tenant.</p></div>
+                <button class="secondary" on:click={alignRequiredConnections}>Reconnect required tools</button>
               </div>
             {/if}
             <div class="form-grid">
@@ -2039,9 +2113,9 @@
               <div class="preflight-ring">
                 {#if preflightRan}<Icon name="check" size={34} />{:else}<Icon name="cloud" size={34} />{/if}
               </div>
-              <h2>{preflightRan ? "Ready to deploy" : "No Azure changes yet"}</h2>
-              <p>{preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview passed." : "Run checks and generate an infrastructure preview before materializing the project."}</p>
-              <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run preflight"}</button>
+              <h2>{preflightRan ? "Preview completed" : "Run checks and template preview"}</h2>
+              <p>{preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview completed. Review Output for hook-driven changes." : "Permission checks are read-only. Project initialization and azd preview can execute pinned template hooks that modify local or cloud state."}</p>
+              <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
             </div>
             <div class="check-grid">
               {#each ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Registered permissions", "Infrastructure preview"] as check}
@@ -2095,24 +2169,32 @@
             <div class="callout warning interactive-hook-warning">
               <Icon name="warning" size={18} />
               <div>
-                <strong>{selectedInspection?.interactiveHooks ? "Interactive template code will run" : "Template code will run"}</strong>
-                <p>{selectedInspection?.interactiveHooks ? "The guided path remains available, but a hook that requests input may require the external terminal." : "Continuing allows azd to execute the hooks in this pinned template. Review the repository if the source is not familiar."}</p>
+                <strong>{requiresInteractiveTerminal ? "Interactive template code can run" : "Pinned template code can run"}</strong>
+                <p>Project initialization, preview, and deployment can execute template hooks. Hooks may change local files, Azure resources, or directory objects. A hook that requests input may require the external terminal.</p>
               </div>
-              {#if selectedInspection?.interactiveHooks}
+              {#if requiresInteractiveTerminal}
                 <button class="secondary" disabled={terminalOpening || !projectPrepared} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={14} /> Open external terminal</button>
               {/if}
             </div>
+            <label class="toggle-line card">
+              <input type="checkbox" bind:checked={hookExecutionAccepted} />
+              <span><strong>I approve pinned template code execution</strong><small>Required before project materialization or infrastructure preview.</small></span>
+            </label>
           {:else if activePage.kind === "deploy"}
             <div class="deployment-hero">
               <div class={`deployment-orb ${operationState}`}>
                 {#if operationState === "running"}<span class="spinner"></span>{:else if operationState === "succeeded"}<Icon name="check" size={38} />{:else if operationState === "failed" || operationState === "cancelled"}<Icon name="warning" size={38} />{:else}<Icon name="cloud" size={38} />{/if}
               </div>
               <h2>{operationState === "succeeded" ? "Deployment complete" : operationState === "failed" ? "Deployment needs attention" : operationState === "cancelled" ? "Deployment cancelled" : operationState === "running" ? "Deploying with azd" : "Ready for azd up"}</h2>
-              <p>{operationState === "running" ? "You can continue using the app while the operation runs." : lastOperationResult?.outcome?.summary ?? "The complete guided deployment runs without CLI prompts."}</p>
+              <p>{operationState === "running" ? "You can continue using the app while the operation runs." : requiresInteractiveTerminal ? "This template needs interactive input that the output-only panel cannot provide yet." : lastOperationResult?.outcome?.summary ?? "The complete guided deployment runs without CLI prompts."}</p>
               {#if operationState === "running"}
                 <button class="danger" on:click={stopOperation}><Icon name="stop" size={15} /> Cancel deployment</button>
               {:else}
-                <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {operationState === "succeeded" ? "Deploy again" : lastOperationResult?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
+                {#if requiresInteractiveTerminal}
+                  <button class="primary large" disabled={terminalOpening || !projectPrepared} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={16} /> Open terminal to finish</button>
+                {:else}
+                  <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {operationState === "succeeded" ? "Deploy again" : lastOperationResult?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
+                {/if}
               {/if}
             </div>
             {#if lastOperationResult?.outcome}
@@ -2127,7 +2209,7 @@
                 </div>
               </div>
             {/if}
-            {#if selectedInspection?.interactiveHooks}
+            {#if requiresInteractiveTerminal}
               <div class="callout warning interactive-hook-warning">
                 <Icon name="terminal" size={18} />
                 <div><strong>Need interactive input?</strong><p>Open a terminal in the materialized project and run the copyable command without <code>--no-prompt</code>.</p></div>
@@ -2219,7 +2301,7 @@
               <div class="project-actions">
                 <button class="secondary" disabled={terminalOpening} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
-                <button class="danger" on:click={() => runProjectAction("down")}>Down</button>
+                <button class="danger" disabled={!projectExecutionAccepted} title={!projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
               </div>
             </div>
           </div>
@@ -2298,7 +2380,7 @@
                       <button class="secondary" on:click={() => (outputOpen = true)}><Icon name="terminal" size={14} /> View output</button>
                       <button class="secondary" on:click={() => (projectTab = "resources")}><Icon name="cloud" size={14} /> View structured state</button>
                       {#if projectDeploymentResult.event.state !== "succeeded"}
-                        <button class="primary" disabled={Boolean(activeOperationId)} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
+                        <button class="primary" disabled={Boolean(activeOperationId) || !projectExecutionAccepted} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
                       {/if}
                     </div>
                   {/if}
@@ -2306,9 +2388,9 @@
               {/if}
               <section class="workspace-panel full project-preflight" aria-label="Deployment preflight">
                 <div class="section-toolbar">
-                  <div><h2>Deployment preflight</h2><p>Preview infrastructure changes for the selected environment before running the complete deployment.</p></div>
+                  <div><h2>Deployment preflight</h2><p>Preview the selected environment before deployment. azd preview can execute template hooks and is not guaranteed read-only.</p></div>
                   {#if projectPreviewReady}
-                    <StatusPill tone="success" label="Preview current" />
+                    <StatusPill tone="warning" label="Preview current" />
                   {:else}
                     <StatusPill tone="warning" label="Preview required" />
                   {/if}
@@ -2327,15 +2409,19 @@
                 {:else}
                   <div class="project-preview-pending"><Icon name="cloud" size={20} /><div><strong>No current preview</strong><p>A prior result remains in operation history, but a fresh preview is required after reopening the project or changing its environment configuration.</p></div></div>
                 {/if}
+                <label class="toggle-line card">
+                  <input type="checkbox" bind:checked={projectExecutionAccepted} />
+                  <span><strong>I approve this project's template code execution</strong><small>Required for preview, deployment, provisioning, and resource removal in this app session.</small></span>
+                </label>
                 <div class="project-preflight-actions">
                   <button
                     class="secondary"
-                    disabled={Boolean(activeOperationId) || !environmentConfigurationLoaded || missingProjectConfiguration.length > 0 || !selectedProject.environment}
+                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !environmentConfigurationLoaded || missingProjectConfiguration.length > 0 || !selectedProject.environment}
                     on:click={() => runProjectAction("preview")}
                   ><Icon name="search" size={15} /> {projectPreviewReady ? "Run preview again" : "Run infrastructure preview"}</button>
                   <button
                     class="primary"
-                    disabled={Boolean(activeOperationId) || !projectPreviewReady}
+                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectPreviewReady}
                     title={!projectPreviewReady ? "Complete a current infrastructure preview first" : undefined}
                     on:click={() => runProjectAction("up")}
                   ><Icon name="play" size={15} /> Deploy with azd up</button>
@@ -2344,8 +2430,8 @@
               <section class="workspace-panel full">
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
                 <div class="lifecycle-actions">
-                  <button disabled={missingProjectConfiguration.length > 0} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
-                  <button disabled={missingProjectConfiguration.length > 0} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
+                  <button disabled={!projectExecutionAccepted || missingProjectConfiguration.length > 0} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
+                  <button disabled={!projectExecutionAccepted || missingProjectConfiguration.length > 0} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
                   <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong><span>Refresh environment state</span></button>
                 </div>
               </section>
@@ -2577,7 +2663,7 @@
       </section>
     {:else}
       <section class="page settings-page">
-        <div class="page-header"><div><span class="eyebrow">PREFERENCES</span><h1>Settings</h1><p>Appearance, catalog sources, storage, and diagnostics.</p></div></div>
+        <div class="page-header"><div><span class="eyebrow">PREFERENCES</span><h1>Settings</h1><p>Appearance, navigation, catalog sources, and privacy boundaries.</p></div></div>
         <div class="settings-group">
           <h2>Appearance</h2>
           <div class="segmented">

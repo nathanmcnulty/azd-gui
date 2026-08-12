@@ -16,6 +16,7 @@ import type {
   BootstrapData,
   Catalog,
   ConnectionStatus,
+  ConnectionTarget,
   ExternalCatalogPreview,
   ExternalTerminalLaunch,
   OperationEvent,
@@ -206,9 +207,9 @@ export async function installTool(id: string): Promise<string> {
   return invoke<string>("install_tool", { id });
 }
 
-export async function refreshConnections(): Promise<ConnectionStatus[]> {
+export async function refreshConnections(target?: ConnectionTarget): Promise<ConnectionStatus[]> {
   if (!isTauri()) return structuredClone(mockBootstrap.connections);
-  return invoke<ConnectionStatus[]>("check_connections");
+  return invoke<ConnectionStatus[]>("check_connections", { target });
 }
 
 export async function discoverAzureScope(
@@ -257,10 +258,11 @@ export async function runPermissionChecks(
 export async function login(
   providerId: ConnectionStatus["id"],
   scopes: string[] = [],
-  deviceCode = false
+  deviceCode = false,
+  target?: ConnectionTarget
 ): Promise<string> {
   if (!isTauri()) return `mock-login-${providerId}`;
-  return invoke<string>("start_login", { providerId, scopes, deviceCode });
+  return invoke<string>("start_login", { providerId, scopes, deviceCode, target });
 }
 
 export async function startAzdOperation(

@@ -79,11 +79,13 @@ describe("desktop experience", () => {
       );
     });
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-    await fireEvent.input(screen.getByLabelText(/tenant to monitor/i), {
-      target: { value: "22222222-2222-2222-2222-222222222222" }
+    await fireEvent.input(screen.getByLabelText(/teams channel link/i), {
+      target: { value: "https://teams.microsoft.com/l/channel/example/Alerts?groupId=group&tenantId=tenant" }
     });
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-    await fireEvent.click(screen.getByRole("button", { name: "Run preflight" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /run checks and preview/i }).at(-1)!);
 
     const results = await screen.findByRole("region", { name: /permission check results/i });
     expect(within(results).getByText("Azure subscription access")).toBeInTheDocument();
@@ -168,7 +170,7 @@ describe("desktop experience", () => {
     expect(within(azureCliRow).getByRole("button", { name: "Copy update preview" })).toBeEnabled();
   });
 
-  it("requires missing Microsoft Graph scopes before continuing", async () => {
+  it("uses the pinned Maester prerequisites instead of an unused Graph module", async () => {
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
@@ -181,28 +183,10 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
-    await fireEvent.click(screen.getByRole("button", { name: "Review install" }));
-    await fireEvent.click(screen.getByRole("button", { name: /install for current user/i }));
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-
-    const graphRow = screen
-      .getByText(/Requested scopes: Application\.ReadWrite\.All/)
-      .closest<HTMLElement>(".connection-row")!;
-    expect(within(graphRow).getByText("scope update required")).toBeInTheDocument();
-    expect(
-      within(graphRow).getByText("Missing scopes: RoleManagement.ReadWrite.Directory")
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
-
-    await fireEvent.click(within(graphRow).getByRole("button", { name: "Update scopes" }));
-
-    await waitFor(() => {
-      expect(within(graphRow).queryByText(/Missing scopes:/)).not.toBeInTheDocument();
-    });
-    expect(within(graphRow).getByText("connected")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
-    });
+    expect(screen.getByText("Azure CLI")).toBeInTheDocument();
+    expect(screen.getByText("PowerShell")).toBeInTheDocument();
+    expect(screen.queryByText("Microsoft Graph PowerShell")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
   });
 
   it("shows azd credential expiration in the Connections center", async () => {
@@ -257,7 +241,7 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
-    expect(await screen.findByText(/interactive hooks detected/i)).toBeInTheDocument();
+    expect(await screen.findByText(/interactive terminal required/i)).toBeInTheDocument();
     expect(screen.getByText(/local source can change/i)).toBeInTheDocument();
     expect(screen.getByText(/inferred from azure.yaml/i)).toBeInTheDocument();
     const continueButton = screen.getByRole("button", { name: /continue/i });
@@ -332,7 +316,7 @@ describe("desktop experience", () => {
       expect(
         within(screen.getByRole("contentinfo")).getByRole("button", { name: /staging\.us_\(1\)/i })
       ).toBeInTheDocument();
-      expect(screen.getByText("1 required")).toBeInTheDocument();
+      expect(screen.getByText(/required$/)).toBeInTheDocument();
     });
     await fireEvent.click(screen.getByRole("button", { name: "overview" }));
     expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
@@ -344,11 +328,11 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
 
-    const schedule = await screen.findByRole("combobox", { name: /run frequency/i });
-    expect(schedule).toHaveValue("daily");
-    await fireEvent.change(schedule, { target: { value: "weekly" } });
+    const permissionProfile = await screen.findByRole("combobox", { name: /permission profile/i });
+    expect(permissionProfile).toHaveValue("Extended");
+    await fireEvent.change(permissionProfile, { target: { value: "Minimal" } });
     await fireEvent.click(screen.getByRole("button", { name: /save configuration/i }));
-    await waitFor(() => expect(schedule).toHaveValue("weekly"));
+    await waitFor(() => expect(permissionProfile).toHaveValue("Minimal"));
 
     await fireEvent.input(screen.getByLabelText(/variable name/i), {
       target: { value: "CUSTOM_SECRET" }

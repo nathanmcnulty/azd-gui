@@ -17,10 +17,10 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
-        ExternalCatalogPreview, OperationEvent, PermissionCheckRequest, PermissionCheckResult,
-        PrepareDeploymentRequest, ProjectEnvironment, ProjectEnvironmentValue,
-        ProjectEnvironmentValueInput, ProjectSummary, TemplateInspection, TemplateManifest,
-        ToolInstallPlan, ToolStatus,
+        ConnectionTarget, ExternalCatalogPreview, OperationEvent, PermissionCheckRequest,
+        PermissionCheckResult, PrepareDeploymentRequest, ProjectEnvironment,
+        ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary, TemplateInspection,
+        TemplateManifest, ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -102,7 +102,7 @@ fn platform_name() -> String {
 
 #[tauri::command]
 async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
-    let (tools, connections) = tokio::join!(tools::check_all(false), connections::check_all());
+    let (tools, connections) = tokio::join!(tools::check_all(false), connections::check_all(None));
     let mut catalog = catalog::bundled_catalog()?;
     for mut external in state.database.accepted_catalogs()? {
         for entry in &mut external.entries {
@@ -197,8 +197,9 @@ fn install_tool(app: AppHandle, state: State<'_, AppState>, id: String) -> AppRe
 }
 
 #[tauri::command]
-async fn check_connections() -> AppResult<Vec<ConnectionStatus>> {
-    Ok(connections::check_all().await)
+async fn check_connections(target: Option<ConnectionTarget>) -> AppResult<Vec<ConnectionStatus>> {
+    connections::validate_target(target.as_ref())?;
+    Ok(connections::check_all(target.as_ref()).await)
 }
 
 #[tauri::command]
@@ -223,8 +224,9 @@ fn start_login(
     provider_id: String,
     scopes: Vec<String>,
     device_code: bool,
+    target: Option<ConnectionTarget>,
 ) -> AppResult<String> {
-    let spec = connections::login_spec(&provider_id, &scopes, device_code)?;
+    let spec = connections::login_spec(&provider_id, &scopes, device_code, target.as_ref())?;
     spawn_operation(
         app,
         state.operations.clone(),
@@ -827,8 +829,8 @@ mod draft_tests {
         };
 
         let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();
-        assert!(allowed.contains("teamswebhook"));
-        assert!(sensitive.contains("teamswebhook"));
+        assert!(allowed.contains("teamschannellink"));
+        assert!(!sensitive.contains("teamschannellink"));
 
         let manifest = catalog::entry_by_id("entra-health-monitoring")
             .unwrap()
@@ -840,7 +842,7 @@ mod draft_tests {
             .unwrap()
             .insert("local-template".into(), vec![manifest]);
         let (allowed, sensitive) = draft_keys(&state, "local-template").unwrap();
-        assert!(allowed.contains("teamswebhook"));
-        assert!(sensitive.contains("teamswebhook"));
+        assert!(allowed.contains("teamschannellink"));
+        assert!(!sensitive.contains("teamschannellink"));
     }
 }

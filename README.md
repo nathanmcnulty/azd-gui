@@ -16,7 +16,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 - Detection for azd, Azure CLI, PowerShell, Az PowerShell, and Microsoft Graph PowerShell.
 - Native login orchestration for azd, Azure CLI, Az PowerShell, and Graph PowerShell, including device-code fallback and delegated Graph scope verification.
 - Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
-- Exact-commit template caching, `azd init`, environment value application, preflight preview, and `azd up --no-prompt`.
+- Exact-commit template caching, explicit template-execution consent, environment value application, conservative hook-aware preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
 - Project workspaces with environment management, lifecycle history, service endpoints, and validated Azure portal links from `azd show`.
 - Explicit external-terminal fallback for interactive hooks, opened in a validated azd project with a copyable interactive `azd up` command.
@@ -68,6 +68,7 @@ npm run verify
 Local validation is the normal development path. Pull requests and branch pushes do not start GitHub Actions. The `Manual validation` workflow must be explicitly dispatched for one selected platform when hosted validation is genuinely necessary; validating all three platforms requires three intentional dispatches. Tagged releases run the Windows validation, build, and signing workflow once. Live Azure authentication and deployment checks remain manual because automation must not contain interactive user credentials.
 
 See [docs/actions-policy.md](docs/actions-policy.md) for the hosted-runner budget policy and release checklist.
+Use [docs/windows-alpha-acceptance.md](docs/windows-alpha-acceptance.md) for local packaging and smoke-test acceptance.
 
 ## Catalog contracts
 
@@ -83,7 +84,7 @@ Template manifest resolution is:
 2. An embedded `azd-gui.json`.
 3. Safe inference from `azure.yaml`.
 
-Inference never creates executable commands. Unvetted interactive hooks are reported and can be run in an external terminal instead. The renderer cannot select a terminal executable or pass a shell command; Rust chooses from fixed platform providers after validating the project and environment.
+Inference never creates executable commands. Manifests can declare that a pinned workflow requires interactive terminal input, and inferred interactive hooks receive the same handoff. The renderer cannot select a terminal executable or pass a shell command; Rust chooses from fixed platform providers after validating the project and environment.
 
 ## Security model
 

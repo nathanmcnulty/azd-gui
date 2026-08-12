@@ -1,8 +1,9 @@
 use crate::{
     azd,
     command_runner::{capture, CommandSpec, Executable},
+    deployment::validate_optional_guid,
     error::{AppError, AppResult},
-    models::ConnectionStatus,
+    models::{ConnectionStatus, ConnectionTarget},
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -115,23 +116,62 @@ fn graph_context_spec() -> CommandSpec {
     )
 }
 
-pub async fn check_all() -> Vec<ConnectionStatus> {
+fn azure_cli_context_spec(target: Option<&ConnectionTarget>) -> CommandSpec {
+    let mut args = vec![
+        "account".to_string(),
+        "show".to_string(),
+        "--output".to_string(),
+        "json".to_string(),
+    ];
+    if let Some(target) = target {
+        args.extend(["--subscription".into(), target.subscription_id.clone()]);
+    }
+    CommandSpec::new(Executable::AzureCli, args)
+}
+
+fn az_power_shell_context_spec(target: Option<&ConnectionTarget>) -> CommandSpec {
+    let (script, target) = if let Some(target) = target {
+        (
+            "$c=Get-AzContext -ListAvailable -ErrorAction SilentlyContinue|Where-Object {$_.Tenant.Id -eq $env:AZD_GUI_TENANT_ID -and $_.Subscription.Id -eq $env:AZD_GUI_SUBSCRIPTION_ID}|Select-Object -First 1; if($c){[pscustomobject]@{account=$c.Account.Id;tenantId=$c.Tenant.Id;subscriptionId=$c.Subscription.Id;subscriptionName=$c.Subscription.Name}|ConvertTo-Json -Compress}",
+            Some(target),
+        )
+    } else {
+        (
+            "$c=Get-AzContext -ErrorAction SilentlyContinue; if($c){[pscustomobject]@{account=$c.Account.Id;tenantId=$c.Tenant.Id;subscriptionId=$c.Subscription.Id;subscriptionName=$c.Subscription.Name}|ConvertTo-Json -Compress}",
+            None,
+        )
+    };
+    let spec = CommandSpec::new(
+        Executable::PowerShell,
+        [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ],
+    );
+    if let Some(target) = target {
+        spec.env("AZD_GUI_TENANT_ID", &target.tenant_id)
+            .env("AZD_GUI_SUBSCRIPTION_ID", &target.subscription_id)
+    } else {
+        spec
+    }
+}
+
+pub fn validate_target(target: Option<&ConnectionTarget>) -> AppResult<()> {
+    let Some(target) = target else {
+        return Ok(());
+    };
+    validate_optional_guid("Tenant ID", Some(&target.tenant_id))?;
+    validate_optional_guid("Subscription ID", Some(&target.subscription_id))
+}
+
+pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatus> {
     let (azd, az, az_ps, graph_ps) = tokio::join!(
         azd::auth_status(),
-        json_status(CommandSpec::new(
-            Executable::AzureCli,
-            ["account", "show", "--output", "json"]
-        )),
-        json_status(CommandSpec::new(
-            Executable::PowerShell,
-            [
-                "-NoLogo",
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "$c=Get-AzContext -ErrorAction SilentlyContinue; if($c){[pscustomobject]@{account=$c.Account.Id;tenantId=$c.Tenant.Id;subscriptionId=$c.Subscription.Id;subscriptionName=$c.Subscription.Name}|ConvertTo-Json -Compress}"
-            ]
-        )),
+        json_status(azure_cli_context_spec(target)),
+        json_status(az_power_shell_context_spec(target)),
         json_status(graph_context_spec())
     );
     let azd_status_value = azd.ok();
@@ -200,6 +240,7 @@ pub fn login_spec(
     provider_id: &str,
     scopes: &[String],
     device_code: bool,
+    target: Option<&ConnectionTarget>,
 ) -> AppResult<CommandSpec> {
     if scopes.iter().any(|scope| {
         scope.len() > 512
@@ -209,9 +250,14 @@ pub fn login_spec(
     }) {
         return Err(AppError::Invalid("Invalid authentication scope.".into()));
     }
+    validate_target(target)?;
+    let tenant_id = target.map(|target| target.tenant_id.as_str());
     match provider_id {
         "azd" => {
             let mut args: Vec<String> = vec!["auth".into(), "login".into()];
+            if let Some(tenant_id) = tenant_id {
+                args.extend(["--tenant-id".into(), tenant_id.into()]);
+            }
             if device_code {
                 args.push("--use-device-code".into());
             }
@@ -219,42 +265,57 @@ pub fn login_spec(
         }
         "azureCli" => {
             let mut args: Vec<String> = vec!["login".into()];
+            if let Some(tenant_id) = tenant_id {
+                args.extend(["--tenant".into(), tenant_id.into()]);
+            }
             if device_code {
                 args.push("--use-device-code".into());
             }
             Ok(CommandSpec::new(Executable::AzureCli, args))
         }
-        "azPowerShell" => Ok(CommandSpec::new(
-            Executable::PowerShell,
-            [
-                "-NoLogo",
-                "-NoProfile",
-                "-Command",
-                if device_code {
-                    "Connect-AzAccount -UseDeviceAuthentication"
-                } else {
-                    "Connect-AzAccount"
-                },
-            ],
-        )),
-        "graphPowerShell" => {
-            let script = match (scopes.is_empty(), device_code) {
-                (true, true) => "Connect-MgGraph -ContextScope CurrentUser -UseDeviceCode",
-                (true, false) => "Connect-MgGraph -ContextScope CurrentUser",
-                (false, true) => {
-                    "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
-                }
-                (false, false) => "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')",
-            };
+        "azPowerShell" => {
+            let mut script = "Connect-AzAccount -Scope CurrentUser".to_string();
+            if target.is_some() {
+                script.push_str(
+                    " -Tenant $env:AZD_GUI_TENANT_ID -Subscription $env:AZD_GUI_SUBSCRIPTION_ID",
+                );
+            }
+            if device_code {
+                script.push_str(" -UseDeviceAuthentication");
+            }
             let spec = CommandSpec::new(
                 Executable::PowerShell,
-                ["-NoLogo", "-NoProfile", "-Command", script],
+                ["-NoLogo", "-NoProfile", "-Command", &script],
             );
-            Ok(if scopes.is_empty() {
-                spec
+            Ok(if let Some(target) = target {
+                spec.env("AZD_GUI_TENANT_ID", &target.tenant_id)
+                    .env("AZD_GUI_SUBSCRIPTION_ID", &target.subscription_id)
             } else {
-                spec.env("AZD_GUI_GRAPH_SCOPES", scopes.join(","))
+                spec
             })
+        }
+        "graphPowerShell" => {
+            let mut script = "Connect-MgGraph -ContextScope CurrentUser".to_string();
+            if tenant_id.is_some() {
+                script.push_str(" -TenantId $env:AZD_GUI_TENANT_ID");
+            }
+            if !scopes.is_empty() {
+                script.push_str(" -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')");
+            }
+            if device_code {
+                script.push_str(" -UseDeviceCode");
+            }
+            let mut spec = CommandSpec::new(
+                Executable::PowerShell,
+                ["-NoLogo", "-NoProfile", "-Command", &script],
+            );
+            if let Some(tenant_id) = tenant_id {
+                spec = spec.env("AZD_GUI_TENANT_ID", tenant_id);
+            }
+            if !scopes.is_empty() {
+                spec = spec.env("AZD_GUI_GRAPH_SCOPES", scopes.join(","));
+            }
+            Ok(spec)
         }
         _ => Err(AppError::Invalid(format!(
             "Unsupported connection provider: {provider_id}"
@@ -344,8 +405,8 @@ mod tests {
 
     #[test]
     fn graph_login_without_template_scopes_omits_the_scopes_argument() {
-        let interactive = login_spec("graphPowerShell", &[], false).unwrap();
-        let device_code = login_spec("graphPowerShell", &[], true).unwrap();
+        let interactive = login_spec("graphPowerShell", &[], false, None).unwrap();
+        let device_code = login_spec("graphPowerShell", &[], true, None).unwrap();
 
         assert_eq!(
             interactive.args.last().unwrap(),
@@ -365,8 +426,8 @@ mod tests {
             "Application.ReadWrite.All".into(),
             "RoleManagement.ReadWrite.Directory".into(),
         ];
-        let spec = login_spec("graphPowerShell", &scopes, false).unwrap();
-        let device_code = login_spec("graphPowerShell", &scopes, true).unwrap();
+        let spec = login_spec("graphPowerShell", &scopes, false, None).unwrap();
+        let device_code = login_spec("graphPowerShell", &scopes, true, None).unwrap();
 
         assert_eq!(
             spec.args.last().unwrap(),
@@ -384,6 +445,85 @@ mod tests {
             "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
         );
         assert_eq!(device_code.environment, spec.environment);
+    }
+
+    #[test]
+    fn targets_a_validated_tenant_for_each_provider() {
+        let tenant = "11111111-1111-1111-1111-111111111111";
+        let subscription = "22222222-2222-2222-2222-222222222222";
+        let target = ConnectionTarget {
+            tenant_id: tenant.into(),
+            subscription_id: subscription.into(),
+        };
+
+        let azd = login_spec("azd", &[], true, Some(&target)).unwrap();
+        assert_eq!(
+            azd.args,
+            ["auth", "login", "--tenant-id", tenant, "--use-device-code"]
+        );
+
+        let azure_cli = login_spec("azureCli", &[], true, Some(&target)).unwrap();
+        assert_eq!(
+            azure_cli.args,
+            ["login", "--tenant", tenant, "--use-device-code"]
+        );
+
+        let az_power_shell = login_spec("azPowerShell", &[], false, Some(&target)).unwrap();
+        assert_eq!(
+            az_power_shell.args.last().unwrap(),
+            "Connect-AzAccount -Scope CurrentUser -Tenant $env:AZD_GUI_TENANT_ID -Subscription $env:AZD_GUI_SUBSCRIPTION_ID"
+        );
+        assert_eq!(
+            az_power_shell.environment,
+            vec![
+                ("AZD_GUI_TENANT_ID".into(), tenant.into()),
+                ("AZD_GUI_SUBSCRIPTION_ID".into(), subscription.into())
+            ]
+        );
+        assert!(!az_power_shell.args.last().unwrap().contains(tenant));
+
+        let graph = login_spec("graphPowerShell", &[], false, Some(&target)).unwrap();
+        assert_eq!(
+            graph.args.last().unwrap(),
+            "Connect-MgGraph -ContextScope CurrentUser -TenantId $env:AZD_GUI_TENANT_ID"
+        );
+        assert_eq!(
+            graph.environment,
+            vec![("AZD_GUI_TENANT_ID".into(), tenant.into())]
+        );
+        assert!(!graph.args.last().unwrap().contains(tenant));
+
+        let azure_context = azure_cli_context_spec(Some(&target));
+        assert_eq!(
+            azure_context.args,
+            [
+                "account",
+                "show",
+                "--output",
+                "json",
+                "--subscription",
+                subscription
+            ]
+        );
+        let az_context = az_power_shell_context_spec(Some(&target));
+        assert!(az_context
+            .args
+            .last()
+            .unwrap()
+            .contains("Get-AzContext -ListAvailable"));
+        assert!(!az_context.args.last().unwrap().contains(subscription));
+    }
+
+    #[test]
+    fn rejects_an_invalid_or_nil_target_tenant() {
+        let subscription = "22222222-2222-2222-2222-222222222222";
+        for tenant in ["not-a-tenant", "00000000-0000-0000-0000-000000000000"] {
+            let target = ConnectionTarget {
+                tenant_id: tenant.into(),
+                subscription_id: subscription.into(),
+            };
+            assert!(login_spec("azd", &[], false, Some(&target)).is_err());
+        }
     }
 
     #[test]

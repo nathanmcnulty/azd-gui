@@ -2,6 +2,7 @@
   "$schema": "../../schemas/azd-gui.schema.json",
   "schemaVersion": "1.0",
   "minimumAzdVersion": "1.23.0",
+  "requiresInteractiveTerminal": true,
   "prerequisites": [
     {
       "id": "azd",
@@ -20,6 +21,15 @@
       "installProvider": "azdTool",
       "installId": "az-cli",
       "documentationUrl": "https://learn.microsoft.com/cli/azure/install-azure-cli"
+    },
+    {
+      "id": "pwsh",
+      "name": "PowerShell",
+      "kind": "tool",
+      "minimumVersion": "7.4.0",
+      "required": true,
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
     }
   ],
   "connections": [
@@ -33,38 +43,33 @@
       "id": "azureCli",
       "name": "Azure CLI",
       "required": true,
-      "scopes": ["https://graph.microsoft.com/.default"],
-      "reason": "Allow setup hooks to configure Microsoft Graph resources."
+      "scopes": ["https://management.azure.com/.default", "https://graph.microsoft.com/.default"],
+      "reason": "Configure Teams, Azure Resource Manager, and Microsoft Graph resources in template hooks."
     }
   ],
   "configuration": {
     "groups": [
       {
-        "id": "tenant",
-        "title": "Tenant monitoring",
+        "id": "logicApps",
+        "title": "Entra health alerts",
+        "description": "Choose the alert workflow name and target Teams channel used by the pinned template.",
         "fields": [
           {
-            "id": "targetTenant",
-            "environmentVariable": "ENTRA_HEALTH_TARGET_TENANT_ID",
-            "label": "Tenant to monitor",
-            "type": "tenant",
-            "required": true
-          },
-          {
-            "id": "enableTeams",
-            "environmentVariable": "ENTRA_HEALTH_ENABLE_TEAMS",
-            "label": "Send Teams notifications",
-            "type": "boolean",
-            "default": false
-          },
-          {
-            "id": "teamsWebhook",
-            "environmentVariable": "ENTRA_HEALTH_TEAMS_WEBHOOK",
-            "label": "Teams webhook",
-            "type": "secret",
+            "id": "logicAppName",
+            "environmentVariable": "LOGIC_APP_NAME",
+            "label": "Alert Logic App name",
+            "type": "text",
             "required": true,
-            "sensitive": true,
-            "condition": { "field": "enableTeams", "equals": true }
+            "default": "la-entra-health-alerts"
+          },
+          {
+            "id": "teamsChannelLink",
+            "environmentVariable": "TEAMS_CHANNEL_LINK",
+            "label": "Teams channel link",
+            "type": "text",
+            "required": true,
+            "placeholder": "https://teams.microsoft.com/l/channel/...",
+            "help": "In Teams, right-click the target channel and choose Copy link."
           }
         ]
       }

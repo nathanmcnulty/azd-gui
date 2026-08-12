@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   connectionMeetsRequirements,
+  connectionMeetsTarget,
   missingRequestedScopes,
   retainGrantedGraphScopes
 } from "./connections";
@@ -51,6 +52,40 @@ describe("connection scope requirements", () => {
 
   it("requires reconnecting an expired provider", () => {
     expect(connectionMeetsRequirements(graphConnection({ state: "expired" }))).toBe(false);
+  });
+
+  it("requires tenant alignment and provider-specific subscription alignment", () => {
+    const target = {
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      subscriptionId: "22222222-2222-2222-2222-222222222222"
+    };
+    const grantedScopes = ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"];
+    expect(
+      connectionMeetsTarget(graphConnection({ tenantId: target.tenantId, grantedScopes }), target)
+    ).toBe(true);
+    expect(
+      connectionMeetsTarget(graphConnection({ tenantId: "different", grantedScopes }), target)
+    ).toBe(false);
+    expect(
+      connectionMeetsTarget(
+        graphConnection({
+          id: "azureCli",
+          tenantId: target.tenantId,
+          subscriptionId: target.subscriptionId
+        }),
+        target
+      )
+    ).toBe(true);
+    expect(
+      connectionMeetsTarget(
+        graphConnection({
+          id: "azureCli",
+          tenantId: target.tenantId,
+          subscriptionId: "different"
+        }),
+        target
+      )
+    ).toBe(false);
   });
 
   it("retains confirmed Graph scopes when refresh finds the persisted user context", () => {

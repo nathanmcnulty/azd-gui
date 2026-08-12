@@ -39,6 +39,7 @@ export interface CatalogEntry {
 export interface TemplateManifest {
   schemaVersion: "1.0";
   minimumAzdVersion?: string;
+  requiresInteractiveTerminal?: boolean;
   prerequisites: Prerequisite[];
   connections: ConnectionRequirement[];
   configuration: {
@@ -97,6 +98,11 @@ export interface ConnectionStatus extends ConnectionRequirement {
   subscriptionName?: string;
   expiresOn?: string;
   detail?: string;
+}
+
+export interface ConnectionTarget {
+  tenantId: string;
+  subscriptionId: string;
 }
 
 export interface AzureTenant {
