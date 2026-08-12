@@ -8,7 +8,7 @@ Browser preview is selected only when the page is genuinely outside Tauri. If na
 
 Rust owns all privileged behavior:
 
-- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Its HTTP clients allow only bounded, same-origin HTTPS redirects, verify the final response origin, and enforce payload limits before parsing catalogs and direct template metadata.
+- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Its HTTP clients allow only bounded, same-origin HTTPS redirects, verify the final response origin, and stream into capped buffers. Catalog entry counts, cumulative manifest bytes, local metadata files, and the in-memory inspection cache are independently bounded.
 - `command_runner.rs` enforces the executable allowlist, bounds and redacts captured output, limits streamed line size, and supervises complete process trees for cancellation and timeout handling.
 - `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.
@@ -19,7 +19,7 @@ Rust owns all privileged behavior:
 
 The hidden `azd vs-server` protocol is intentionally not used.
 
-New destinations are persisted as `attention` immediately after reservation and promoted to `ready` only after `azd init` and environment configuration complete. A failed preparation therefore remains visible under Projects with guidance to inspect and resume a usable azd project or manually remove the folder for a clean retry; the app does not guess whether partial user or hook output is safe to delete.
+New destinations are persisted as `attention` immediately after reservation and promoted to `ready` only after `azd init` and environment configuration complete. A failed preparation therefore remains visible under Projects with guidance to inspect and resume a usable azd project or manually remove the folder for a clean retry; the app does not guess whether partial user or hook output is safe to delete. Remote Git checkouts ignore system/global Git configuration, negotiate a blobless shallow fetch, and validate file count plus individual and total tree sizes before checkout.
 
 The product is a management and orchestration interface over installed command-line tools, not a terminal emulator. Known workflows prefer machine-readable CLI or PowerShell output, project that output into typed Rust models, present choices as native GUI controls, and pass only validated selections back as argument arrays. Human-formatted output is diagnostic display only and is never scraped to drive application behavior. The app does not maintain a general-purpose shell or PTY; genuinely interactive, unmodeled template hooks remain an explicit external-terminal fallback.
 

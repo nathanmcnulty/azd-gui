@@ -34,11 +34,13 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 
+const MAX_INSPECTED_MANIFESTS: usize = 128;
+
 pub struct AppState {
     database: Arc<Database>,
     operations: OperationManager,
     template_cache: PathBuf,
-    inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
+    inspected_manifests: Mutex<HashMap<String, TemplateManifest>>,
     catalog_reviews: CatalogReviews,
     execution_approvals: execution_approval::ExecutionApprovals,
     tool_install_approvals: tools::ToolInstallApprovals,
@@ -165,13 +167,17 @@ fn remember_inspection_manifest(
     let Some(manifest) = inspection.entry.manifest.clone() else {
         return Ok(());
     };
-    state
+    let mut manifests = state
         .inspected_manifests
         .lock()
-        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
-        .entry(inspection.entry.id.clone())
-        .or_default()
-        .push(manifest);
+        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?;
+    if manifests.len() >= MAX_INSPECTED_MANIFESTS && !manifests.contains_key(&inspection.entry.id) {
+        return Err(AppError::Invalid(
+            "Too many templates have been inspected in this session. Restart the app before inspecting another source."
+                .into(),
+        ));
+    }
+    manifests.insert(inspection.entry.id.clone(), manifest);
     Ok(())
 }
 
@@ -756,8 +762,7 @@ fn draft_keys(
             .lock()
             .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
             .get(template_id)
-            .cloned()
-            .unwrap_or_default(),
+            .cloned(),
     );
     for field in manifests
         .into_iter()
@@ -982,7 +987,7 @@ mod draft_tests {
             .inspected_manifests
             .lock()
             .unwrap()
-            .insert("local-template".into(), vec![manifest]);
+            .insert("local-template".into(), manifest);
         let (allowed, sensitive) = draft_keys(&state, "local-template").unwrap();
         assert!(allowed.contains("teamschannellink"));
         assert!(!sensitive.contains("teamschannellink"));
