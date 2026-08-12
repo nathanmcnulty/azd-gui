@@ -23,6 +23,98 @@ use tokio::{
 };
 use uuid::Uuid;
 
+#[cfg(windows)]
+struct ProcessTree {
+    job: std::os::windows::io::OwnedHandle,
+}
+
+#[cfg(windows)]
+impl ProcessTree {
+    fn attach(child: &tokio::process::Child) -> std::io::Result<Self> {
+        use std::os::windows::io::{AsRawHandle, FromRawHandle};
+        use windows_sys::Win32::{
+            Foundation::HANDLE,
+            System::JobObjects::{
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            },
+        };
+
+        let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if raw_job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let job = unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw_job.cast()) };
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle() as HANDLE,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                std::mem::size_of_val(&limits) as u32,
+            )
+        };
+        if configured == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("Child process handle is unavailable."))?;
+        let assigned =
+            unsafe { AssignProcessToJobObject(job.as_raw_handle() as HANDLE, process as HANDLE) };
+        if assigned == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { job })
+    }
+
+    fn terminate(&self) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{Foundation::HANDLE, System::JobObjects::TerminateJobObject};
+        unsafe {
+            TerminateJobObject(self.job.as_raw_handle() as HANDLE, 1);
+        }
+    }
+}
+
+#[cfg(unix)]
+struct ProcessTree {
+    process_group: i32,
+}
+
+#[cfg(unix)]
+impl ProcessTree {
+    fn attach(child: &tokio::process::Child) -> std::io::Result<Self> {
+        let process_group = child
+            .id()
+            .and_then(|id| i32::try_from(id).ok())
+            .ok_or_else(|| std::io::Error::other("Child process ID is unavailable."))?;
+        Ok(Self { process_group })
+    }
+
+    fn terminate(&self) {
+        unsafe {
+            libc::kill(-self.process_group, libc::SIGKILL);
+        }
+    }
+}
+
+impl Drop for ProcessTree {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+fn attach_process_tree(child: &mut tokio::process::Child) -> AppResult<Option<ProcessTree>> {
+    match ProcessTree::attach(child) {
+        Ok(tree) => Ok(Some(tree)),
+        Err(_) if child.try_wait()?.is_some() => Ok(None),
+        Err(error) => Err(AppError::Io(error)),
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Executable {
     Azd,
@@ -124,6 +216,8 @@ impl CommandSpec {
             .args(&self.args)
             .kill_on_drop(true)
             .stdin(Stdio::null());
+        #[cfg(unix)]
+        command.process_group(0);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         if let Some(cwd) = &self.cwd {
@@ -187,7 +281,15 @@ pub async fn capture(spec: CommandSpec, timeout: Duration) -> AppResult<Captured
     let executable = spec.executable.command().to_string();
     let mut command = spec.process()?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = tokio::time::timeout(timeout, command.output())
+    let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            AppError::MissingExecutable(executable.clone())
+        } else {
+            AppError::Io(error)
+        }
+    })?;
+    let _tree = attach_process_tree(&mut child)?;
+    let output = tokio::time::timeout(timeout, child.wait_with_output())
         .await
         .map_err(|_| AppError::Timeout(executable.clone()))?
         .map_err(|error| {
@@ -411,6 +513,27 @@ pub fn spawn_operation(
                 return;
             }
         };
+        let tree = match attach_process_tree(&mut child) {
+            Ok(tree) => tree,
+            Err(error) => {
+                let _ = child.kill().await;
+                let event = emit_event(
+                    &app,
+                    &operation_id,
+                    &kind,
+                    "failed",
+                    "system",
+                    "error",
+                    format!("Could not supervise the process tree: {error}"),
+                    None,
+                );
+                if let Some(persistence) = persistence.as_ref() {
+                    persistence.record(&event);
+                }
+                operations.cancellations.lock().await.remove(&operation_id);
+                return;
+            }
+        };
 
         emit_event(
             &app,
@@ -480,11 +603,17 @@ pub fn spawn_operation(
             value = child.wait() => value,
             _ = &mut cancel_receiver => {
                 cancelled = true;
+                if let Some(tree) = &tree {
+                    tree.terminate();
+                }
                 let _ = child.kill().await;
                 child.wait().await
             }
             _ = &mut timeout => {
                 timed_out = true;
+                if let Some(tree) = &tree {
+                    tree.terminate();
+                }
                 let _ = child.kill().await;
                 child.wait().await
             }

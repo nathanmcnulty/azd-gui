@@ -9,7 +9,7 @@ Browser preview is selected only when the page is genuinely outside Tauri. If na
 Rust owns all privileged behavior:
 
 - `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Its HTTP clients allow only bounded, same-origin HTTPS redirects, verify the final response origin, and enforce payload limits before parsing catalogs and direct template metadata.
-- `command_runner.rs` enforces the executable allowlist, streams redacted operation events, and manages cancellation.
+- `command_runner.rs` enforces the executable allowlist, streams redacted operation events, and supervises complete process trees for cancellation and timeout handling.
 - `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.
 - `permissions.rs` runs only registered, read-only Azure and Microsoft Graph checks and returns structured pass, warning, or failure results.
@@ -23,7 +23,7 @@ The product is a management and orchestration interface over installed command-l
 
 Tool installation is a two-step typed flow. The renderer requests an application-owned `ToolInstallPlan` and displays its provider, source, scope, destination, exact command, and documentation. A separate confirmation starts the corresponding registered `CommandSpec`; tool IDs that are not in the native non-elevated registry cannot produce either a plan or an executable command.
 
-The Windows Azure CLI provider invokes the official `az.cmd` shim because the MSI also places an extensionless Unix shell wrapper on `PATH`. Renderer and manifest data cannot select this shim, and command-shell metacharacters are rejected from its argument array before process creation. Registered background commands use the Windows no-console process flag so normal checks, authentication, and lifecycle operations do not open a console window.
+The Windows Azure CLI provider invokes the official `az.cmd` shim because the MSI also places an extensionless Unix shell wrapper on `PATH`. Renderer and manifest data cannot select this shim, and command-shell metacharacters are rejected from its argument array before process creation. Registered background commands use the Windows no-console process flag so normal checks, authentication, and lifecycle operations do not open a console window. Every spawned command is attached to a Windows Job Object or Unix process group so cancellation, timeout, and runner shutdown terminate descendant processes as well as the direct child.
 
 When supported by the installed azd version, an explicit tool refresh also consumes the public `azd tool list/check --output json` contracts. The slower network-backed update scan is not part of application bootstrap. It enriches Azure CLI status with azd's installed and latest versions while preserving the direct executable probe as a fallback. Available updates are informational and do not block deployment readiness. Because azd 1.30 dry-run reports the action but not its selected package-manager strategy, elevation, or destination, system-tool installs and upgrades remain user-directed and the app exposes a copyable dry-run command instead of executing them.
 
