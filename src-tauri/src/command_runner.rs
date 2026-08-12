@@ -17,11 +17,15 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncRead, AsyncReadExt},
     process::Command,
     sync::{oneshot, Mutex},
 };
 use uuid::Uuid;
+
+const MAX_CAPTURE_BYTES_PER_STREAM: usize = 4 * 1024 * 1024;
+const MAX_STREAM_LINE_BYTES: usize = 64 * 1024;
+const OUTPUT_TRUNCATED_MARKER: &str = "\n[output truncated]\n";
 
 #[cfg(windows)]
 struct ProcessTree {
@@ -277,6 +281,69 @@ pub struct CapturedOutput {
     pub success: bool,
 }
 
+async fn read_bounded_output(
+    mut reader: impl AsyncRead + Unpin,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut captured = Vec::with_capacity(limit.min(64 * 1024));
+    let mut chunk = [0_u8; 8 * 1024];
+    let mut truncated = false;
+    loop {
+        let count = reader.read(&mut chunk).await?;
+        if count == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(captured.len());
+        captured.extend_from_slice(&chunk[..count.min(remaining)]);
+        truncated |= count > remaining;
+    }
+    if truncated {
+        let marker = OUTPUT_TRUNCATED_MARKER.as_bytes();
+        captured.truncate(limit.saturating_sub(marker.len()));
+        captured.extend_from_slice(&marker[..marker.len().min(limit)]);
+    }
+    Ok(captured)
+}
+
+#[derive(Default)]
+struct BoundedLineBuffer {
+    pending: Vec<u8>,
+    truncated: bool,
+}
+
+impl BoundedLineBuffer {
+    fn push(&mut self, bytes: &[u8]) -> Vec<String> {
+        let mut lines = Vec::new();
+        for byte in bytes {
+            if *byte == b'\n' {
+                lines.push(self.take_line());
+            } else if self.pending.len() < MAX_STREAM_LINE_BYTES {
+                self.pending.push(*byte);
+            } else {
+                self.truncated = true;
+            }
+        }
+        lines
+    }
+
+    fn finish(&mut self) -> Option<String> {
+        (!self.pending.is_empty() || self.truncated).then(|| self.take_line())
+    }
+
+    fn take_line(&mut self) -> String {
+        if self.pending.last() == Some(&b'\r') {
+            self.pending.pop();
+        }
+        let mut line = String::from_utf8_lossy(&self.pending).into_owned();
+        if self.truncated {
+            line.push_str(OUTPUT_TRUNCATED_MARKER.trim());
+        }
+        self.pending.clear();
+        self.truncated = false;
+        line
+    }
+}
+
 pub async fn capture(spec: CommandSpec, timeout: Duration) -> AppResult<CapturedOutput> {
     let executable = spec.executable.command().to_string();
     let mut command = spec.process()?;
@@ -289,21 +356,80 @@ pub async fn capture(spec: CommandSpec, timeout: Duration) -> AppResult<Captured
         }
     })?;
     let _tree = attach_process_tree(&mut child)?;
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
-        .map_err(|_| AppError::Timeout(executable.clone()))?
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                AppError::MissingExecutable(executable)
-            } else {
-                AppError::Io(error)
-            }
-        })?;
-    Ok(CapturedOutput {
-        stdout: redact(&String::from_utf8_lossy(&output.stdout)),
-        stderr: redact(&String::from_utf8_lossy(&output.stderr)),
-        success: output.status.success(),
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| AppError::Invalid("Child stdout was not captured".into()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| AppError::Invalid("Child stderr was not captured".into()))?;
+    let (status, stdout, stderr) = tokio::time::timeout(timeout, async {
+        tokio::join!(
+            child.wait(),
+            read_bounded_output(stdout, MAX_CAPTURE_BYTES_PER_STREAM),
+            read_bounded_output(stderr, MAX_CAPTURE_BYTES_PER_STREAM)
+        )
     })
+    .await
+    .map_err(|_| AppError::Timeout(executable))?;
+    let status = status?;
+    Ok(CapturedOutput {
+        stdout: redact(&String::from_utf8_lossy(&stdout?)),
+        stderr: redact(&String::from_utf8_lossy(&stderr?)),
+        success: status.success(),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_output(
+    mut reader: impl AsyncRead + Unpin,
+    app: &AppHandle,
+    operation_id: &str,
+    kind: &str,
+    stream: &str,
+    level: &str,
+    progress: Option<&AtomicU8>,
+) {
+    let mut chunk = [0_u8; 8 * 1024];
+    let mut lines = BoundedLineBuffer::default();
+    loop {
+        let count = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        for line in lines.push(&chunk[..count]) {
+            let inferred = progress.and_then(|value| {
+                let inferred = inferred_progress(&line);
+                if let Some(inferred) = inferred {
+                    value.fetch_max(inferred, Ordering::Relaxed);
+                }
+                inferred
+            });
+            emit_event(
+                app,
+                operation_id,
+                kind,
+                "running",
+                stream,
+                level,
+                line,
+                inferred,
+            );
+        }
+    }
+    if let Some(line) = lines.finish() {
+        emit_event(
+            app,
+            operation_id,
+            kind,
+            "running",
+            stream,
+            level,
+            line,
+            None,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -555,23 +681,16 @@ pub fn spawn_operation(
         let stdout_progress = last_progress.clone();
         let mut stdout_task = tauri::async_runtime::spawn(async move {
             if let Some(stdout) = stdout {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let progress = inferred_progress(&line);
-                    if let Some(progress) = progress {
-                        stdout_progress.fetch_max(progress, Ordering::Relaxed);
-                    }
-                    emit_event(
-                        &stdout_app,
-                        &stdout_id,
-                        &stdout_kind,
-                        "running",
-                        "stdout",
-                        "info",
-                        &line,
-                        progress,
-                    );
-                }
+                stream_output(
+                    stdout,
+                    &stdout_app,
+                    &stdout_id,
+                    &stdout_kind,
+                    "stdout",
+                    "info",
+                    Some(&stdout_progress),
+                )
+                .await;
             }
         });
         let stderr_app = app.clone();
@@ -579,19 +698,16 @@ pub fn spawn_operation(
         let stderr_kind = kind.clone();
         let mut stderr_task = tauri::async_runtime::spawn(async move {
             if let Some(stderr) = stderr {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    emit_event(
-                        &stderr_app,
-                        &stderr_id,
-                        &stderr_kind,
-                        "running",
-                        "stderr",
-                        "warning",
-                        line,
-                        None,
-                    );
-                }
+                stream_output(
+                    stderr,
+                    &stderr_app,
+                    &stderr_id,
+                    &stderr_kind,
+                    "stderr",
+                    "warning",
+                    None,
+                )
+                .await;
             }
         });
 
@@ -697,9 +813,39 @@ pub fn spawn_operation(
 
 #[cfg(test)]
 mod tests {
-    use super::{capture, operation_timeout, terminal_outcome, CommandSpec, Executable};
+    use super::{
+        capture, operation_timeout, read_bounded_output, terminal_outcome, BoundedLineBuffer,
+        CommandSpec, Executable, OUTPUT_TRUNCATED_MARKER,
+    };
     use crate::error::AppError;
     use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn captured_output_is_bounded_and_drained() {
+        let (mut writer, reader) = tokio::io::duplex(32);
+        let writer_task = tokio::spawn(async move {
+            writer.write_all(&vec![b'x'; 256]).await.unwrap();
+        });
+
+        let output = read_bounded_output(reader, 64).await.unwrap();
+        writer_task.await.unwrap();
+
+        assert_eq!(output.len(), 64);
+        assert!(String::from_utf8_lossy(&output).ends_with(OUTPUT_TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn streamed_lines_are_bounded_across_chunks() {
+        let mut buffer = BoundedLineBuffer::default();
+        assert!(buffer.push(&vec![b'x'; 64 * 1024]).is_empty());
+        let lines = buffer.push(b"extra\nnext\n");
+
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with(OUTPUT_TRUNCATED_MARKER.trim()));
+        assert!(lines[0].len() <= 64 * 1024 + OUTPUT_TRUNCATED_MARKER.trim().len());
+        assert_eq!(lines[1], "next");
+    }
 
     #[cfg(windows)]
     #[tokio::test]
