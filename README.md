@@ -55,7 +55,7 @@ The Windows build uses the installed WebView2 runtime and does not install a fix
 
 ## Signed Windows releases
 
-The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It validates the frontend and native code once on Windows before building. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, and signs the installer.
+The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It rejects disagreement between the tag, npm, Cargo, and Tauri versions before validating the frontend and native code once on Windows. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, signs the installer, and emits SHA-256 checksums. Tagged runs publish the verified files to a durable GitHub Release; manual runs retain them as a 14-day workflow artifact only.
 
 The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub Environment. The signing endpoint, account name, and certificate profile are non-secret workflow configuration. Security-sensitive Azure actions are pinned to immutable commits.
 
