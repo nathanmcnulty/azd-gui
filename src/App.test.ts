@@ -19,6 +19,10 @@ describe("desktop experience", () => {
 
     expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
     expect(screen.getByText(/STEP 1 OF 9/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /vetted catalog/i })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     const deploymentSteps = within(
       screen.getByRole("navigation", { name: /deployment steps/i })
     ).getAllByRole("button");
@@ -28,7 +32,9 @@ describe("desktop experience", () => {
     const continueButton = screen.getByRole("button", { name: /continue/i });
     expect(continueButton).toBeDisabled();
 
-    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+    const destination = screen.getByPlaceholderText(/empty destination folder/i);
+    expect(destination).toBeRequired();
+    await fireEvent.input(destination, {
       target: { value: "C:\\Deployments\\entra-health-dev" }
     });
     expect(continueButton).toBeEnabled();
@@ -100,12 +106,19 @@ describe("desktop experience", () => {
     await fireEvent.click(trigger);
 
     const query = await screen.findByRole("combobox", { name: /search commands/i });
+    expect(screen.getByRole("dialog", { name: /command palette/i })).toHaveAttribute(
+      "aria-modal",
+      "true"
+    );
     await waitFor(() => expect(query).toHaveFocus());
     await fireEvent.keyDown(query, { key: "ArrowDown" });
     expect(screen.getByRole("option", { name: /open projects/i })).toHaveAttribute(
       "aria-selected",
       "true"
     );
+    expect(screen.getByRole("option", { name: /open projects/i })).toHaveAttribute("tabindex", "-1");
+    expect(await fireEvent.keyDown(query, { key: "Tab" })).toBe(false);
+    expect(query).toHaveFocus();
     await fireEvent.keyDown(query, { key: "Enter" });
     expect(await screen.findByRole("heading", { name: "Projects" })).toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
@@ -115,6 +128,13 @@ describe("desktop experience", () => {
     await fireEvent.keyDown(reopenedQuery, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: /command palette/i })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it("provides an accessible name for catalog filtering", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    expect(screen.getByRole("textbox", { name: "Filter templates and tags" })).toBeInTheDocument();
   });
 
   it("requires review before a vetted per-user module installation", async () => {
@@ -215,8 +235,9 @@ describe("desktop experience", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Output" }));
     const shell = document.querySelector<HTMLElement>(".app-shell")!;
-    const separator = screen.getByRole("button", { name: "Resize output" });
+    const separator = screen.getByRole("separator", { name: "Resize output" });
     expect(shell.style.getPropertyValue("--output-height")).toBe("210px");
+    expect(separator).toHaveAttribute("aria-valuenow", "210");
 
     await fireEvent(
       separator,
@@ -228,6 +249,7 @@ describe("desktop experience", () => {
     );
     await fireEvent(window, new MouseEvent("pointerup", { bubbles: true }));
     expect(shell.style.getPropertyValue("--output-height")).toBe("260px");
+    expect(separator).toHaveAttribute("aria-valuenow", "260");
 
     await fireEvent.click(screen.getByRole("button", { name: "Maximize output" }));
     expect(shell).toHaveClass("output-maximized");
@@ -373,9 +395,12 @@ describe("desktop experience", () => {
   it("persists the selected theme", async () => {
     const firstRender = render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
-    await fireEvent.click(screen.getByRole("button", { name: "dark" }));
+    const darkTheme = screen.getByRole("button", { name: "Dark" });
+    expect(darkTheme).toHaveAttribute("aria-pressed", "false");
+    await fireEvent.click(darkTheme);
 
     expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(darkTheme).toHaveAttribute("aria-pressed", "true");
     expect(JSON.parse(window.localStorage.getItem("azd-gui.settings") ?? "{}"))
       .toMatchObject({ theme: "dark" });
 
