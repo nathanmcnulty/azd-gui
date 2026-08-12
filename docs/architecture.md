@@ -2,7 +2,7 @@
 
 ## Runtime boundary
 
-The Svelte renderer owns presentation and wizard state. It calls a narrow set of typed Tauri commands through `src/lib/bridge.ts`; the bridge provides realistic preview data when the UI runs outside Tauri.
+The Svelte renderer owns presentation and wizard state. Small stateless controllers under `src/lib/controllers` compose connection verification, deployment approval/preparation, and project lifecycle workflows without introducing another state-management layer. They call a narrow set of typed Tauri commands through `src/lib/bridge.ts`; the bridge provides realistic preview data when the UI runs outside Tauri.
 
 Browser preview is selected only when the page is genuinely outside Tauri. If native bootstrap fails in the packaged application, the renderer shows a fatal degraded-state screen and exposes no project, authentication, or deployment actions; it never falls back to simulated success data.
 

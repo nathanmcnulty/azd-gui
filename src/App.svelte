@@ -20,11 +20,7 @@
     openExternalTerminal,
     openExternalUrl,
     previewToolInstall,
-    refreshConnections,
     refreshTools,
-    prepareDeployment,
-    requestExecutionApproval,
-    startAzdOperation,
     login,
     previewExternalCatalog,
     removeCatalogSource,
@@ -32,9 +28,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
-    getOperationHistory,
     getProjectEnvironmentValues,
-    listProjectEnvironments,
     runPermissionChecks,
     saveAppSettings,
     selectProjectEnvironment,
@@ -57,6 +51,7 @@
     PermissionCheckResult,
     ProjectEnvironment,
     ProjectEnvironmentValue,
+    ProjectSummary,
     TemplateInspection,
     ToolInstallPlan,
     ToolStatus,
@@ -66,14 +61,26 @@
   import {
     connectionMeetsRequirements,
     connectionMeetsTarget,
-    missingRequestedScopes,
-    retainGrantedGraphScopes
+    missingRequestedScopes
   } from "./lib/connections";
+  import {
+    previewConnectedProvider,
+    refreshConnectionList,
+    verifyConnectionContext
+  } from "./lib/controllers/connection-controller";
+  import {
+    materializeDeployment as materializeDeploymentProject,
+    startApprovedDeploymentOperation
+  } from "./lib/controllers/deployment-controller";
+  import {
+    loadProjectWorkspace,
+    startProjectOperation,
+    type ProjectAction
+  } from "./lib/controllers/project-operation-controller";
   import { projectServices } from "./lib/project-state";
   import {
     calculateWizardPlan,
     conditionMatches,
-    environmentValuesForPlan,
     sensitiveFieldIds,
     valuesRemovedByPlan,
     visibleFields
@@ -102,7 +109,6 @@
   const defaultOutputHeight = 210;
   const minimumOutputHeight = 120;
   const minimumWorkspaceHeight = 120;
-  const connectionVerificationDelays = [0, 400, 1200];
 
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
@@ -138,7 +144,7 @@
   let terminalOpening = false;
   let installPlan: ToolInstallPlan | null = null;
   let installingToolId: string | null = null;
-  let selectedProject: import("./lib/types").ProjectSummary | null = null;
+  let selectedProject: ProjectSummary | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
@@ -755,7 +761,7 @@
     try {
       data = {
         ...data,
-        connections: retainGrantedGraphScopes(currentConnections, await refreshConnections())
+        connections: await refreshConnectionList(currentConnections)
       };
     } catch (error) {
       addSystemLog(`Connection check failed: ${String(error)}`, "error");
@@ -763,31 +769,13 @@
   }
 
   async function verifyConnection(provider: ConnectionStatus, target?: ConnectionTarget) {
-    let latestConnections = data.connections.map((connection) =>
+    const checkingConnections = data.connections.map((connection) =>
       connection.id === provider.id ? { ...connection, state: "checking" as const } : connection
     );
-    data = { ...data, connections: latestConnections };
-    for (const [attempt, delay] of connectionVerificationDelays.entries()) {
-      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      try {
-        latestConnections = retainGrantedGraphScopes(latestConnections, await refreshConnections(target));
-        const refreshed = latestConnections.find((connection) => connection.id === provider.id);
-        const targetMatches = !target || Boolean(refreshed && connectionMeetsTarget(refreshed, target));
-        if (refreshed?.state === "connected" && targetMatches) {
-          data = { ...data, connections: latestConnections };
-          return;
-        }
-      } catch (error) {
-        if (attempt === connectionVerificationDelays.length - 1) {
-          latestConnections = latestConnections.map((connection) =>
-            connection.id === provider.id
-              ? { ...connection, state: "unknown", detail: `Status check failed: ${String(error)}` }
-              : connection
-          );
-        }
-      }
-    }
-    data = { ...data, connections: latestConnections };
+    data = { ...data, connections: checkingConnections };
+    const result = await verifyConnectionContext(provider, checkingConnections, target);
+    data = { ...data, connections: result.connections };
+    if (result.connected) return;
     addSystemLog(
       target
         ? `${provider.name} sign-in completed, but tenant ${target.tenantId} and subscription ${target.subscriptionId} are not visible yet. Use Check all to retry.`
@@ -822,22 +810,7 @@
       } else {
         data = {
           ...data,
-          connections: data.connections.map((connection) =>
-            connection.id === provider.id
-              ? {
-                  ...connection,
-                  state: "connected",
-                  account: "preview@example.com",
-                  tenantId: target?.tenantId ?? "72f988bf-86f1-41af-91ab-2d7cd011db47",
-                  subscriptionId:
-                    provider.id === "azureCli" || provider.id === "azPowerShell"
-                      ? target?.subscriptionId ?? connection.subscriptionId
-                      : connection.subscriptionId,
-                  grantedScopes:
-                    provider.id === "graphPowerShell" ? [...(provider.scopes ?? [])] : connection.grantedScopes
-                }
-              : connection
-          )
+          connections: previewConnectedProvider(data.connections, provider, target)
         };
       }
     } catch (error) {
@@ -950,19 +923,11 @@
         "Starting azd provision --preview --no-prompt. Pinned template hooks may modify local or cloud state.",
         "warning"
       );
-      const operationId = await startAzdOperation(
+      const operationId = await startApprovedDeploymentOperation(
         "preview",
+        selectedEntry,
         projectPath,
-        String(wizardValues.environmentName || "dev"),
-        (
-          await requestExecutionApproval({
-            action: "preview",
-            projectPath,
-            environment: String(wizardValues.environmentName || "dev"),
-            templateId: selectedEntry.id,
-            revision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit
-          })
-        ).token
+        String(wizardValues.environmentName || "dev")
       );
       preflightOperationId = operationId;
       operationProjectPaths.set(operationId, projectPath);
@@ -984,30 +949,10 @@
     if (!projectPrepared) {
       addSystemLog("Materializing the pinned template and applying environment values.", "info");
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
-      const environmentValues = environmentValuesForPlan(wizardPlan, wizardValues);
-      const approval = await requestExecutionApproval({
-        action: "prepare",
-        projectPath,
-        environment: String(wizardValues.environmentName || "dev"),
-        templateId: selectedEntry.id,
-        revision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit
-      });
-      const project = await prepareDeployment({
-        templateId: selectedEntry.id,
-        sourceMode: String(wizardValues.sourceMode ?? "catalog"),
-        executionApprovalToken: approval.token,
-        sourcePath: String(wizardValues.sourcePath || "") || undefined,
-        sourceRevision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit,
-        destination: projectPath,
-        environment: String(wizardValues.environmentName || "dev"),
-        tenant: String(wizardValues.tenantId || "") || undefined,
-        subscription: String(wizardValues.subscriptionId || "") || undefined,
-        location: String(wizardValues.location || "westus2"),
-        resourceGroup: String(wizardValues.resourceGroup || "") || undefined,
-        environmentValues
-      });
+      const result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues);
+      const project = result.project;
       projectPath = project.path;
-      wizardValues = { ...wizardValues, projectPath };
+      wizardValues = result.values;
       data = {
         ...data,
         projects: [project, ...data.projects.filter((existing) => existing.path !== project.path)]
@@ -1017,7 +962,7 @@
     return projectPath;
   }
 
-  async function runDeployment(action = "up") {
+  async function runDeployment(action: "up" | "provision" | "deploy" = "up") {
     if (!selectedEntry || activeOperationId) return;
     if (!hookExecutionAccepted) {
       addSystemLog("Review and approve pinned template code execution before deployment.", "error");
@@ -1034,19 +979,11 @@
     addSystemLog(`Starting azd ${action} --no-prompt`, "info");
     try {
       const projectPath = await materializeProject();
-      const operationId = await startAzdOperation(
+      const operationId = await startApprovedDeploymentOperation(
         action,
+        selectedEntry,
         projectPath,
-        String(wizardValues.environmentName || "dev"),
-        (
-          await requestExecutionApproval({
-            action: action as "up" | "provision" | "deploy",
-            projectPath,
-            environment: String(wizardValues.environmentName || "dev"),
-            templateId: selectedEntry.id,
-            revision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit
-          })
-        ).token
+        String(wizardValues.environmentName || "dev")
       );
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
@@ -1409,7 +1346,7 @@
   }
 
   async function openProjectWorkspace(
-    project: import("./lib/types").ProjectSummary,
+    project: ProjectSummary,
     preserveView = false
   ) {
     if (!preserveView) {
@@ -1427,30 +1364,17 @@
     environmentError = "";
     environmentConfigurationLoaded = false;
     projectLoading = true;
-    const [stateResult, environmentsResult, historyResult] = await Promise.allSettled([
-      getProjectState(project.path, project.environment),
-      listProjectEnvironments(project.path),
-      getOperationHistory(project.path)
-    ]);
-    projectState = stateResult.status === "fulfilled" ? stateResult.value : null;
-    projectEnvironments =
-      environmentsResult.status === "fulfilled"
-        ? environmentsResult.value
-        : project.environment
-          ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
-          : [];
-    const currentEnvironment = projectEnvironments.find((environment) => environment.isDefault)?.name ?? project.environment;
-    if (environmentsResult.status === "fulfilled") applyProjectEnvironments(projectEnvironments);
-    if (currentEnvironment) {
-      await loadEnvironmentConfiguration(project.path, currentEnvironment);
+    const snapshot = await loadProjectWorkspace(project);
+    projectState = snapshot.state;
+    projectEnvironments = snapshot.environments;
+    applyProjectEnvironments(projectEnvironments);
+    if (snapshot.currentEnvironment) {
+      await loadEnvironmentConfiguration(project.path, snapshot.currentEnvironment);
     }
-    projectOperationHistory = historyResult.status === "fulfilled" ? historyResult.value : [];
-    const failures = [stateResult, environmentsResult, historyResult].filter(
-      (result) => result.status === "rejected"
-    );
-    if (failures.length > 0) {
+    projectOperationHistory = snapshot.history;
+    if (snapshot.failedSources > 0) {
       addSystemLog(
-        `Could not refresh ${failures.length} project data source${failures.length === 1 ? "" : "s"}.`,
+        `Could not refresh ${snapshot.failedSources} project data source${snapshot.failedSources === 1 ? "" : "s"}.`,
         "warning"
       );
       outputOpen = true;
@@ -1539,8 +1463,6 @@
     }
   }
 
-  type ProjectAction = "preview" | "up" | "provision" | "deploy" | "refresh" | "down";
-
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
     if (["preview", "up", "provision", "deploy", "down"].includes(action) && !projectExecutionAccepted) {
@@ -1565,21 +1487,7 @@
       projectPreview = null;
     }
     try {
-      const approval = ["preview", "up", "provision", "deploy", "down"].includes(action)
-        ? await requestExecutionApproval({
-            action: action as "preview" | "up" | "provision" | "deploy" | "down",
-            projectPath: selectedProject.path,
-            environment: selectedProject.environment ?? "dev",
-            templateId: selectedProject.templateId ?? "",
-            revision: selectedProject.revision
-          })
-        : undefined;
-      const operationId = await startAzdOperation(
-        action,
-        approval?.projectPath ?? selectedProject.path,
-        selectedProject.environment,
-        approval?.token
-      );
+      const operationId = await startProjectOperation(selectedProject, action);
       if (action === "up") projectDeploymentResult = null;
       operationProjectPaths.set(operationId, selectedProject.path);
       operationEnvironments.set(operationId, selectedProject.environment);
