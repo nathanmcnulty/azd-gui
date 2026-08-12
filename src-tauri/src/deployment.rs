@@ -317,6 +317,33 @@ pub async fn prepare(
     };
     let environment_assignments = environment_assignments(&request, entry.as_ref())?;
     let destination = ensure_destination(&request.destination, existing_project)?;
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("azd-project")
+        .to_string();
+    let mut project = ProjectSummary {
+        id: format!("{}-{}", name, request.environment),
+        name,
+        path: destination.display().to_string(),
+        environment: Some(request.environment.clone()),
+        template_id: Some(request.template_id.clone()),
+        revision: entry
+            .as_ref()
+            .map(|entry| entry.commit.clone())
+            .or_else(|| request.source_revision.clone()),
+        last_operation: Some(Utc::now().to_rfc3339()),
+        state: if existing_project {
+            "ready"
+        } else {
+            "attention"
+        }
+        .into(),
+    };
+
+    if !existing_project {
+        database.upsert_project(&project)?;
+    }
 
     if !existing_project {
         let mut temporary_checkout = None;
@@ -475,24 +502,8 @@ pub async fn prepare(
     azd::environment_set_values(&destination, &request.environment, &environment_assignments)
         .await?;
 
-    let name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("azd-project")
-        .to_string();
-    let project = ProjectSummary {
-        id: format!("{}-{}", name, request.environment),
-        name,
-        path: destination.display().to_string(),
-        environment: Some(request.environment),
-        template_id: Some(request.template_id),
-        revision: entry
-            .as_ref()
-            .map(|entry| entry.commit.clone())
-            .or(request.source_revision),
-        last_operation: Some(Utc::now().to_rfc3339()),
-        state: "ready".into(),
-    };
+    project.state = "ready".into();
+    project.last_operation = Some(Utc::now().to_rfc3339());
     database.upsert_project(&project)?;
     Ok(project)
 }

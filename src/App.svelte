@@ -16,6 +16,7 @@
     inspectGitHubTemplate,
     inspectLocalTemplate,
     installTool,
+    listProjects,
     onOperationEvent,
     openExternalTerminal,
     openExternalUrl,
@@ -951,7 +952,22 @@
     if (!projectPrepared) {
       addSystemLog("Materializing the pinned template and applying environment values.", "info");
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
-      const result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues);
+      let result: Awaited<ReturnType<typeof materializeDeploymentProject>>;
+      try {
+        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues);
+      } catch (error) {
+        if (wizardValues.sourceMode !== "existingProject") {
+          try {
+            data = { ...data, projects: await listProjects() };
+          } catch {
+            // Preserve the original preparation failure when the recovery refresh also fails.
+          }
+          throw new Error(
+            `${String(error)} The destination was preserved and registered under Projects as attention required. Inspect it for a usable azure.yaml before resuming, or remove the folder manually if you want a clean retry.`
+          );
+        }
+        throw error;
+      }
       const project = result.project;
       projectPath = project.path;
       wizardValues = result.values;

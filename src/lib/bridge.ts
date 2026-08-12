@@ -182,6 +182,11 @@ export async function refreshTools(): Promise<ToolStatus[]> {
   return invoke<ToolStatus[]>("check_tools");
 }
 
+export async function listProjects(): Promise<ProjectSummary[]> {
+  if (!isTauri()) return structuredClone(mockBootstrap.projects);
+  return invoke<ProjectSummary[]>("list_projects");
+}
+
 export async function previewToolInstall(id: string): Promise<ToolInstallPlan> {
   if (!isTauri()) {
     const tool = mockBootstrap.tools.find((candidate) => candidate.id === id);

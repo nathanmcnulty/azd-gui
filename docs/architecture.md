@@ -19,6 +19,8 @@ Rust owns all privileged behavior:
 
 The hidden `azd vs-server` protocol is intentionally not used.
 
+New destinations are persisted as `attention` immediately after reservation and promoted to `ready` only after `azd init` and environment configuration complete. A failed preparation therefore remains visible under Projects with guidance to inspect and resume a usable azd project or manually remove the folder for a clean retry; the app does not guess whether partial user or hook output is safe to delete.
+
 The product is a management and orchestration interface over installed command-line tools, not a terminal emulator. Known workflows prefer machine-readable CLI or PowerShell output, project that output into typed Rust models, present choices as native GUI controls, and pass only validated selections back as argument arrays. Human-formatted output is diagnostic display only and is never scraped to drive application behavior. The app does not maintain a general-purpose shell or PTY; genuinely interactive, unmodeled template hooks remain an explicit external-terminal fallback.
 
 Tool installation is a typed, version-pinned flow. The native layer resolves an exact PSGallery version and returns an application-owned `ToolInstallPlan`; the renderer displays its provider, source, scope, destination, version, exact command, and documentation. Confirmation re-resolves the package, presents a native OS dialog, and issues a one-use approval bound to the module ID and exact version. Only that approval can start the corresponding registered `CommandSpec`; tool IDs that are not in the native non-elevated registry cannot produce either a plan or an executable command.

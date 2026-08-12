@@ -129,6 +129,11 @@ async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
 }
 
 #[tauri::command]
+fn list_projects(state: State<'_, AppState>) -> AppResult<Vec<ProjectSummary>> {
+    state.database.projects()
+}
+
+#[tauri::command]
 fn save_app_settings(state: State<'_, AppState>, settings: AppSettings) -> AppResult<()> {
     state.database.save_app_settings(&settings)
 }
@@ -827,6 +832,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            list_projects,
             inspect_local_template,
             inspect_github_template,
             check_tools,
