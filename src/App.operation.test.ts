@@ -9,7 +9,8 @@ const operationHarness = vi.hoisted(() => ({
   logins: [] as string[],
   connectionReads: 0,
   stateReads: 0,
-  failStateRefresh: false
+  failStateRefresh: false,
+  failBootstrap: false
 }));
 
 vi.mock("./lib/bridge", async (importOriginal) => {
@@ -18,7 +19,10 @@ vi.mock("./lib/bridge", async (importOriginal) => {
 
   return {
     ...actual,
-    bootstrap: async () => ({ ...structuredClone(mockBootstrap), isNative: true }),
+    bootstrap: async () => {
+      if (operationHarness.failBootstrap) throw new Error("database migration failed");
+      return { ...structuredClone(mockBootstrap), isNative: true };
+    },
     onOperationEvent: async (handler: (event: OperationEvent) => void) => {
       operationHarness.handler = handler;
       return () => undefined;
@@ -79,6 +83,7 @@ afterEach(() => {
   operationHarness.logins = [];
   operationHarness.connectionReads = 0;
   operationHarness.stateReads = 0;
+  operationHarness.failBootstrap = false;
   operationHarness.failStateRefresh = false;
 });
 
@@ -94,6 +99,17 @@ async function approveProjectExecution() {
 }
 
 describe("structured operation results", () => {
+  it("fails closed when native bootstrap is unavailable", async () => {
+    operationHarness.failBootstrap = true;
+    render(App);
+
+    expect(
+      await screen.findByRole("heading", { name: /could not start safely/i })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/database migration failed/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /browse catalog/i })).not.toBeInTheDocument();
+  });
+
   it("retries a successful sign-in until the provider context is visible", async () => {
     render(App);
 

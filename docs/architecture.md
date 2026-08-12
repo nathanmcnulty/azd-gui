@@ -4,6 +4,8 @@
 
 The Svelte renderer owns presentation and wizard state. It calls a narrow set of typed Tauri commands through `src/lib/bridge.ts`; the bridge provides realistic preview data when the UI runs outside Tauri.
 
+Browser preview is selected only when the page is genuinely outside Tauri. If native bootstrap fails in the packaged application, the renderer shows a fatal degraded-state screen and exposes no project, authentication, or deployment actions; it never falls back to simulated success data.
+
 Rust owns all privileged behavior:
 
 - `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects.

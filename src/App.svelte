@@ -106,6 +106,7 @@
 
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
+  let bootstrapFailure = "";
   let activeNav: NavId = "home";
   let navigationExpanded = true;
   let outputOpen = false;
@@ -356,7 +357,7 @@
         navigationExpanded = data.settings.navigationExpanded;
         applyTheme(theme);
       } catch (error) {
-        addSystemLog(`Native backend unavailable: ${String(error)}. Using preview data.`, "warning");
+        bootstrapFailure = String(error);
       } finally {
         loading = false;
       }
@@ -1721,6 +1722,18 @@
   <title>{selectedEntry ? `${selectedEntry.title} — ` : ""}Azure Deployment Studio</title>
 </svelte:head>
 
+{#if bootstrapFailure}
+  <main class="bootstrap-failure" role="alert">
+    <div class="bootstrap-failure-card">
+      <span class="brand-mark"><Icon name="warning" size={22} /></span>
+      <span class="eyebrow">NATIVE BACKEND UNAVAILABLE</span>
+      <h1>Azure Deployment Studio could not start safely</h1>
+      <p>The application has disabled project, authentication, and deployment actions instead of using preview data.</p>
+      <pre>{bootstrapFailure}</pre>
+      <p class="bootstrap-failure-guidance">Close the application, review the local installation and application-data permissions, then start it again.</p>
+    </div>
+  </main>
+{:else}
 <div
   class="app-shell"
   class:output-open={outputOpen}
@@ -2766,6 +2779,7 @@
     <span>{data.platform}</span>
   </footer>
 </div>
+{/if}
 
 {#if installPlan}
   <InstallReviewDialog
