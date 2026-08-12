@@ -8,7 +8,7 @@ Browser preview is selected only when the page is genuinely outside Tauri. If na
 
 Rust owns all privileged behavior:
 
-- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Its HTTP clients allow only bounded, same-origin HTTPS redirects, verify the final response origin, and stream into capped buffers. Catalog entry counts, cumulative manifest bytes, local metadata files, and the in-memory inspection cache are independently bounded.
+- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Catalog HTTP and Git origins must resolve exclusively to public IP space; HTTP clients pin the accepted DNS answers, allow only bounded same-origin HTTPS redirects, verify the final response origin, and stream into capped buffers. Catalog entry counts, cumulative manifest bytes, local metadata files, and the in-memory inspection cache are independently bounded.
 - `command_runner.rs` enforces the executable allowlist, bounds and redacts captured output, limits streamed line size, and supervises complete process trees for cancellation and timeout handling.
 - `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.

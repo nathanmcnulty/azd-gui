@@ -266,6 +266,7 @@ async fn checkout_pinned_template(
     commit: &str,
     template_id: &str,
 ) -> AppResult<tempfile::TempDir> {
+    crate::catalog::require_public_network_url(repository).await?;
     std::fs::create_dir_all(cache_root)?;
     let checkout = tempfile::Builder::new()
         .prefix(&format!("{template_id}-"))

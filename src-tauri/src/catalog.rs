@@ -9,6 +9,7 @@ use crate::{
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use url::Url;
@@ -46,9 +47,91 @@ fn same_origin(left: &Url, right: &Url) -> bool {
         && left.port_or_known_default() == right.port_or_known_default()
 }
 
-fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
+fn is_public_ipv4(address: Ipv4Addr) -> bool {
+    let octets = address.octets();
+    !(address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_broadcast()
+        || address.is_documentation()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || octets[0] == 0
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 198 && matches!(octets[1], 18 | 19))
+        || octets[0] >= 240)
+}
+
+fn is_public_ipv6(address: Ipv6Addr) -> bool {
+    let segments = address.segments();
+    if segments[..6] == [0, 0, 0, 0, 0, 0xffff] {
+        return is_public_ipv4(Ipv4Addr::new(
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        ));
+    }
+    !(address.is_loopback()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] & 0xffc0) == 0xfec0
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8))
+}
+
+fn is_public_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => is_public_ipv4(address),
+        IpAddr::V6(address) => is_public_ipv6(address),
+    }
+}
+
+async fn public_origin_addresses(origin: &Url) -> AppResult<Vec<SocketAddr>> {
+    let host = origin
+        .host_str()
+        .ok_or_else(|| AppError::Url("URL must have a host.".into()))?;
+    let port = origin
+        .port_or_known_default()
+        .ok_or_else(|| AppError::Url("URL must have a known port.".into()))?;
+    let mut addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(AppError::Io)?
+        .collect::<Vec<_>>();
+    addresses.sort_unstable();
+    addresses.dedup();
+    if addresses.is_empty() {
+        return Err(AppError::Url(format!("{host} did not resolve.")));
+    }
+    if addresses.iter().any(|address| !is_public_ip(address.ip())) {
+        return Err(AppError::Url(
+            "Catalog network targets must resolve only to public IP addresses.".into(),
+        ));
+    }
+    Ok(addresses)
+}
+
+pub async fn require_public_network_url(url: &str) -> AppResult<()> {
+    let parsed = Url::parse(url).map_err(|error| AppError::Url(error.to_string()))?;
+    if parsed.scheme() != "https" {
+        return Err(AppError::Url(
+            "Template repositories must use HTTPS.".into(),
+        ));
+    }
+    reject_private_url_components(&parsed, "Template repository URL")?;
+    public_origin_addresses(&parsed).await.map(|_| ())
+}
+
+async fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
     let origin = origin.clone();
+    let host = origin
+        .host_str()
+        .ok_or_else(|| AppError::Url("URL must have a host.".into()))?
+        .to_string();
+    let addresses = public_origin_addresses(&origin).await?;
     reqwest::Client::builder()
+        .resolve_to_addrs(&host, &addresses)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 5 {
                 return attempt.error("Too many redirects.");
@@ -220,7 +303,7 @@ pub fn bundled_catalog() -> AppResult<Catalog> {
 
 pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
     let url = normalize_catalog_url(url)?;
-    let client = restricted_http_client(&url)?;
+    let client = restricted_http_client(&url).await?;
     let response = client
         .get(url.clone())
         .timeout(std::time::Duration::from_secs(20))
@@ -485,7 +568,7 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
         segments[0], repository_name, commit
     );
     let raw_origin = Url::parse(&raw_base).map_err(|error| AppError::Url(error.to_string()))?;
-    let client = restricted_http_client(&raw_origin)?;
+    let client = restricted_http_client(&raw_origin).await?;
     let azure_response = client
         .get(format!("{raw_base}/azure.yaml"))
         .timeout(Duration::from_secs(20))
@@ -656,11 +739,12 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 
 #[cfg(test)]
 mod tests {
+    use super::is_public_ip;
     use super::{
         bundled_catalog, inspect_local, normalize_catalog_url, require_catalog_entry_count,
         require_payload_size, same_origin, AZURE_YAML_LIMIT, MAX_CATALOG_ENTRIES,
     };
-    use std::fs;
+    use std::{fs, net::IpAddr};
     use tempfile::tempdir;
     use url::Url;
 
@@ -700,6 +784,27 @@ mod tests {
         assert!(!same_origin(
             &origin,
             &Url::parse("http://catalog.example:8443/redirected.json").unwrap()
+        ));
+    }
+
+    #[test]
+    fn private_and_special_use_network_targets_are_rejected() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.169.254",
+            "192.168.1.1",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(!is_public_ip(address.parse::<IpAddr>().unwrap()));
+        }
+        assert!(is_public_ip("20.42.1.1".parse::<IpAddr>().unwrap()));
+        assert!(is_public_ip(
+            "2603:1030:20e:3::23c".parse::<IpAddr>().unwrap()
         ));
     }
 
