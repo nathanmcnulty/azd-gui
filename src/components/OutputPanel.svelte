@@ -6,6 +6,9 @@
   export let activeOperationId: string | null;
   export let activeOperationKind: string | null;
   export let maximized: boolean;
+  export let height: number;
+  export let minimumHeight: number;
+  export let maximumHeight: number;
   export let onCancel: () => void | Promise<void>;
   export let onClear: () => void;
   export let onClose: () => void;
@@ -15,15 +18,24 @@
 </script>
 
 <section class:maximized class="output-panel" aria-label="Operation output">
-  <button
-    type="button"
+  <!-- Keyboard-focusable separators are interactive under the WAI-ARIA separator pattern. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <div
     class="output-resize-handle"
+    role="separator"
     aria-label="Resize output"
-    title="Drag or use arrow keys to resize output"
+    aria-orientation="horizontal"
+    aria-valuemin={minimumHeight}
+    aria-valuemax={maximumHeight}
+    aria-valuenow={height}
+    aria-valuetext={`${height} pixels high`}
+    aria-describedby="output-resize-instructions"
+    title="Drag, use Up and Down, or press Home and End to resize output"
     tabindex={maximized ? -1 : 0}
     on:pointerdown={onResizeStart}
     on:keydown={onResizeKeydown}
-  ></button>
+  ></div>
+  <span id="output-resize-instructions" class="visually-hidden">Use Up and Down to resize. Home sets the minimum height; End sets the maximum height.</span>
   <header>
     <div><Icon name="terminal" size={15} /><strong>OUTPUT</strong><span>azd</span></div>
     <div>

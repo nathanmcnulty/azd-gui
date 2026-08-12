@@ -17,7 +17,7 @@
   --text: #d8d8d8;
   --text-bright: #f2f2f2;
   --muted: #999;
-  --faint: #6f6f6f;
+  --faint: #a0a0a0;
   --accent: #4daafc;
   --accent-hover: #75bffc;
   --accent-solid: #0078d4;
@@ -47,7 +47,7 @@
   --text: #333;
   --text-bright: #111;
   --muted: #646464;
-  --faint: #888;
+  --faint: #626262;
   --accent: #0066b8;
   --accent-hover: #005a9e;
   --accent-bg: rgba(0, 102, 184, 0.1);
@@ -76,7 +76,7 @@
     --text: #333;
     --text-bright: #111;
     --muted: #646464;
-    --faint: #888;
+    --faint: #626262;
     --accent: #0066b8;
     --accent-hover: #005a9e;
     --accent-bg: rgba(0, 102, 184, 0.1);
@@ -121,9 +121,21 @@ button {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 1px;
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
 }
 
 button:disabled {
@@ -177,7 +189,7 @@ code {
   grid-template:
     "title title" 35px
     "sidebar workspace" minmax(0, 1fr)
-    "status status" 22px /
+    "status status" 24px /
     250px minmax(0, 1fr);
   background: var(--bg);
   transition: grid-template-columns 180ms ease;
@@ -188,12 +200,12 @@ code {
     "title title" 35px
     "sidebar workspace" minmax(0, 1fr)
     "sidebar output" var(--output-height, 210px)
-    "status status" 22px /
+    "status status" 24px /
     250px minmax(0, 1fr);
 }
 
 .app-shell.output-open.output-maximized {
-  grid-template-rows: 35px 0 minmax(0, 1fr) 22px;
+  grid-template-rows: 35px 0 minmax(0, 1fr) 24px;
 }
 
 .app-shell.nav-collapsed,
@@ -248,7 +260,7 @@ code {
   padding: 0 8px;
   gap: 7px;
   cursor: pointer;
-  color: var(--muted);
+  color: var(--text);
   border: 1px solid var(--border) !important;
   border-radius: 5px;
   background: color-mix(in srgb, var(--input), transparent 24%) !important;
@@ -381,6 +393,7 @@ kbd {
   text-align: center;
   border-radius: 8px;
   background: var(--border);
+  color: var(--text);
   font-size: 10px;
 }
 
@@ -1961,6 +1974,7 @@ button.compact {
 
 .tool-row > div:nth-child(2) span,
 .tool-row small {
+  display: block;
   margin-top: 3px;
   color: var(--muted);
   font-size: 10px;
@@ -2872,7 +2886,7 @@ html.resizing-output * {
 .statusbar button,
 .statusbar > span {
   display: flex;
-  height: 22px;
+  min-height: 24px;
   padding: 0 7px;
   align-items: center;
   gap: 5px;
@@ -2904,19 +2918,14 @@ html.resizing-output * {
   background: #9bf28b;
 }
 
-.modal-backdrop {
-  position: fixed;
-  z-index: 20;
-  inset: 0;
-  display: flex;
-  padding-top: 70px;
-  align-items: flex-start;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.34);
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.48);
 }
 
 .command-palette {
-  position: static;
+  position: fixed;
+  top: 70px;
+  left: 50%;
   width: min(620px, calc(100% - 40px));
   max-width: none;
   margin: 0;
@@ -2927,6 +2936,7 @@ html.resizing-output * {
   border-radius: 7px;
   background: var(--panel-raised);
   box-shadow: var(--shadow);
+  transform: translateX(-50%);
 }
 
 .command-palette > label {
@@ -2994,12 +3004,14 @@ html.resizing-output * {
 }
 
 .source-dialog {
-  position: static;
+  position: fixed;
+  inset: 0;
   width: min(560px, calc(100% - 40px));
+  max-height: calc(100% - 40px);
   max-width: none;
-  margin: 0;
+  margin: auto;
   padding: 20px;
-  overflow: hidden;
+  overflow: auto;
   color: var(--text);
   border: 1px solid var(--faint);
   border-radius: 7px;
@@ -3190,25 +3202,25 @@ html.resizing-output * {
   }
 }
 
-@media (max-width: 720px) {
+@media (max-width: 800px) {
   .app-shell.output-open {
     grid-template:
       "title title" 35px
       "sidebar workspace" minmax(0, 1fr)
       "sidebar output" var(--output-height, 190px)
-      "status status" 22px /
+      "status status" 24px /
       52px minmax(0, 1fr);
   }
 
   .app-shell.output-open.output-maximized {
-    grid-template-rows: 35px 0 minmax(0, 1fr) 22px;
+    grid-template-rows: 35px 0 minmax(0, 1fr) 24px;
   }
 
   .app-shell:not(.output-open) {
     grid-template:
       "title title" 35px
       "sidebar workspace" minmax(0, 1fr)
-      "status status" 22px /
+      "status status" 24px /
       52px minmax(0, 1fr);
   }
 
@@ -3242,6 +3254,16 @@ html.resizing-output * {
     width: 40px;
     min-height: 40px;
     padding: 0 9px;
+  }
+
+  .sidebar:not(.collapsed) .step-list {
+    padding: 3px 6px;
+    gap: 0;
+    overflow-y: hidden;
+  }
+
+  .sidebar:not(.collapsed) .step-list button {
+    min-height: 30px;
   }
 
   .titlebar {

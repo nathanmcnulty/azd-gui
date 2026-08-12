@@ -1701,7 +1701,7 @@
       <span class="brand-mark"><Icon name="cloud" size={17} /></span>
       <span>Azure Deployment Studio</span>
     </div>
-    <button class="command-trigger" on:click={() => (commandPaletteOpen = true)}>
+    <button class="command-trigger" aria-label="Search projects, templates, and commands" on:click={() => (commandPaletteOpen = true)}>
       <Icon name="search" size={14} />
       <span>Search projects, templates, and commands</span>
       <kbd>Ctrl P</kbd>
@@ -1771,6 +1771,7 @@
               <button
                 class:active={wizardValues.sourceMode === "catalog" || wizardValues.sourceMode === "externalCatalog"}
                 class="choice-card"
+                aria-pressed={wizardValues.sourceMode === "catalog" || wizardValues.sourceMode === "externalCatalog"}
                 on:click={() => setWizardValue("sourceMode", selectedEntry?.source === "external" ? "externalCatalog" : "catalog")}
               >
                 <Icon name="catalog" size={24} />
@@ -1780,6 +1781,7 @@
               <button
                 class:active={wizardValues.sourceMode === "existingProject"}
                 class="choice-card"
+                aria-pressed={wizardValues.sourceMode === "existingProject"}
                 on:click={() => setWizardValue("sourceMode", "existingProject")}
               >
                 <Icon name="folder" size={24} />
@@ -1789,6 +1791,7 @@
               <button
                 class:active={wizardValues.sourceMode === "localTemplate"}
                 class="choice-card"
+                aria-pressed={wizardValues.sourceMode === "localTemplate"}
                 on:click={() => setWizardValue("sourceMode", "localTemplate")}
               >
                 <Icon name="copy" size={24} />
@@ -1798,6 +1801,7 @@
               <button
                 class:active={wizardValues.sourceMode === "github"}
                 class="choice-card"
+                aria-pressed={wizardValues.sourceMode === "github"}
                 on:click={() => setWizardValue("sourceMode", "github")}
               >
                 <Icon name="github" size={24} />
@@ -1813,6 +1817,7 @@
                     value={String(wizardValues.sourceMode === "existingProject" ? wizardValues.projectPath ?? "" : wizardValues.sourcePath ?? "")}
                     on:input={(event) => setWizardValue(wizardValues.sourceMode === "existingProject" ? "projectPath" : "sourcePath", event.currentTarget.value)}
                     placeholder={wizardValues.sourceMode === "github" ? "https://github.com/owner/repository" : "Choose a folder"}
+                    required
                   />
                   {#if wizardValues.sourceMode !== "github"}
                     <button class="secondary" on:click={wizardValues.sourceMode === "existingProject" ? selectLocalFolder : selectSourceFolder}><Icon name="folder" size={15} /> Browse</button>
@@ -1827,6 +1832,7 @@
                       value={String(wizardValues.projectPath ?? "")}
                       on:input={(event) => setWizardValue("projectPath", event.currentTarget.value)}
                       placeholder="Choose an empty destination folder"
+                      required
                     />
                     <button class="secondary" on:click={selectLocalFolder}><Icon name="folder" size={15} /> Browse</button>
                   </div>
@@ -1840,6 +1846,7 @@
                     value={String(wizardValues.projectPath ?? "")}
                     on:input={(event) => setWizardValue("projectPath", event.currentTarget.value)}
                     placeholder="Choose an empty destination folder"
+                    required
                   />
                   <button class="secondary" on:click={selectLocalFolder}><Icon name="folder" size={15} /> Browse</button>
                 </div>
@@ -2010,7 +2017,7 @@
             <div class="form-grid">
               <label class="field">
                 <span>Environment name <em>Required</em></span>
-                <input value={String(wizardValues.environmentName ?? "")} on:input={(e) => setWizardValue("environmentName", e.currentTarget.value)} placeholder="dev" />
+                <input value={String(wizardValues.environmentName ?? "")} on:input={(e) => setWizardValue("environmentName", e.currentTarget.value)} placeholder="dev" required />
                 <small>Stored by azd under the project’s .azure folder.</small>
               </label>
               {#if manualAzureScope || !azureDiscovery}
@@ -2020,7 +2027,7 @@
                 </label>
                 <label class="field full">
                   <span>Subscription <em>Required</em></span>
-                  <input value={String(wizardValues.subscriptionId ?? "")} on:input={(e) => setWizardValue("subscriptionId", e.currentTarget.value)} placeholder="Subscription ID" />
+                  <input value={String(wizardValues.subscriptionId ?? "")} on:input={(e) => setWizardValue("subscriptionId", e.currentTarget.value)} placeholder="Subscription ID" required />
                   <small>Manual entry remains available when Azure CLI is not installed or signed in.</small>
                 </label>
               {:else}
@@ -2034,7 +2041,7 @@
                 </label>
                 <label class="field full">
                   <span>Subscription <em>Required</em></span>
-                  <select value={String(wizardValues.subscriptionId ?? "")} on:change={(e) => selectAzureSubscription(e.currentTarget.value)}>
+                  <select value={String(wizardValues.subscriptionId ?? "")} on:change={(e) => selectAzureSubscription(e.currentTarget.value)} required>
                     {#each azureDiscovery.subscriptions.filter((subscription) => subscription.tenantId.toLowerCase() === String(wizardValues.tenantId).toLowerCase()) as subscription}
                       <option value={subscription.id}>{subscription.name}{subscription.isDefault ? " (current)" : ""}</option>
                     {/each}
@@ -2044,7 +2051,7 @@
               {/if}
               <label class="field">
                 <span>Azure region <em>Required</em></span>
-                <select value={String(wizardValues.location ?? "")} on:change={(e) => setWizardValue("location", e.currentTarget.value)}>
+                <select value={String(wizardValues.location ?? "")} on:change={(e) => setWizardValue("location", e.currentTarget.value)} required>
                   {#if !manualAzureScope && azureDiscovery?.locations.length}
                     {#each azureDiscovery.locations as location}
                       <option value={location.name}>{location.regionalDisplayName ?? location.displayName}</option>
@@ -2082,7 +2089,7 @@
                   {:else if field.type === "select"}
                     <label>
                       <span>{field.label}{#if field.required} <em>Required</em>{/if}</span>
-                      <select value={String(wizardValues[field.id] ?? "")} on:change={(e) => setWizardValue(field.id, e.currentTarget.value)}>
+                      <select value={String(wizardValues[field.id] ?? "")} on:change={(e) => setWizardValue(field.id, e.currentTarget.value)} required={field.required}>
                         {#each field.options ?? [] as option}<option value={option.value}>{option.label}</option>{/each}
                       </select>
                     </label>
@@ -2095,6 +2102,7 @@
                         on:input={(e) => setWizardValue(field.id, e.currentTarget.value)}
                         placeholder={field.placeholder ?? ""}
                         autocomplete={sensitiveWizardFields.has(field.id) ? "new-password" : "off"}
+                        required={field.required}
                       />
                       {#if field.help}<small>{field.help}</small>{/if}
                       {#if field.sensitive}<small class="sensitive-note">This value is never saved in the app draft or logs.</small>{/if}
@@ -2271,7 +2279,7 @@
           <button class="secondary" on:click={() => openCatalogSource()}><Icon name="github" size={16} /> Add source</button>
         </div>
         <div class="catalog-toolbar">
-          <label><Icon name="search" size={15} /><input bind:value={catalogQuery} placeholder="Filter templates and tags" /></label>
+          <label><Icon name="search" size={15} /><input bind:value={catalogQuery} aria-label="Filter templates and tags" placeholder="Filter templates and tags" /></label>
           <span>{filteredCatalog.length} templates</span>
         </div>
         <div class="catalog-grid">
@@ -2666,9 +2674,9 @@
         <div class="page-header"><div><span class="eyebrow">PREFERENCES</span><h1>Settings</h1><p>Appearance, navigation, catalog sources, and privacy boundaries.</p></div></div>
         <div class="settings-group">
           <h2>Appearance</h2>
-          <div class="segmented">
+          <div class="segmented" role="group" aria-label="Color theme">
             {#each ["system", "dark", "light"] as option}
-              <button class:active={theme === option} on:click={() => setTheme(option as typeof theme)}>{option}</button>
+              <button class:active={theme === option} aria-pressed={theme === option} on:click={() => setTheme(option as typeof theme)}>{option[0].toUpperCase() + option.slice(1)}</button>
             {/each}
           </div>
         </div>
@@ -2706,6 +2714,9 @@
       {activeOperationId}
       {activeOperationKind}
       maximized={outputMaximized}
+      height={outputHeight}
+      minimumHeight={minimumOutputHeight}
+      maximumHeight={maximumOutputHeight()}
       onCancel={stopOperation}
       onClear={() => (operationEvents = [])}
       onClose={closeOutput}
@@ -2716,7 +2727,7 @@
   {/if}
 
   <footer class="statusbar">
-    <button on:click={toggleOutput}><Icon name="terminal" size={13} /> {operationState === "running" ? "azd running" : "Output"}</button>
+    <button aria-pressed={outputOpen} on:click={toggleOutput}><Icon name="terminal" size={13} /> {operationState === "running" ? "azd running" : "Output"}</button>
     <div class="status-spacer"></div>
     <button on:click={() => navigate("connections")}><span class={`status-dot ${data.connections.some((c) => c.state === "connected") ? "online" : ""}`}></span>{data.connections.filter((c) => c.state === "connected").length} connected</button>
     <button on:click={() => navigate("projects")}><Icon name="cloud" size={13} /> {selectedProject?.environment ?? data.projects[0]?.environment ?? "No environment"}</button>
