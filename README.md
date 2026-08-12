@@ -93,6 +93,7 @@ Inference never creates executable commands. Manifests can declare that a pinned
 - Process arguments are arrays, never renderer-supplied shell strings.
 - Template execution requires a one-use native approval bound to the exact action and project context; resource removal has a separate destructive confirmation.
 - Catalog repositories require HTTPS and pinned commits are reverified after checkout.
+- Catalog and repository URLs reject embedded credentials, query strings, and fragments before use or persistence.
 - Tokens, bearer headers, JWTs, and secret-like environment assignments are redacted from operation events.
 - Environment configuration is passed to `azd env set --file` through a temporary file instead of process arguments; this transport is used for ordinary values as well as sensitive ones.
 - Sensitive wizard values are held only for the active deployment and are excluded from application drafts and logs. Rust independently whitelists typed draft fields, reapplies manifest sensitivity, and scrubs older drafts when they are loaded.

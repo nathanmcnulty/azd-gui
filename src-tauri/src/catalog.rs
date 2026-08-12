@@ -21,6 +21,19 @@ const ENTRA_HEALTH_MANIFEST: &str =
 static COMMIT_REVISION: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-fA-F0-9]{40}$").expect("static commit regex"));
 
+fn reject_private_url_components(url: &Url, label: &str) -> AppResult<()> {
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(AppError::Url(format!(
+            "{label} cannot contain credentials, query parameters, or fragments."
+        )));
+    }
+    Ok(())
+}
+
 fn manifest_json(path: &str) -> AppResult<&'static str> {
     match path.replace('\\', "/").as_str() {
         "manifests/myworkid.json" => Ok(MYWORKID_MANIFEST),
@@ -43,6 +56,7 @@ fn validate_entry(entry: &CatalogFileEntryRef<'_>) -> AppResult<()> {
     if url.scheme() != "https" {
         return Err(AppError::Url("Catalog repositories must use HTTPS.".into()));
     }
+    reject_private_url_components(&url, "Catalog repository URL")?;
     if entry
         .subdirectory
         .is_some_and(|path| path.contains("..") || Path::new(path).is_absolute())
@@ -214,13 +228,14 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
     })
 }
 
-fn normalize_catalog_url(input: &str) -> AppResult<Url> {
+pub(crate) fn normalize_catalog_url(input: &str) -> AppResult<Url> {
     let mut url = Url::parse(input).map_err(|error| AppError::Url(error.to_string()))?;
     if url.scheme() != "https" {
         return Err(AppError::Url(
             "Only HTTPS catalog sources are allowed.".into(),
         ));
     }
+    reject_private_url_components(&url, "Catalog URL")?;
     if url.host_str() == Some("github.com") {
         let segments = url
             .path_segments()
@@ -242,6 +257,7 @@ fn normalize_catalog_url(input: &str) -> AppResult<Url> {
     if url.host_str().is_none() {
         return Err(AppError::Url("Catalog URL must have a host.".into()));
     }
+    reject_private_url_components(&url, "Catalog URL")?;
     Ok(url)
 }
 
@@ -325,6 +341,7 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
             "Direct repository sources must be HTTPS GitHub URLs.".into(),
         ));
     }
+    reject_private_url_components(&parsed, "GitHub repository URL")?;
     let segments = parsed
         .path_segments()
         .map(|segments| {
@@ -520,7 +537,7 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 
 #[cfg(test)]
 mod tests {
-    use super::{bundled_catalog, inspect_local};
+    use super::{bundled_catalog, inspect_local, normalize_catalog_url};
     use std::fs;
     use tempfile::tempdir;
 
@@ -532,6 +549,18 @@ mod tests {
             .entries
             .iter()
             .all(|entry| entry.trusted && entry.commit.len() == 40));
+    }
+
+    #[test]
+    fn catalog_urls_reject_embedded_or_query_credentials() {
+        for url in [
+            "https://token@catalog.example/azd-gui.catalog.json",
+            "https://catalog.example/azd-gui.catalog.json?sig=secret",
+            "https://catalog.example/azd-gui.catalog.json#token",
+        ] {
+            assert!(normalize_catalog_url(url).is_err());
+        }
+        assert!(normalize_catalog_url("https://catalog.example/azd-gui.catalog.json").is_ok());
     }
 
     #[test]

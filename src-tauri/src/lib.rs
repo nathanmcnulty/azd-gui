@@ -317,7 +317,7 @@ async fn preview_external_catalog(
     state: State<'_, AppState>,
     url: String,
 ) -> AppResult<ExternalCatalogPreview> {
-    let source_url = url.trim().to_string();
+    let source_url = catalog::normalize_catalog_url(url.trim())?.to_string();
     let catalog = catalog::preview_external_catalog(&source_url).await?;
     state.catalog_reviews.register(source_url, catalog)
 }
@@ -328,7 +328,7 @@ fn save_catalog_source(
     url: String,
     review_token: String,
 ) -> AppResult<Catalog> {
-    let source_url = url.trim().to_string();
+    let source_url = catalog::normalize_catalog_url(url.trim())?.to_string();
     let accepted_catalog = state.catalog_reviews.accept(&review_token, &source_url)?;
     state.database.save_catalog_source(&CatalogSource {
         id: accepted_catalog.id.clone(),

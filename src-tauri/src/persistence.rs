@@ -229,18 +229,26 @@ impl Database {
     pub fn accepted_catalogs(&self) -> AppResult<Vec<crate::models::Catalog>> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id, accepted_catalog_json FROM catalog_sources
+            "SELECT id, url, accepted_catalog_json FROM catalog_sources
              WHERE trusted = 1 AND accepted_catalog_json IS NOT NULL",
         )?;
         let rows = statement
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
 
         let mut catalogs = Vec::new();
-        for (id, value) in rows {
+        for (id, url, value) in rows {
+            if catalog::normalize_catalog_url(&url).is_err() {
+                connection.execute("DELETE FROM catalog_sources WHERE id = ?1", [&id])?;
+                continue;
+            }
             let catalog = serde_json::from_str(&value)
                 .map_err(AppError::from)
                 .and_then(|catalog| {
@@ -701,5 +709,33 @@ mod tests {
             )
             .unwrap();
         assert!(!trusted);
+    }
+
+    #[test]
+    fn legacy_catalog_urls_with_credentials_are_deleted() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO catalog_sources
+                 (id, label, url, trusted, accepted_catalog_json)
+                 VALUES ('private-url', 'Private URL', 'https://example.com/catalog.json?sig=secret', 1, '{}')",
+                [],
+            )
+            .unwrap();
+
+        assert!(database.accepted_catalogs().unwrap().is_empty());
+        let count: i64 = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM catalog_sources WHERE id = 'private-url'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

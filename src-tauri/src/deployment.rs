@@ -365,6 +365,16 @@ pub async fn prepare(
                         "Direct repositories must use an HTTPS GitHub URL.".into(),
                     ));
                 }
+                if !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                {
+                    return Err(AppError::Url(
+                        "Direct repository URLs cannot contain credentials, query parameters, or fragments."
+                            .into(),
+                    ));
+                }
                 if commit.len() != 40
                     || !commit
                         .chars()
