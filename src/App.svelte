@@ -1965,7 +1965,7 @@
                   </div>
                   <div class="data-primary">
                     <strong>{tool.name}</strong>
-                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion}` : ""}</span>
+                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion}` : ""}{tool.executablePath ? ` · ${tool.executablePath}` : ""}</span>
                   </div>
                   <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : tool.state === "missing" ? "warning" : "neutral"} label={tool.updateAvailable ? "update available" : tool.state} />
                   {#if tool.updateAvailable && tool.installCommand}
@@ -2701,7 +2701,7 @@
           {#each data.tools as tool}
             <div class="tool-row">
               <div class={`state-icon ${tool.state}`}><Icon name={tool.state === "ready" ? "check" : "tools"} size={16} /></div>
-              <div><strong>{tool.name}</strong><span>{tool.kind === "powershellModule" ? "PowerShell module" : "Command-line tool"}</span></div>
+              <div><strong>{tool.name}</strong><span>{tool.kind === "powershellModule" ? "PowerShell module" : "Command-line tool"}{tool.executablePath ? ` · ${tool.executablePath}` : ""}</span></div>
               <div><small>Installed</small><span>{tool.installedVersion ?? "Not found"}</span>{#if tool.updateAvailable && tool.latestVersion}<small>Latest {tool.latestVersion}</small>{/if}</div>
               <div><small>Required</small><span>{tool.minimumVersion ?? "Any"}</span></div>
               <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : "warning"} label={tool.updateAvailable ? "update available" : tool.state} />

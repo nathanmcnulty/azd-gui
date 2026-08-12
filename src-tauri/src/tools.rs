@@ -25,6 +25,12 @@ struct AzdToolUpdateItem {
     update_available: bool,
 }
 
+#[derive(Default)]
+struct ToolProbe {
+    version: Option<String>,
+    executable_path: Option<String>,
+}
+
 fn parse_azd_tool_inventory(value: &str) -> Option<HashMap<String, AzdToolInventoryItem>> {
     let items: Vec<AzdToolInventoryItem> = serde_json::from_str(value).ok()?;
     Some(
@@ -80,29 +86,43 @@ async fn azd_tool_updates() -> Option<HashMap<String, AzdToolUpdateItem>> {
 async fn version(
     executable: Executable,
     args: impl IntoIterator<Item = impl Into<String>>,
-) -> Option<String> {
-    let output = capture(CommandSpec::new(executable, args), Duration::from_secs(12))
-        .await
-        .ok()?;
+) -> ToolProbe {
+    let Ok(output) = capture(CommandSpec::new(executable, args), Duration::from_secs(12)).await
+    else {
+        return ToolProbe::default();
+    };
+    let executable_path = Some(output.executable_path);
     if !output.success {
-        return None;
+        return ToolProbe {
+            version: None,
+            executable_path,
+        };
     }
     let value = output.stdout.trim();
+    let mut version = None;
     if value.starts_with('{') {
-        let json: Value = serde_json::from_str(value).ok()?;
-        for key in ["version", "azure-cli", "Version"] {
-            if let Some(version) = json.get(key).and_then(Value::as_str) {
-                return Some(version.into());
+        if let Ok(json) = serde_json::from_str::<Value>(value) {
+            for key in ["version", "azure-cli", "Version"] {
+                if let Some(value) = json.get(key).and_then(Value::as_str) {
+                    version = Some(value.into());
+                    break;
+                }
             }
         }
     }
-    regex::Regex::new(r"\d+\.\d+(?:\.\d+){0,2}")
-        .ok()?
-        .find(value)
-        .map(|value| value.as_str().to_string())
+    version = version.or_else(|| {
+        regex::Regex::new(r"\d+\.\d+(?:\.\d+){0,2}")
+            .ok()?
+            .find(value)
+            .map(|value| value.as_str().to_string())
+    });
+    ToolProbe {
+        version,
+        executable_path,
+    }
 }
 
-async fn powershell_module_version(name: &str) -> Option<String> {
+async fn powershell_module_version(name: &str) -> ToolProbe {
     let spec = CommandSpec::new(
         Executable::PowerShell,
         [
@@ -114,8 +134,13 @@ async fn powershell_module_version(name: &str) -> Option<String> {
         ],
     )
     .env("AZD_GUI_MODULE", name);
-    let output = capture(spec, Duration::from_secs(15)).await.ok()?;
-    output.success.then(|| output.stdout.trim().to_string())
+    let Ok(output) = capture(spec, Duration::from_secs(15)).await else {
+        return ToolProbe::default();
+    };
+    ToolProbe {
+        version: output.success.then(|| output.stdout.trim().to_string()),
+        executable_path: Some(output.executable_path),
+    }
 }
 
 pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
@@ -159,7 +184,10 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
         "Azure CLI",
         "tool",
         "2.60.0",
-        inventory_azure_cli.or(az),
+        ToolProbe {
+            version: inventory_azure_cli.or(az.version),
+            executable_path: az.executable_path,
+        },
         "azdTool",
         Some("az-cli"),
     );
@@ -213,11 +241,12 @@ fn tool(
     name: &str,
     kind: &str,
     minimum: &str,
-    installed: Option<String>,
+    probe: ToolProbe,
     provider: &str,
     install_id: Option<&str>,
 ) -> ToolStatus {
-    let installed_version = installed
+    let installed_version = probe
+        .version
         .as_deref()
         .and_then(|value| semver::Version::parse(value.trim_start_matches('v')).ok());
     let required_version = semver::Version::parse(minimum).ok();
@@ -230,7 +259,7 @@ fn tool(
                 "outdated"
             }
         })
-        .unwrap_or(if installed.is_some() {
+        .unwrap_or(if probe.version.is_some() {
             "ready"
         } else {
             "missing"
@@ -254,7 +283,8 @@ fn tool(
         minimum_version: Some(minimum.into()),
         required: id == "azd",
         state: state.into(),
-        installed_version: installed.filter(|value| !value.is_empty()),
+        installed_version: probe.version.filter(|value| !value.is_empty()),
+        executable_path: probe.executable_path,
         latest_version: None,
         update_available: false,
         detail: None,
@@ -351,6 +381,7 @@ pub fn install_spec(id: &str) -> Option<CommandSpec> {
 mod tests {
     use super::{
         install_plan, install_spec, parse_azd_tool_inventory, parse_azd_tool_updates, tool,
+        ToolProbe,
     };
 
     #[test]
@@ -403,7 +434,7 @@ mod tests {
             "Azure CLI",
             "tool",
             "2.60.0",
-            None,
+            ToolProbe::default(),
             "azdTool",
             Some("az-cli"),
         );

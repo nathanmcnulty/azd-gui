@@ -7,7 +7,8 @@ use crate::{
 use chrono::Utc;
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    ffi::OsString,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -150,6 +151,81 @@ impl Executable {
             Self::Test(command) => command,
         }
     }
+
+    fn resolve(self, environment: &[(String, String)]) -> AppResult<PathBuf> {
+        let command = self.command();
+        let path = environment
+            .iter()
+            .rev()
+            .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+            .map(|(_, value)| OsString::from(value))
+            .or_else(|| std::env::var_os("PATH"))
+            .unwrap_or_default();
+        let extensions = executable_extensions(command, environment);
+        for directory in std::env::split_paths(&path) {
+            let directory = if directory.is_absolute() {
+                directory
+            } else if let Ok(current) = std::env::current_dir() {
+                current.join(directory)
+            } else {
+                continue;
+            };
+            for extension in &extensions {
+                let candidate = directory.join(format!("{command}{}", extension.to_string_lossy()));
+                if is_executable_file(&candidate) {
+                    return candidate.canonicalize().map_err(AppError::Io);
+                }
+            }
+        }
+        Err(AppError::MissingExecutable(command.into()))
+    }
+}
+
+#[cfg(windows)]
+fn executable_extensions(command: &str, environment: &[(String, String)]) -> Vec<OsString> {
+    if Path::new(command).extension().is_some() {
+        return vec![OsString::new()];
+    }
+    let path_extensions = environment
+        .iter()
+        .rev()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATHEXT"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATHEXT").ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".into());
+    path_extensions
+        .split(';')
+        .filter(|value| !value.is_empty())
+        .map(OsString::from)
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn executable_extensions(_command: &str, _environment: &[(String, String)]) -> Vec<OsString> {
+    vec![OsString::new()]
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(windows)]
+    {
+        true
+    }
+}
+
+fn display_executable(path: &Path) -> String {
+    let display = path.to_string_lossy();
+    display.strip_prefix(r"\\?\").unwrap_or(&display).into()
 }
 
 #[derive(Debug, Clone)]
@@ -213,9 +289,10 @@ impl CommandSpec {
         Ok(())
     }
 
-    fn process(&self) -> AppResult<Command> {
+    fn process(&self) -> AppResult<(Command, PathBuf)> {
         self.validate()?;
-        let mut command = Command::new(self.executable.command());
+        let executable = self.executable.resolve(&self.environment)?;
+        let mut command = Command::new(&executable);
         command
             .args(&self.args)
             .kill_on_drop(true)
@@ -230,7 +307,7 @@ impl CommandSpec {
         for (key, value) in &self.environment {
             command.env(key, value);
         }
-        Ok(command)
+        Ok((command, executable))
     }
 }
 
@@ -279,6 +356,7 @@ pub struct CapturedOutput {
     pub stdout: String,
     pub stderr: String,
     pub success: bool,
+    pub executable_path: String,
 }
 
 async fn read_bounded_output(
@@ -345,12 +423,13 @@ impl BoundedLineBuffer {
 }
 
 pub async fn capture(spec: CommandSpec, timeout: Duration) -> AppResult<CapturedOutput> {
-    let executable = spec.executable.command().to_string();
-    let mut command = spec.process()?;
+    let executable_name = spec.executable.command().to_string();
+    let (mut command, executable) = spec.process()?;
+    let executable_path = display_executable(&executable);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            AppError::MissingExecutable(executable.clone())
+            AppError::MissingExecutable(executable_name)
         } else {
             AppError::Io(error)
         }
@@ -372,12 +451,13 @@ pub async fn capture(spec: CommandSpec, timeout: Duration) -> AppResult<Captured
         )
     })
     .await
-    .map_err(|_| AppError::Timeout(executable))?;
+    .map_err(|_| AppError::Timeout(executable_path.clone()))?;
     let status = status?;
     Ok(CapturedOutput {
         stdout: redact(&String::from_utf8_lossy(&stdout?)),
         stderr: redact(&String::from_utf8_lossy(&stderr?)),
         success: status.success(),
+        executable_path,
     })
 }
 
@@ -590,7 +670,7 @@ pub fn spawn_operation(
             .await
             .insert(operation_id.clone(), cancel_sender);
 
-        let mut command = match spec.process() {
+        let (mut command, executable) = match spec.process() {
             Ok(command) => command,
             Err(error) => {
                 let event = emit_event(
@@ -668,7 +748,7 @@ pub fn spawn_operation(
             "running",
             "system",
             "info",
-            format!("Started {}.", spec.executable.command()),
+            format!("Started {}.", display_executable(&executable)),
             Some(2),
         );
 
@@ -818,7 +898,7 @@ mod tests {
         CommandSpec, Executable, OUTPUT_TRUNCATED_MARKER,
     };
     use crate::error::AppError;
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
     use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
@@ -866,6 +946,9 @@ mod tests {
 
         assert!(output.success);
         assert!(output.stdout.contains("9.8.7"));
+        let resolved = PathBuf::from(&output.executable_path);
+        assert!(resolved.is_absolute());
+        assert_eq!(resolved.file_name().unwrap(), "az.cmd");
     }
 
     #[cfg(windows)]
