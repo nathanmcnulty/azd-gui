@@ -203,89 +203,62 @@ async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppRe
     Ok(output.stdout)
 }
 
-async fn cache_pinned_template(
+async fn checkout_pinned_template(
     cache_root: &Path,
     repository: &str,
     commit: &str,
     template_id: &str,
-) -> AppResult<PathBuf> {
-    let template_root = cache_root.join(template_id).join(commit);
-    if template_root.join(".git").is_dir() {
-        let actual = run_checked(
-            CommandSpec::new(Executable::Git, ["rev-parse", "HEAD"]).cwd(&template_root),
-            "Verifying cached template",
-            Duration::from_secs(15),
+) -> AppResult<tempfile::TempDir> {
+    std::fs::create_dir_all(cache_root)?;
+    let checkout = tempfile::Builder::new()
+        .prefix(&format!("{template_id}-"))
+        .tempdir_in(cache_root)?;
+    run_checked(
+        CommandSpec::new(Executable::Git, ["init", "--quiet"]).cwd(checkout.path()),
+        "Initializing template checkout",
+        Duration::from_secs(20),
+    )
+    .await?;
+    run_checked(
+        CommandSpec::new(Executable::Git, ["remote", "add", "origin", repository])
+            .cwd(checkout.path()),
+        "Configuring template source",
+        Duration::from_secs(20),
+    )
+    .await?;
+    run_checked(
+        CommandSpec::new(
+            Executable::Git,
+            ["fetch", "--quiet", "--depth", "1", "origin", commit],
         )
-        .await?;
-        if actual.trim().eq_ignore_ascii_case(commit) {
-            return Ok(template_root);
-        }
-        return Err(AppError::Invalid(
-            "Cached template revision does not match its catalog pin.".into(),
-        ));
+        .cwd(checkout.path()),
+        "Fetching pinned template",
+        Duration::from_secs(180),
+    )
+    .await?;
+    run_checked(
+        CommandSpec::new(
+            Executable::Git,
+            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+        )
+        .cwd(checkout.path()),
+        "Checking out pinned template",
+        Duration::from_secs(60),
+    )
+    .await?;
+    let actual = run_checked(
+        CommandSpec::new(Executable::Git, ["rev-parse", "HEAD"]).cwd(checkout.path()),
+        "Verifying pinned template",
+        Duration::from_secs(15),
+    )
+    .await?;
+    if !actual.trim().eq_ignore_ascii_case(commit) {
+        return Err(AppError::Invalid(format!(
+            "Repository returned {} instead of pinned commit {commit}.",
+            actual.trim()
+        )));
     }
-
-    let parent = template_root
-        .parent()
-        .ok_or_else(|| AppError::Invalid("Invalid template cache path.".into()))?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".download-{}", Uuid::new_v4()));
-    std::fs::create_dir(&temporary)?;
-    let result: AppResult<()> = async {
-        run_checked(
-            CommandSpec::new(Executable::Git, ["init", "--quiet"]).cwd(&temporary),
-            "Initializing template cache",
-            Duration::from_secs(20),
-        )
-        .await?;
-        run_checked(
-            CommandSpec::new(Executable::Git, ["remote", "add", "origin", repository])
-                .cwd(&temporary),
-            "Configuring template source",
-            Duration::from_secs(20),
-        )
-        .await?;
-        run_checked(
-            CommandSpec::new(
-                Executable::Git,
-                ["fetch", "--quiet", "--depth", "1", "origin", commit],
-            )
-            .cwd(&temporary),
-            "Fetching pinned template",
-            Duration::from_secs(180),
-        )
-        .await?;
-        run_checked(
-            CommandSpec::new(
-                Executable::Git,
-                ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
-            )
-            .cwd(&temporary),
-            "Checking out pinned template",
-            Duration::from_secs(60),
-        )
-        .await?;
-        let actual = run_checked(
-            CommandSpec::new(Executable::Git, ["rev-parse", "HEAD"]).cwd(&temporary),
-            "Verifying pinned template",
-            Duration::from_secs(15),
-        )
-        .await?;
-        if !actual.trim().eq_ignore_ascii_case(commit) {
-            return Err(AppError::Invalid(format!(
-                "Repository returned {} instead of pinned commit {commit}.",
-                actual.trim()
-            )));
-        }
-        Ok(())
-    }
-    .await;
-    if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(&temporary);
-        return Err(error);
-    }
-    std::fs::rename(&temporary, &template_root)?;
-    Ok(template_root)
+    Ok(checkout)
 }
 
 fn ensure_destination(path: &str, allow_existing_project: bool) -> AppResult<PathBuf> {
@@ -346,19 +319,22 @@ pub async fn prepare(
     let destination = ensure_destination(&request.destination, existing_project)?;
 
     if !existing_project {
+        let mut temporary_checkout = None;
         let source = match request.source_mode.as_str() {
             "catalog" | "externalCatalog" => {
                 let entry = entry
                     .as_ref()
                     .ok_or_else(|| AppError::Invalid("Missing catalog entry.".into()))?;
-                let cached = cache_pinned_template(
+                let checkout = checkout_pinned_template(
                     cache_root,
                     &entry.repository,
                     &entry.commit,
                     &entry.id,
                 )
                 .await?;
-                template_path(&cached, entry)?
+                let source = template_path(checkout.path(), entry)?;
+                temporary_checkout = Some(checkout);
+                source
             }
             "localTemplate" => {
                 let source = request
@@ -396,11 +372,11 @@ pub async fn prepare(
                 {
                     return Err(AppError::Invalid("Invalid pinned GitHub revision.".into()));
                 }
-                let cached =
-                    cache_pinned_template(cache_root, repository, commit, &request.template_id)
+                let checkout =
+                    checkout_pinned_template(cache_root, repository, commit, &request.template_id)
                         .await?;
-                template_path(
-                    &cached,
+                let source = template_path(
+                    checkout.path(),
                     &crate::models::CatalogEntry {
                         id: request.template_id.clone(),
                         title: request.template_id.clone(),
@@ -415,7 +391,9 @@ pub async fn prepare(
                         source: Some("external".into()),
                         trusted: false,
                     },
-                )?
+                )?;
+                temporary_checkout = Some(checkout);
+                source
             }
             _ => {
                 return Err(AppError::Invalid(
@@ -447,6 +425,7 @@ pub async fn prepare(
             Duration::from_secs(180),
         )
         .await?;
+        drop(temporary_checkout);
     } else if !destination.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(
             "Existing project does not contain azure.yaml.".into(),
