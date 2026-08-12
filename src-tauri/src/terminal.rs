@@ -1,4 +1,5 @@
 use crate::{
+    command_runner::resolve_system_executable,
     deployment::validate_environment_name,
     error::{AppError, AppResult},
 };
@@ -29,8 +30,8 @@ fn providers(platform: &str, project: &Path) -> Vec<TerminalProvider> {
                 args: vec!["-d".into(), project.as_os_str().into()],
             },
             TerminalProvider {
-                program: "conhost.exe",
-                args: vec!["powershell.exe".into(), "-NoExit".into(), "-NoLogo".into()],
+                program: "powershell.exe",
+                args: vec!["-NoExit".into(), "-NoLogo".into()],
             },
         ],
         "macos" => vec![TerminalProvider {
@@ -67,14 +68,14 @@ fn providers(platform: &str, project: &Path) -> Vec<TerminalProvider> {
 }
 
 #[cfg(not(windows))]
-fn spawn(provider: &TerminalProvider, project: &Path) -> io::Result<()> {
-    let mut command = Command::new(provider.program);
+fn spawn(provider: &TerminalProvider, executable: &Path, project: &Path) -> io::Result<()> {
+    let mut command = Command::new(executable);
     command.args(&provider.args).current_dir(project);
     command.spawn().map(|_| ())
 }
 
 #[cfg(windows)]
-fn spawn(provider: &TerminalProvider, project: &Path) -> io::Result<()> {
+fn spawn(provider: &TerminalProvider, executable_path: &Path, project: &Path) -> io::Result<()> {
     use std::{os::windows::ffi::OsStrExt, ptr};
     use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
 
@@ -84,7 +85,7 @@ fn spawn(provider: &TerminalProvider, project: &Path) -> io::Result<()> {
             .chain(std::iter::once(0))
             .collect::<Vec<_>>()
     };
-    let executable = wide(std::ffi::OsStr::new(provider.program));
+    let executable = wide(executable_path.as_os_str());
     let parameter_text = if provider.program == "wt.exe" {
         format!("-d \"{}\"", project.display())
     } else {
@@ -139,7 +140,15 @@ pub fn open(project_path: &str, environment: Option<&str>) -> AppResult<Terminal
     let candidates = providers(platform, &canonical);
     let mut unavailable = Vec::new();
     for candidate in candidates {
-        match spawn(&candidate, &canonical) {
+        let executable = match resolve_system_executable(candidate.program) {
+            Ok(executable) => executable,
+            Err(AppError::MissingExecutable(_)) => {
+                unavailable.push(candidate.program);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        match spawn(&candidate, &executable, &canonical) {
             Ok(()) => {
                 let command = environment
                     .map(|value| format!("azd up --environment {value}"))
@@ -173,8 +182,8 @@ mod tests {
         let windows = providers("windows", project);
         assert_eq!(windows[0].program, "wt.exe");
         assert_eq!(windows[0].args[0], OsString::from("-d"));
-        assert_eq!(windows[1].program, "conhost.exe");
-        assert_eq!(windows[1].args[0], OsString::from("powershell.exe"));
+        assert_eq!(windows[1].program, "powershell.exe");
+        assert_eq!(windows[1].args[0], OsString::from("-NoExit"));
 
         let macos = providers("macos", project);
         assert_eq!(macos[0].program, "open");

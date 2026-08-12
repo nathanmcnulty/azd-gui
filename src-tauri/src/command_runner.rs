@@ -153,32 +153,39 @@ impl Executable {
     }
 
     fn resolve(self, environment: &[(String, String)]) -> AppResult<PathBuf> {
-        let command = self.command();
-        let path = environment
-            .iter()
-            .rev()
-            .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
-            .map(|(_, value)| OsString::from(value))
-            .or_else(|| std::env::var_os("PATH"))
-            .unwrap_or_default();
-        let extensions = executable_extensions(command, environment);
-        for directory in std::env::split_paths(&path) {
-            let directory = if directory.is_absolute() {
-                directory
-            } else if let Ok(current) = std::env::current_dir() {
-                current.join(directory)
-            } else {
-                continue;
-            };
-            for extension in &extensions {
-                let candidate = directory.join(format!("{command}{}", extension.to_string_lossy()));
-                if is_executable_file(&candidate) {
-                    return candidate.canonicalize().map_err(AppError::Io);
-                }
+        resolve_executable(self.command(), environment)
+    }
+}
+
+pub(crate) fn resolve_system_executable(command: &str) -> AppResult<PathBuf> {
+    resolve_executable(command, &[])
+}
+
+fn resolve_executable(command: &str, environment: &[(String, String)]) -> AppResult<PathBuf> {
+    let path = environment
+        .iter()
+        .rev()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))
+        .map(|(_, value)| OsString::from(value))
+        .or_else(|| std::env::var_os("PATH"))
+        .unwrap_or_default();
+    let extensions = executable_extensions(command, environment);
+    for directory in std::env::split_paths(&path) {
+        let directory = if directory.is_absolute() {
+            directory
+        } else if let Ok(current) = std::env::current_dir() {
+            current.join(directory)
+        } else {
+            continue;
+        };
+        for extension in &extensions {
+            let candidate = directory.join(format!("{command}{}", extension.to_string_lossy()));
+            if is_executable_file(&candidate) {
+                return candidate.canonicalize().map_err(AppError::Io);
             }
         }
-        Err(AppError::MissingExecutable(command.into()))
     }
+    Err(AppError::MissingExecutable(command.into()))
 }
 
 #[cfg(windows)]
