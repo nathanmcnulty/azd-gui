@@ -23,6 +23,7 @@
     refreshConnections,
     refreshTools,
     prepareDeployment,
+    requestExecutionApproval,
     startAzdOperation,
     login,
     previewExternalCatalog,
@@ -951,7 +952,16 @@
       const operationId = await startAzdOperation(
         "preview",
         projectPath,
-        String(wizardValues.environmentName || "dev")
+        String(wizardValues.environmentName || "dev"),
+        (
+          await requestExecutionApproval({
+            action: "preview",
+            projectPath,
+            environment: String(wizardValues.environmentName || "dev"),
+            templateId: selectedEntry.id,
+            revision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit
+          })
+        ).token
       );
       preflightOperationId = operationId;
       operationProjectPaths.set(operationId, projectPath);
@@ -974,10 +984,17 @@
       addSystemLog("Materializing the pinned template and applying environment values.", "info");
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
       const environmentValues = environmentValuesForPlan(wizardPlan, wizardValues);
+      const approval = await requestExecutionApproval({
+        action: "prepare",
+        projectPath,
+        environment: String(wizardValues.environmentName || "dev"),
+        templateId: selectedEntry.id,
+        revision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit
+      });
       const project = await prepareDeployment({
         templateId: selectedEntry.id,
         sourceMode: String(wizardValues.sourceMode ?? "catalog"),
-        sourceTrustAccepted: Boolean(selectedEntry.trusted || sourceTrustAccepted),
+        executionApprovalToken: approval.token,
         sourcePath: String(wizardValues.sourcePath || "") || undefined,
         sourceRevision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit,
         destination: projectPath,
@@ -1019,7 +1036,16 @@
       const operationId = await startAzdOperation(
         action,
         projectPath,
-        String(wizardValues.environmentName || "dev")
+        String(wizardValues.environmentName || "dev"),
+        (
+          await requestExecutionApproval({
+            action: action as "up" | "provision" | "deploy",
+            projectPath,
+            environment: String(wizardValues.environmentName || "dev"),
+            templateId: selectedEntry.id,
+            revision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit
+          })
+        ).token
       );
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
@@ -1531,14 +1557,6 @@
       outputOpen = true;
       return;
     }
-    if (
-      action === "down" &&
-      !window.confirm(
-        `Delete Azure resources for ${selectedProject.name}/${selectedProject.environment ?? "current environment"}?`
-      )
-    ) {
-      return;
-    }
     outputOpen = true;
     operationState = "running";
     lastOperationResult = null;
@@ -1546,7 +1564,21 @@
       projectPreview = null;
     }
     try {
-      const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
+      const approval = ["preview", "up", "provision", "deploy", "down"].includes(action)
+        ? await requestExecutionApproval({
+            action: action as "preview" | "up" | "provision" | "deploy" | "down",
+            projectPath: selectedProject.path,
+            environment: selectedProject.environment ?? "dev",
+            templateId: selectedProject.templateId ?? "",
+            revision: selectedProject.revision
+          })
+        : undefined;
+      const operationId = await startAzdOperation(
+        action,
+        approval?.projectPath ?? selectedProject.path,
+        selectedProject.environment,
+        approval?.token
+      );
       if (action === "up") projectDeploymentResult = null;
       operationProjectPaths.set(operationId, selectedProject.path);
       operationEnvironments.set(operationId, selectedProject.environment);

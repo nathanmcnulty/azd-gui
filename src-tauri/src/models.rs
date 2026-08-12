@@ -484,13 +484,30 @@ pub struct CatalogSource {
     pub accepted_catalog: Option<Catalog>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionApprovalRequest {
+    pub action: String,
+    pub project_path: String,
+    pub environment: String,
+    pub template_id: String,
+    #[serde(default)]
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionApprovalGrant {
+    pub token: String,
+    pub project_path: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareDeploymentRequest {
     pub template_id: String,
     pub source_mode: String,
-    #[serde(default)]
-    pub source_trust_accepted: bool,
+    pub execution_approval_token: String,
     #[serde(default)]
     pub source_path: Option<String>,
     #[serde(default)]

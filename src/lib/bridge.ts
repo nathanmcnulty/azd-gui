@@ -18,6 +18,8 @@ import type {
   ConnectionStatus,
   ConnectionTarget,
   ExternalCatalogPreview,
+  ExecutionApprovalGrant,
+  ExecutionApprovalRequest,
   ExternalTerminalLaunch,
   OperationEvent,
   PermissionCheckRequest,
@@ -268,10 +270,18 @@ export async function login(
 export async function startAzdOperation(
   action: string,
   projectPath: string,
-  environment?: string
+  environment?: string,
+  executionApprovalToken?: string
 ): Promise<string> {
   if (!isTauri()) return `mock-${action}-${Date.now()}`;
-  return invoke<string>("start_azd_operation", { action, projectPath, environment });
+  return invoke<string>("start_azd_operation", { action, projectPath, environment, executionApprovalToken });
+}
+
+export async function requestExecutionApproval(
+  request: ExecutionApprovalRequest
+): Promise<ExecutionApprovalGrant> {
+  if (!isTauri()) return { token: `mock-approval-${Date.now()}`, projectPath: request.projectPath };
+  return invoke<ExecutionApprovalGrant>("request_execution_approval", { request });
 }
 
 export async function openExternalTerminal(

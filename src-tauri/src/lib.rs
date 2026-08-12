@@ -5,6 +5,7 @@ mod command_runner;
 mod connections;
 mod deployment;
 mod error;
+mod execution_approval;
 mod models;
 mod permissions;
 mod persistence;
@@ -17,10 +18,10 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
-        ConnectionTarget, ExternalCatalogPreview, OperationEvent, PermissionCheckRequest,
-        PermissionCheckResult, PrepareDeploymentRequest, ProjectEnvironment,
-        ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary, TemplateInspection,
-        TemplateManifest, ToolInstallPlan, ToolStatus,
+        ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest, ExternalCatalogPreview,
+        OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
+        ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
+        TemplateInspection, TemplateManifest, ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -38,6 +39,7 @@ pub struct AppState {
     template_cache: PathBuf,
     inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
     catalog_reviews: CatalogReviews,
+    execution_approvals: execution_approval::ExecutionApprovals,
 }
 
 #[derive(Clone)]
@@ -243,6 +245,7 @@ fn start_azd_operation(
     action: String,
     project_path: String,
     environment: Option<String>,
+    execution_approval_token: Option<String>,
 ) -> AppResult<String> {
     let canonical = std::fs::canonicalize(&project_path)?;
     if !canonical.join("azure.yaml").is_file() {
@@ -250,6 +253,32 @@ fn start_azd_operation(
             "{} does not contain azure.yaml.",
             canonical.display()
         )));
+    }
+    if matches!(
+        action.as_str(),
+        "preview" | "up" | "provision" | "deploy" | "down"
+    ) {
+        let token = execution_approval_token
+            .as_deref()
+            .ok_or_else(|| AppError::Invalid("A native execution approval is required.".into()))?;
+        let project = state
+            .database
+            .projects()?
+            .into_iter()
+            .find(|project| project.path == canonical.display().to_string());
+        state.execution_approvals.consume(
+            token,
+            ExecutionApprovalRequest {
+                action: action.clone(),
+                project_path: canonical.display().to_string(),
+                environment: environment.clone().unwrap_or_else(|| "dev".into()),
+                template_id: project
+                    .as_ref()
+                    .and_then(|project| project.template_id.clone())
+                    .unwrap_or_default(),
+                revision: project.and_then(|project| project.revision),
+            },
+        )?;
     }
     let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
     spawn_operation(
@@ -322,7 +351,64 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
+    state.execution_approvals.consume(
+        &request.execution_approval_token,
+        ExecutionApprovalRequest {
+            action: "prepare".into(),
+            project_path: request.destination.clone(),
+            environment: request.environment.clone(),
+            template_id: request.template_id.clone(),
+            revision: request.source_revision.clone(),
+        },
+    )?;
     deployment::prepare(request, &state.template_cache, &state.database).await
+}
+
+#[tauri::command]
+fn request_execution_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: ExecutionApprovalRequest,
+) -> AppResult<ExecutionApprovalGrant> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let request = execution_approval::ExecutionApprovals::validate_request(request)?;
+    let destructive = request.action == "down";
+    let action = if destructive {
+        "delete the environment's Azure resources with azd down --force"
+    } else if request.action == "prepare" {
+        "materialize the template and run azd init"
+    } else {
+        request.action.as_str()
+    };
+    let revision = request
+        .revision
+        .as_deref()
+        .map(|revision| format!("\nRevision: {revision}"))
+        .unwrap_or_default();
+    let approved = app
+        .dialog()
+        .message(format!(
+            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
+            request.project_path, request.environment, request.template_id
+        ))
+        .title(if destructive {
+            "Confirm Azure resource deletion"
+        } else {
+            "Confirm template code execution"
+        })
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            if destructive { "Delete resources" } else { "Approve once" }.into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if !approved {
+        return Err(AppError::Invalid(
+            "Execution approval was cancelled.".into(),
+        ));
+    }
+    state.execution_approvals.issue(request)
 }
 
 #[tauri::command]
@@ -690,6 +776,7 @@ pub fn run() {
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
                 catalog_reviews: CatalogReviews::default(),
+                execution_approvals: execution_approval::ExecutionApprovals::default(),
             });
             Ok(())
         })
@@ -711,6 +798,7 @@ pub fn run() {
             save_catalog_source,
             remove_catalog_source,
             prepare_deployment,
+            request_execution_approval,
             get_project_state,
             list_project_environments,
             create_project_environment,
@@ -826,6 +914,7 @@ mod draft_tests {
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             catalog_reviews: CatalogReviews::default(),
+            execution_approvals: crate::execution_approval::ExecutionApprovals::default(),
         };
 
         let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();

@@ -329,7 +329,7 @@ export interface BootstrapData {
 export interface PrepareDeploymentRequest {
   templateId: string;
   sourceMode: string;
-  sourceTrustAccepted: boolean;
+  executionApprovalToken: string;
   sourcePath?: string;
   sourceRevision?: string;
   destination: string;
@@ -339,6 +339,19 @@ export interface PrepareDeploymentRequest {
   location: string;
   resourceGroup?: string;
   environmentValues: Record<string, string | boolean | string[] | undefined>;
+}
+
+export interface ExecutionApprovalRequest {
+  action: "prepare" | "preview" | "up" | "provision" | "deploy" | "down";
+  projectPath: string;
+  environment: string;
+  templateId: string;
+  revision?: string;
+}
+
+export interface ExecutionApprovalGrant {
+  token: string;
+  projectPath: string;
 }
 
 export interface TemplateInspection {

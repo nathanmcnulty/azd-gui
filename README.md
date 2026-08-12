@@ -91,6 +91,7 @@ Inference never creates executable commands. Manifests can declare that a pinned
 - The Svelte renderer has no shell capability.
 - Rust accepts only registered executables and fixed operation/provider IDs.
 - Process arguments are arrays, never renderer-supplied shell strings.
+- Template execution requires a one-use native approval bound to the exact action and project context; resource removal has a separate destructive confirmation.
 - Catalog repositories require HTTPS and pinned commits are reverified after checkout.
 - Tokens, bearer headers, JWTs, and secret-like environment assignments are redacted from operation events.
 - Sensitive wizard values are held only for the active deployment and are excluded from application drafts and logs. Rust independently whitelists typed draft fields, reapplies manifest sensitivity, and scrubs older drafts when they are loaded.
