@@ -51,6 +51,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install pinned Rust dependency auditor
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit locked dependencies
+        run: npm run audit:dependencies
+
       - name: Check frontend and run tests
         run: npm run check && npm test
 
