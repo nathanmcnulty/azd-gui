@@ -57,7 +57,7 @@ The Windows build uses the installed WebView2 runtime and does not install a fix
 
 ## Signed Windows releases
 
-The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It rejects disagreement between the tag, npm, Cargo, and Tauri versions before validating the frontend and native code once on Windows. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, signs the installer, and emits SHA-256 checksums. Tagged runs publish the verified files to a durable GitHub Release; manual runs retain them as a 14-day workflow artifact only.
+The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It rejects disagreement between the tag, npm, Cargo, and Tauri versions before validating the frontend and native code once on Windows. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, signs the installer, and emits SHA-256 checksums. Tagged runs stage the verified files in a draft GitHub Release; the draft becomes public only after clean-VM beta acceptance. Manual runs retain them as a 14-day workflow artifact only.
 
 The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub Environment. The signing endpoint, account name, and certificate profile are non-secret workflow configuration. Security-sensitive Azure actions are pinned to immutable commits.
 
@@ -71,7 +71,7 @@ npm run audit:dependencies
 Local validation is the normal development path. The dependency audit requires `cargo-audit` 0.22.2 (`cargo install cargo-audit --version 0.22.2 --locked`); the signed release installs that pinned version and runs both npm and RustSec audits before building. Pull requests and branch pushes do not start GitHub Actions. The `Manual validation` workflow must be explicitly dispatched for one selected platform when hosted validation is genuinely necessary; validating all three platforms requires three intentional dispatches. Tagged releases run the Windows validation, audit, build, and signing workflow once. Live Azure authentication and deployment checks remain manual because automation must not contain interactive user credentials.
 
 See [docs/actions-policy.md](docs/actions-policy.md) for the hosted-runner budget policy and release checklist.
-Use [docs/windows-alpha-acceptance.md](docs/windows-alpha-acceptance.md) for local packaging and smoke-test acceptance.
+Use [docs/windows-beta-acceptance.md](docs/windows-beta-acceptance.md) for the required clean-VM release acceptance and publication gate.
 
 ## Catalog contracts
 
