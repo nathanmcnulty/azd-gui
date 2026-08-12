@@ -36,7 +36,7 @@ When supported by the installed azd version, an explicit tool refresh also consu
 5. Review the exact values and explicitly approve pinned template code execution for the current session.
 6. Run manifest-requested registered permission checks and stop on required failures.
 7. Resolve a remote source to a full commit and cache that exact checkout.
-8. Run `azd init` for new projects or register an environment for an existing project, then apply approved values with `azd env set`.
+8. Run `azd init` for new projects or register an environment for an existing project, then apply approved values through a temporary `azd env set --file` input. Ordinary and sensitive environment configuration use the same transport so values are not exposed in process arguments.
 9. Run `azd provision --preview --no-prompt`.
 10. Run `azd up --no-prompt`, or hand off a manifest-declared interactive workflow to a validated external terminal, then refresh project state.
 

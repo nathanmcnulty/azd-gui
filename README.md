@@ -94,6 +94,7 @@ Inference never creates executable commands. Manifests can declare that a pinned
 - Template execution requires a one-use native approval bound to the exact action and project context; resource removal has a separate destructive confirmation.
 - Catalog repositories require HTTPS and pinned commits are reverified after checkout.
 - Tokens, bearer headers, JWTs, and secret-like environment assignments are redacted from operation events.
+- Environment configuration is passed to `azd env set --file` through a temporary file instead of process arguments; this transport is used for ordinary values as well as sensitive ones.
 - Sensitive wizard values are held only for the active deployment and are excluded from application drafts and logs. Rust independently whitelists typed draft fields, reapplies manifest sensitivity, and scrubs older drafts when they are loaded.
 - Each Azure tool owns its own credential cache; the app reads status but does not capture tokens.
 - The Tauri content security policy blocks remote scripts, objects, and frames.

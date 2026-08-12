@@ -462,26 +462,8 @@ pub async fn prepare(
         .await?;
     }
 
-    for (environment_variable, value) in environment_assignments {
-        run_checked(
-            CommandSpec::new(
-                Executable::Azd,
-                [
-                    "env",
-                    "set",
-                    &environment_variable,
-                    &value,
-                    "--environment",
-                    &request.environment,
-                    "--no-prompt",
-                ],
-            )
-            .cwd(&destination),
-            "Applying environment value",
-            Duration::from_secs(30),
-        )
+    azd::environment_set_values(&destination, &request.environment, &environment_assignments)
         .await?;
-    }
 
     let name = destination
         .file_name()
