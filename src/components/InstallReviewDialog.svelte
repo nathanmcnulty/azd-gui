@@ -44,6 +44,7 @@
     <div><dt>Provider</dt><dd>{plan.provider}</dd></div>
     <div><dt>Source</dt><dd>{plan.source}</dd></div>
     <div><dt>Scope</dt><dd>{plan.scope}</dd></div>
+    <div><dt>Exact version</dt><dd>{plan.exactVersion}</dd></div>
     <div class="full"><dt>Destination</dt><dd>{plan.destination}</dd></div>
   </dl>
   <div class="install-command">

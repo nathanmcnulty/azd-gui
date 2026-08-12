@@ -148,8 +148,15 @@ pub struct ToolInstallPlan {
     pub source: String,
     pub scope: String,
     pub destination: String,
+    pub exact_version: String,
     pub command: String,
     pub documentation_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInstallApprovalGrant {
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

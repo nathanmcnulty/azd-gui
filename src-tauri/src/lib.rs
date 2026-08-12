@@ -21,7 +21,8 @@ use crate::{
         ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest, ExternalCatalogPreview,
         OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
         ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        TemplateInspection, TemplateManifest, ToolInstallPlan, ToolStatus,
+        TemplateInspection, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan,
+        ToolStatus,
     },
     persistence::Database,
 };
@@ -40,6 +41,7 @@ pub struct AppState {
     inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
     catalog_reviews: CatalogReviews,
     execution_approvals: execution_approval::ExecutionApprovals,
+    tool_install_approvals: tools::ToolInstallApprovals,
 }
 
 #[derive(Clone)]
@@ -174,21 +176,63 @@ async fn check_tools() -> AppResult<Vec<ToolStatus>> {
 }
 
 #[tauri::command]
-fn preview_tool_install(id: String) -> AppResult<ToolInstallPlan> {
-    tools::install_plan(&id).ok_or_else(|| {
-        AppError::Invalid(format!(
-            "{id} has no vetted non-elevated installation strategy."
-        ))
-    })
+async fn preview_tool_install(id: String) -> AppResult<ToolInstallPlan> {
+    tools::resolve_install_plan(&id).await
 }
 
 #[tauri::command]
-fn install_tool(app: AppHandle, state: State<'_, AppState>, id: String) -> AppResult<String> {
-    let spec = tools::install_spec(&id).ok_or_else(|| {
-        AppError::Invalid(format!(
-            "{id} has no vetted non-elevated installation strategy."
+async fn request_tool_install_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    exact_version: String,
+) -> AppResult<ToolInstallApprovalGrant> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let plan = tools::resolve_install_plan(&id).await?;
+    if plan.exact_version != exact_version {
+        return Err(AppError::Invalid(
+            "The available module version changed. Review the installation again.".into(),
+        ));
+    }
+    let approved = app
+        .dialog()
+        .message(format!(
+            "Approve once to install {} version {} from {}.\n\nScope: {}\nDestination: {}\n\nExact command:\n{}",
+            plan.tool_name,
+            plan.exact_version,
+            plan.source,
+            plan.scope,
+            plan.destination,
+            plan.command
         ))
-    })?;
+        .title("Confirm exact PowerShell module installation")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install exact version".into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if !approved {
+        return Err(AppError::Invalid(
+            "Tool installation approval was cancelled.".into(),
+        ));
+    }
+    state.tool_install_approvals.issue(&plan)
+}
+
+#[tauri::command]
+fn install_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    exact_version: String,
+    approval_token: String,
+) -> AppResult<String> {
+    state
+        .tool_install_approvals
+        .consume(&approval_token, &id, &exact_version)?;
+    let spec = tools::install_spec(&id, &exact_version)?;
     spawn_operation(
         app,
         state.operations.clone(),
@@ -777,6 +821,7 @@ pub fn run() {
                 inspected_manifests: Mutex::new(HashMap::new()),
                 catalog_reviews: CatalogReviews::default(),
                 execution_approvals: execution_approval::ExecutionApprovals::default(),
+                tool_install_approvals: tools::ToolInstallApprovals::default(),
             });
             Ok(())
         })
@@ -786,6 +831,7 @@ pub fn run() {
             inspect_github_template,
             check_tools,
             preview_tool_install,
+            request_tool_install_approval,
             install_tool,
             check_connections,
             discover_azure_scope,
@@ -915,6 +961,7 @@ mod draft_tests {
             inspected_manifests: Mutex::new(HashMap::new()),
             catalog_reviews: CatalogReviews::default(),
             execution_approvals: crate::execution_approval::ExecutionApprovals::default(),
+            tool_install_approvals: crate::tools::ToolInstallApprovals::default(),
         };
 
         let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();

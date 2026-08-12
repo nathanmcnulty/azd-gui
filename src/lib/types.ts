@@ -78,8 +78,13 @@ export interface ToolInstallPlan {
   source: string;
   scope: string;
   destination: string;
+  exactVersion: string;
   command: string;
   documentationUrl: string;
+}
+
+export interface ToolInstallApprovalGrant {
+  token: string;
 }
 
 export interface ConnectionRequirement {

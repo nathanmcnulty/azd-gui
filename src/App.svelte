@@ -20,6 +20,7 @@
     openExternalTerminal,
     openExternalUrl,
     previewToolInstall,
+    requestToolInstallApproval,
     refreshTools,
     login,
     previewExternalCatalog,
@@ -729,7 +730,8 @@
     installingToolId = plan.id;
     addSystemLog(`Approved: ${plan.action} from ${plan.source} for ${plan.scope.toLowerCase()}.`, "info");
     try {
-      const operationId = await installTool(plan.id);
+      const approval = await requestToolInstallApproval(plan.id, plan.exactVersion);
+      const operationId = await installTool(plan.id, plan.exactVersion, approval.token);
       outputOpen = true;
       if (data.isNative) {
         await waitForOperation(operationId);
