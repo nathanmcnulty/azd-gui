@@ -25,6 +25,14 @@ pub struct ExecutionApprovals {
 }
 
 impl ExecutionApprovals {
+    pub fn clear(&self) -> AppResult<()> {
+        self.pending
+            .lock()
+            .map_err(|_| AppError::Invalid("Execution approval cache is unavailable.".into()))?
+            .clear();
+        Ok(())
+    }
+
     pub fn validate_request(
         mut request: ExecutionApprovalRequest,
     ) -> AppResult<ExecutionApprovalRequest> {

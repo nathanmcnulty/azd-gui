@@ -81,6 +81,14 @@ export async function saveAppSettings(settings: AppSettings): Promise<void> {
   await invoke("save_app_settings", { settings });
 }
 
+export async function clearLocalAppData(): Promise<boolean> {
+  if (!isTauri()) {
+    window.localStorage.removeItem(previewSettingsKey);
+    return true;
+  }
+  return invoke<boolean>("clear_local_app_data");
+}
+
 export async function chooseFolder(): Promise<string | null> {
   if (!isTauri()) return "C:\\GitHub\\sample-azd-project";
   const selected = await open({ directory: true, multiple: false, title: "Select an azd project or template" });

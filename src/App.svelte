@@ -10,6 +10,7 @@
   import {
     bootstrap,
     cancelOperation,
+    clearLocalAppData,
     chooseFolder,
     createProjectEnvironment,
     discoverAzureScope,
@@ -181,6 +182,9 @@
   let catalogPreview: ExternalCatalogPreview | null = null;
   let catalogSourceError = "";
   let pendingCatalogRemovalId: string | null = null;
+  let pendingLocalDataClear = false;
+  let localDataClearing = false;
+  let localDataClearError = "";
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let azureDiscovery: AzureDiscovery | null = null;
   let azureDiscoveryLoading = false;
@@ -1633,6 +1637,20 @@
     }
   }
 
+  async function confirmClearLocalData() {
+    localDataClearing = true;
+    localDataClearError = "";
+    try {
+      const cleared = await clearLocalAppData();
+      if (cleared) window.location.reload();
+      else pendingLocalDataClear = false;
+    } catch (error) {
+      localDataClearError = error instanceof Error ? error.message : String(error);
+    } finally {
+      localDataClearing = false;
+    }
+  }
+
   const commands = [
     { label: "Browse catalog", action: () => navigate("catalog") },
     { label: "Open projects", action: () => navigate("projects") },
@@ -2674,6 +2692,21 @@
           <h2>Privacy</h2>
           <div class="setting-row"><div><strong>Telemetry</strong><span>No usage or deployment telemetry is collected.</span></div><StatusPill tone="neutral" label="Off" /></div>
           <div class="setting-row"><div><strong>Secret storage</strong><span>Tokens and sensitive wizard fields are excluded from app storage and logs.</span></div><StatusPill tone="success" label="Protected" /></div>
+        </div>
+        <div class="settings-group">
+          <h2>Local application data</h2>
+          <div class="setting-row">
+            <div><strong>Clear saved app state</strong><span>Removes project references, history, drafts, catalog trust, settings, and the app cache. Project folders and CLI credentials remain.</span></div>
+            <div class="catalog-source-actions">
+              {#if pendingLocalDataClear}
+                <button class="secondary compact" disabled={localDataClearing} on:click={() => (pendingLocalDataClear = false)}>Cancel</button>
+                <button class="danger compact" disabled={localDataClearing || operationState === "running"} on:click={confirmClearLocalData}>{localDataClearing ? "Clearing…" : "Confirm clear"}</button>
+              {:else}
+                <button class="danger compact" disabled={operationState === "running"} on:click={() => { pendingLocalDataClear = true; localDataClearError = ""; }}>Clear local data</button>
+              {/if}
+            </div>
+          </div>
+          {#if localDataClearError}<p class="inline-error" role="alert">{localDataClearError}</p>{/if}
         </div>
       </section>
     {/if}

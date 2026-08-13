@@ -141,6 +141,58 @@ fn save_app_settings(state: State<'_, AppState>, settings: AppSettings) -> AppRe
 }
 
 #[tauri::command]
+async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> AppResult<bool> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !state.operations.is_idle().await {
+        return Err(AppError::Invalid(
+            "Wait for the active command to finish or cancel it before clearing local data.".into(),
+        ));
+    }
+    let approved = app
+        .dialog()
+        .message(
+            "This permanently clears Azure Deployment Studio project references, operation history, wizard drafts, catalog trust decisions, and settings.\n\nProject folders and credential caches owned by azd, Azure CLI, and PowerShell are not deleted.",
+        )
+        .title("Clear local application data?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Clear local data".into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if !approved {
+        return Ok(false);
+    }
+    if !state.operations.is_idle().await {
+        return Err(AppError::Invalid(
+            "A command started while confirmation was open. Cancel it before clearing local data."
+                .into(),
+        ));
+    }
+
+    if state.template_cache.exists() {
+        std::fs::remove_dir_all(&state.template_cache)?;
+    }
+    std::fs::create_dir_all(&state.template_cache)?;
+    state.database.clear_local_data()?;
+    state
+        .inspected_manifests
+        .lock()
+        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
+        .clear();
+    state
+        .catalog_reviews
+        .pending
+        .lock()
+        .map_err(|_| AppError::Invalid("Catalog review cache is unavailable.".into()))?
+        .clear();
+    state.execution_approvals.clear()?;
+    state.tool_install_approvals.clear()?;
+    Ok(true)
+}
+
+#[tauri::command]
 fn inspect_local_template(
     state: State<'_, AppState>,
     path: String,
@@ -865,7 +917,8 @@ pub fn run() {
             get_operation_history,
             save_wizard_draft,
             load_wizard_draft,
-            save_app_settings
+            save_app_settings,
+            clear_local_app_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running Azure Deployment Studio");

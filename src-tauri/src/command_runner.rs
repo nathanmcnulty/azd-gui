@@ -348,6 +348,10 @@ impl OperationPersistence {
 }
 
 impl OperationManager {
+    pub async fn is_idle(&self) -> bool {
+        self.cancellations.lock().await.is_empty()
+    }
+
     pub async fn cancel(&self, operation_id: &str) -> bool {
         self.cancellations
             .lock()

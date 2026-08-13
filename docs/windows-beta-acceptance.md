@@ -54,7 +54,7 @@ Do not perform this section without explicit authorization for the tenant, subsc
 ## Upgrade, uninstall, and publish
 
 - From a fresh snapshot, install the previous public signed version, create only non-sensitive local state, then install the candidate. Confirm the app starts and retained state remains usable.
-- Uninstall the candidate. Record whether application data is retained, confirm installed binaries are removed, and manually remove retained test data before discarding the VM.
+- Use **Settings → Clear local data** and confirm project references, history, drafts, catalog trust, preferences, and cached templates are removed while project folders and external CLI credentials remain. Then uninstall the candidate, confirm installed binaries are removed, and discard the VM or manually remove the intentionally retained test folders and credentials.
 - Attach the artifact evidence and completed checklist to the private release record. Document failures; never work around a failed signature, checksum, version, bootstrap, deployment, cleanup, upgrade, or uninstall check.
 - Publish the draft only after every required item passes: `gh release edit v<version> --draft=false`.
 - Preserve the VM snapshot and evidence until the beta has been available long enough to investigate installation reports.

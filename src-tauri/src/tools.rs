@@ -27,6 +27,16 @@ pub struct ToolInstallApprovals {
 }
 
 impl ToolInstallApprovals {
+    pub fn clear(&self) -> AppResult<()> {
+        self.pending
+            .lock()
+            .map_err(|_| {
+                AppError::Invalid("Tool installation approval cache is unavailable.".into())
+            })?
+            .clear();
+        Ok(())
+    }
+
     pub fn issue(&self, plan: &ToolInstallPlan) -> AppResult<ToolInstallApprovalGrant> {
         validate_module_version(&plan.exact_version)?;
         let token = Uuid::new_v4().to_string();

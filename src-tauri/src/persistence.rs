@@ -351,6 +351,24 @@ impl Database {
         Ok(())
     }
 
+    pub fn clear_local_data(&self) -> AppResult<()> {
+        let mut connection = self.lock()?;
+        connection.pragma_update(None, "secure_delete", "ON")?;
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "
+            DELETE FROM operation_history;
+            DELETE FROM projects;
+            DELETE FROM catalog_sources;
+            DELETE FROM wizard_drafts;
+            DELETE FROM app_settings;
+            ",
+        )?;
+        transaction.commit()?;
+        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
+        Ok(())
+    }
+
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
         if ![
             "up",
@@ -737,5 +755,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn clearing_local_data_preserves_user_project_folders() {
+        let directory = tempdir().unwrap();
+        let project_path = directory.path().join("project");
+        std::fs::create_dir(&project_path).unwrap();
+        std::fs::write(project_path.join("azure.yaml"), "name: sample").unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        database
+            .upsert_project(&ProjectSummary {
+                id: "sample".into(),
+                name: "Sample".into(),
+                path: project_path.display().to_string(),
+                environment: Some("dev".into()),
+                template_id: Some("sample".into()),
+                revision: None,
+                last_operation: None,
+                state: "ready".into(),
+            })
+            .unwrap();
+        database
+            .save_draft("sample", &serde_json::json!({"location": "westus2"}))
+            .unwrap();
+        database
+            .save_app_settings(&AppSettings {
+                theme: ThemePreference::Dark,
+                navigation_expanded: false,
+            })
+            .unwrap();
+
+        database.clear_local_data().unwrap();
+
+        assert!(database.projects().unwrap().is_empty());
+        assert!(database.load_draft("sample").unwrap().is_none());
+        assert_eq!(database.app_settings().unwrap(), AppSettings::default());
+        assert!(project_path.join("azure.yaml").is_file());
     }
 }
