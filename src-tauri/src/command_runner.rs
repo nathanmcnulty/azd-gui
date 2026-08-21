@@ -375,7 +375,7 @@ async fn read_bounded_output(
     limit: usize,
 ) -> std::io::Result<Vec<u8>> {
     let mut captured = Vec::with_capacity(limit.min(64 * 1024));
-    let mut chunk = [0_u8; 8 * 1024];
+    let mut chunk = vec![0_u8; 8 * 1024];
     let mut truncated = false;
     loop {
         let count = reader.read(&mut chunk).await?;
@@ -482,7 +482,7 @@ async fn stream_output(
     level: &str,
     progress: Option<&AtomicU8>,
 ) {
-    let mut chunk = [0_u8; 8 * 1024];
+    let mut chunk = vec![0_u8; 8 * 1024];
     let mut lines = BoundedLineBuffer::default();
     loop {
         let count = match reader.read(&mut chunk).await {
@@ -924,6 +924,17 @@ mod tests {
 
         assert_eq!(output.len(), 64);
         assert!(String::from_utf8_lossy(&output).ends_with(OUTPUT_TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn bounded_capture_future_keeps_its_buffer_off_stack() {
+        let future = read_bounded_output(tokio::io::empty(), 64);
+
+        assert!(
+            std::mem::size_of_val(&future) < 1024,
+            "bounded capture future is too large: {} bytes",
+            std::mem::size_of_val(&future)
+        );
     }
 
     #[test]
