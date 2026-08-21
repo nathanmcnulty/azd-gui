@@ -1,6 +1,7 @@
 {
   "$schema": "../../schemas/azd-gui.schema.json",
   "schemaVersion": "1.0",
+  "requiresInteractiveTerminal": true,
   "minimumAzdVersion": "1.23.5",
   "prerequisites": [
     {
