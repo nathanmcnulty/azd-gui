@@ -9,6 +9,7 @@ Run the complete validation suite locally before requesting review:
 ```powershell
 npm ci
 npm run verify
+npm run audit:dependencies
 ```
 
 `npm run verify` performs Svelte and TypeScript checks, frontend tests, the production frontend build, Rust formatting, Clippy with warnings denied, and Rust tests.
@@ -21,15 +22,20 @@ Manual validation runs are capped at 45 minutes and duplicate runs for the same 
 
 Creating a `v*` tag is the only automatic Actions trigger in the repository. It starts one Windows job that:
 
-1. Runs frontend checks and tests.
-2. Runs Rust formatting, Clippy, and tests.
-3. Builds the portable executable.
-4. Authenticates to Azure using GitHub OIDC after the build succeeds.
-5. Signs the executable, creates and signs the NSIS installer, verifies both signatures, and uploads them for 14 days.
+1. Audits the npm and Cargo lockfiles for known vulnerabilities using pinned `cargo-audit` 0.22.2.
+2. Runs frontend checks and tests.
+3. Runs Rust formatting, Clippy, and tests.
+4. Builds the portable executable.
+5. Authenticates to Azure using GitHub OIDC after the build succeeds.
+6. Signs the executable, creates and signs the NSIS installer, and verifies both signatures.
+7. Generates SHA-256 checksums and uploads the files as a 14-day workflow artifact.
+8. For an actual `v*` tag, stages the same verified files in a draft GitHub Release.
 
 The release workflow can be dispatched manually only after selecting its explicit cost and signing confirmation. It is capped at 45 minutes, and a duplicate run for the same ref cancels the older run.
 
-macOS and Linux packaging remain local/manual until those release artifacts are actively supported. Do not add them to the tagged release workflow merely to prove that compilation is possible.
+The draft is a publication boundary, not a finished release. A maintainer must complete [Windows beta acceptance](windows-beta-acceptance.md), retain its evidence, and explicitly publish the draft. Failed or incomplete acceptance leaves the release private.
+
+The supported beta release target is Windows 10/11 on x64. macOS and Linux packaging remain experimental and local/manual until those release artifacts have dedicated packaging, signing, and acceptance gates. Do not add them to the tagged release workflow merely to prove that compilation is possible.
 
 ## Repository settings
 

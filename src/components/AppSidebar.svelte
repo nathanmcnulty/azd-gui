@@ -83,6 +83,7 @@
   {/if}
   <div class="sidebar-footer">
     <div class="sidebar-versions" aria-hidden={!expanded}>
+      <span>Windows beta</span>
       <span>azd {azdVersion}</span>
       <span>App {appVersion}</span>
     </div>

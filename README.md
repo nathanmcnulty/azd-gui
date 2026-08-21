@@ -1,10 +1,12 @@
 # Azure Deployment Studio
 
-A lightweight, cross-platform desktop experience for discovering trusted [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/) templates, understanding their requirements, configuring environments, and deploying them without losing the power of the CLI.
+A lightweight Windows desktop experience for discovering trusted [Azure Developer CLI (`azd`)](https://learn.microsoft.com/azure/developer/azure-developer-cli/) templates, understanding their requirements, configuring environments, and deploying them without losing the power of the CLI.
 
 The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle Chromium, store Azure tokens, or permit catalog manifests to run arbitrary commands.
 
-## Current V1
+## Windows beta
+
+The supported beta is Windows 10/11 on x64. macOS and Linux source builds are experimental development targets; they are not release-supported or included in beta acceptance yet.
 
 - Compact VS Code-inspired shell with one persistent, collapsible navigation tree for Catalog, Projects, Connections, Tools, and Settings.
 - System, light, and dark appearance preferences persisted with the navigation state.
@@ -16,7 +18,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 - Detection for azd, Azure CLI, PowerShell, Az PowerShell, and Microsoft Graph PowerShell.
 - Native login orchestration for azd, Azure CLI, Az PowerShell, and Graph PowerShell, including device-code fallback and delegated Graph scope verification.
 - Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
-- Exact-commit template caching, explicit template-execution consent, environment value application, conservative hook-aware preview, and `azd up --no-prompt`.
+- Fresh exact-commit template checkouts, explicit template-execution consent, environment value application, conservative hook-aware preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
 - Project workspaces with environment management, lifecycle history, service endpoints, and validated Azure portal links from `azd show`.
 - Explicit external-terminal fallback for interactive hooks, opened in a validated azd project with a copyable interactive `azd up` command.
@@ -55,7 +57,7 @@ The Windows build uses the installed WebView2 runtime and does not install a fix
 
 ## Signed Windows releases
 
-The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It validates the frontend and native code once on Windows before building. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, and signs the installer.
+The `Signed Windows release` workflow runs for `v*` tags and by explicitly confirmed manual dispatch. It rejects disagreement between the tag, npm, Cargo, and Tauri versions before validating the frontend and native code once on Windows. It uses GitHub OIDC—there is no client secret—to authenticate the `github-azd-gui` Entra application, signs the portable executable with the `kvpp-public-trust` Azure Artifact Signing profile, bundles it into an NSIS installer, signs the installer, and emits SHA-256 checksums. Tagged runs stage the verified files in a draft GitHub Release; the draft becomes public only after clean-VM beta acceptance. Manual runs retain them as a 14-day workflow artifact only.
 
 The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub Environment. The signing endpoint, account name, and certificate profile are non-secret workflow configuration. Security-sensitive Azure actions are pinned to immutable commits.
 
@@ -63,12 +65,13 @@ The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub E
 
 ```powershell
 npm run verify
+npm run audit:dependencies
 ```
 
-Local validation is the normal development path. Pull requests and branch pushes do not start GitHub Actions. The `Manual validation` workflow must be explicitly dispatched for one selected platform when hosted validation is genuinely necessary; validating all three platforms requires three intentional dispatches. Tagged releases run the Windows validation, build, and signing workflow once. Live Azure authentication and deployment checks remain manual because automation must not contain interactive user credentials.
+Local validation is the normal development path. The dependency audit requires `cargo-audit` 0.22.2 (`cargo install cargo-audit --version 0.22.2 --locked`); the signed release installs that pinned version and runs both npm and RustSec audits before building. RustSec fails on vulnerabilities and every unrecognized maintenance warning; the narrowly documented temporary upstream exceptions and their removal criteria live in `.cargo/audit.toml`. Pull requests and branch pushes do not start GitHub Actions. The `Manual validation` workflow must be explicitly dispatched for one selected platform when hosted validation is genuinely necessary; validating all three platforms requires three intentional dispatches. Tagged releases run the Windows validation, audit, build, and signing workflow once. Live Azure authentication and deployment checks remain manual because automation must not contain interactive user credentials.
 
 See [docs/actions-policy.md](docs/actions-policy.md) for the hosted-runner budget policy and release checklist.
-Use [docs/windows-alpha-acceptance.md](docs/windows-alpha-acceptance.md) for local packaging and smoke-test acceptance.
+Use [docs/windows-beta-acceptance.md](docs/windows-beta-acceptance.md) for the required clean-VM release acceptance and publication gate.
 
 ## Catalog contracts
 
@@ -91,10 +94,15 @@ Inference never creates executable commands. Manifests can declare that a pinned
 - The Svelte renderer has no shell capability.
 - Rust accepts only registered executables and fixed operation/provider IDs.
 - Process arguments are arrays, never renderer-supplied shell strings.
+- Template execution requires a one-use native approval bound to the exact action and project context; resource removal has a separate destructive confirmation.
 - Catalog repositories require HTTPS and pinned commits are reverified after checkout.
+- Catalog and repository URLs reject embedded credentials, query strings, and fragments before use or persistence.
 - Tokens, bearer headers, JWTs, and secret-like environment assignments are redacted from operation events.
+- Environment configuration is passed to `azd env set --file` through a temporary file instead of process arguments; this transport is used for ordinary values as well as sensitive ones.
 - Sensitive wizard values are held only for the active deployment and are excluded from application drafts and logs. Rust independently whitelists typed draft fields, reapplies manifest sensitivity, and scrubs older drafts when they are loaded.
+- Settings can securely clear app-owned project references, operation history, drafts, catalog trust, preferences, and cached templates without deleting project folders or credential caches owned by external CLI tools.
 - Each Azure tool owns its own credential cache; the app reads status but does not capture tokens.
 - The Tauri content security policy blocks remote scripts, objects, and frames.
+- The native URL opener capability is scoped to HTTPS links.
 
 See [docs/architecture.md](docs/architecture.md) for the subsystem and data-flow description.

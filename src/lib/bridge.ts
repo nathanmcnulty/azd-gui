@@ -18,6 +18,8 @@ import type {
   ConnectionStatus,
   ConnectionTarget,
   ExternalCatalogPreview,
+  ExecutionApprovalGrant,
+  ExecutionApprovalRequest,
   ExternalTerminalLaunch,
   OperationEvent,
   PermissionCheckRequest,
@@ -28,6 +30,7 @@ import type {
   ProjectSummary,
   PrepareDeploymentRequest,
   TemplateInspection,
+  ToolInstallApprovalGrant,
   ToolInstallPlan,
   ToolStatus
 } from "./types";
@@ -76,6 +79,14 @@ export async function saveAppSettings(settings: AppSettings): Promise<void> {
     return;
   }
   await invoke("save_app_settings", { settings });
+}
+
+export async function clearLocalAppData(): Promise<boolean> {
+  if (!isTauri()) {
+    window.localStorage.removeItem(previewSettingsKey);
+    return true;
+  }
+  return invoke<boolean>("clear_local_app_data");
 }
 
 export async function chooseFolder(): Promise<string | null> {
@@ -179,13 +190,19 @@ export async function refreshTools(): Promise<ToolStatus[]> {
   return invoke<ToolStatus[]>("check_tools");
 }
 
+export async function listProjects(): Promise<ProjectSummary[]> {
+  if (!isTauri()) return structuredClone(mockBootstrap.projects);
+  return invoke<ProjectSummary[]>("list_projects");
+}
+
 export async function previewToolInstall(id: string): Promise<ToolInstallPlan> {
   if (!isTauri()) {
     const tool = mockBootstrap.tools.find((candidate) => candidate.id === id);
     if (!tool?.canInstall || !["Az.Accounts", "Microsoft.Graph"].includes(id)) {
       throw new Error(`${id} has no vetted non-elevated installation strategy.`);
     }
-    const script = `Install-PSResource ${id} -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense`;
+    const exactVersion = tool.minimumVersion ?? "1.0.0";
+    const script = `Install-PSResource ${id} -Version '${exactVersion}' -Repository PSGallery -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense`;
     return {
       id,
       toolName: tool.name,
@@ -194,6 +211,7 @@ export async function previewToolInstall(id: string): Promise<ToolInstallPlan> {
       source: "PowerShell Gallery (PSGallery)",
       scope: "Current user",
       destination: "Current-user PowerShell module path",
+      exactVersion,
       command: `pwsh -NoLogo -NoProfile -NonInteractive -Command "${script}"`,
       documentationUrl:
         "https://learn.microsoft.com/powershell/module/microsoft.powershell.psresourceget/install-psresource?view=powershellget-3.x"
@@ -202,9 +220,21 @@ export async function previewToolInstall(id: string): Promise<ToolInstallPlan> {
   return invoke<ToolInstallPlan>("preview_tool_install", { id });
 }
 
-export async function installTool(id: string): Promise<string> {
+export async function requestToolInstallApproval(
+  id: string,
+  exactVersion: string
+): Promise<ToolInstallApprovalGrant> {
+  if (!isTauri()) return { token: `mock-tool-approval-${id}-${exactVersion}` };
+  return invoke<ToolInstallApprovalGrant>("request_tool_install_approval", { id, exactVersion });
+}
+
+export async function installTool(
+  id: string,
+  exactVersion: string,
+  approvalToken: string
+): Promise<string> {
   if (!isTauri()) return `mock-install-${id}`;
-  return invoke<string>("install_tool", { id });
+  return invoke<string>("install_tool", { id, exactVersion, approvalToken });
 }
 
 export async function refreshConnections(target?: ConnectionTarget): Promise<ConnectionStatus[]> {
@@ -268,10 +298,18 @@ export async function login(
 export async function startAzdOperation(
   action: string,
   projectPath: string,
-  environment?: string
+  environment?: string,
+  executionApprovalToken?: string
 ): Promise<string> {
   if (!isTauri()) return `mock-${action}-${Date.now()}`;
-  return invoke<string>("start_azd_operation", { action, projectPath, environment });
+  return invoke<string>("start_azd_operation", { action, projectPath, environment, executionApprovalToken });
+}
+
+export async function requestExecutionApproval(
+  request: ExecutionApprovalRequest
+): Promise<ExecutionApprovalGrant> {
+  if (!isTauri()) return { token: `mock-approval-${Date.now()}`, projectPath: request.projectPath };
+  return invoke<ExecutionApprovalGrant>("request_execution_approval", { request });
 }
 
 export async function openExternalTerminal(

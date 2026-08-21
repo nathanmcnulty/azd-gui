@@ -5,6 +5,7 @@ mod command_runner;
 mod connections;
 mod deployment;
 mod error;
+mod execution_approval;
 mod models;
 mod permissions;
 mod persistence;
@@ -17,10 +18,11 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
-        ConnectionTarget, ExternalCatalogPreview, OperationEvent, PermissionCheckRequest,
-        PermissionCheckResult, PrepareDeploymentRequest, ProjectEnvironment,
-        ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary, TemplateInspection,
-        TemplateManifest, ToolInstallPlan, ToolStatus,
+        ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest, ExternalCatalogPreview,
+        OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
+        ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
+        TemplateInspection, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan,
+        ToolStatus,
     },
     persistence::Database,
 };
@@ -32,12 +34,16 @@ use std::{
 };
 use tauri::{AppHandle, Manager, State};
 
+const MAX_INSPECTED_MANIFESTS: usize = 128;
+
 pub struct AppState {
     database: Arc<Database>,
     operations: OperationManager,
     template_cache: PathBuf,
-    inspected_manifests: Mutex<HashMap<String, Vec<TemplateManifest>>>,
+    inspected_manifests: Mutex<HashMap<String, TemplateManifest>>,
     catalog_reviews: CatalogReviews,
+    execution_approvals: execution_approval::ExecutionApprovals,
+    tool_install_approvals: tools::ToolInstallApprovals,
 }
 
 #[derive(Clone)]
@@ -125,8 +131,65 @@ async fn bootstrap(state: State<'_, AppState>) -> AppResult<BootstrapData> {
 }
 
 #[tauri::command]
+fn list_projects(state: State<'_, AppState>) -> AppResult<Vec<ProjectSummary>> {
+    state.database.projects()
+}
+
+#[tauri::command]
 fn save_app_settings(state: State<'_, AppState>, settings: AppSettings) -> AppResult<()> {
     state.database.save_app_settings(&settings)
+}
+
+#[tauri::command]
+async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> AppResult<bool> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    if !state.operations.is_idle().await {
+        return Err(AppError::Invalid(
+            "Wait for the active command to finish or cancel it before clearing local data.".into(),
+        ));
+    }
+    let approved = app
+        .dialog()
+        .message(
+            "This permanently clears Azure Deployment Studio project references, operation history, wizard drafts, catalog trust decisions, and settings.\n\nProject folders and credential caches owned by azd, Azure CLI, and PowerShell are not deleted.",
+        )
+        .title("Clear local application data?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Clear local data".into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if !approved {
+        return Ok(false);
+    }
+    if !state.operations.is_idle().await {
+        return Err(AppError::Invalid(
+            "A command started while confirmation was open. Cancel it before clearing local data."
+                .into(),
+        ));
+    }
+
+    if state.template_cache.exists() {
+        std::fs::remove_dir_all(&state.template_cache)?;
+    }
+    std::fs::create_dir_all(&state.template_cache)?;
+    state.database.clear_local_data()?;
+    state
+        .inspected_manifests
+        .lock()
+        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
+        .clear();
+    state
+        .catalog_reviews
+        .pending
+        .lock()
+        .map_err(|_| AppError::Invalid("Catalog review cache is unavailable.".into()))?
+        .clear();
+    state.execution_approvals.clear()?;
+    state.tool_install_approvals.clear()?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -156,13 +219,17 @@ fn remember_inspection_manifest(
     let Some(manifest) = inspection.entry.manifest.clone() else {
         return Ok(());
     };
-    state
+    let mut manifests = state
         .inspected_manifests
         .lock()
-        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
-        .entry(inspection.entry.id.clone())
-        .or_default()
-        .push(manifest);
+        .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?;
+    if manifests.len() >= MAX_INSPECTED_MANIFESTS && !manifests.contains_key(&inspection.entry.id) {
+        return Err(AppError::Invalid(
+            "Too many templates have been inspected in this session. Restart the app before inspecting another source."
+                .into(),
+        ));
+    }
+    manifests.insert(inspection.entry.id.clone(), manifest);
     Ok(())
 }
 
@@ -172,21 +239,63 @@ async fn check_tools() -> AppResult<Vec<ToolStatus>> {
 }
 
 #[tauri::command]
-fn preview_tool_install(id: String) -> AppResult<ToolInstallPlan> {
-    tools::install_plan(&id).ok_or_else(|| {
-        AppError::Invalid(format!(
-            "{id} has no vetted non-elevated installation strategy."
-        ))
-    })
+async fn preview_tool_install(id: String) -> AppResult<ToolInstallPlan> {
+    tools::resolve_install_plan(&id).await
 }
 
 #[tauri::command]
-fn install_tool(app: AppHandle, state: State<'_, AppState>, id: String) -> AppResult<String> {
-    let spec = tools::install_spec(&id).ok_or_else(|| {
-        AppError::Invalid(format!(
-            "{id} has no vetted non-elevated installation strategy."
+async fn request_tool_install_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    exact_version: String,
+) -> AppResult<ToolInstallApprovalGrant> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let plan = tools::resolve_install_plan(&id).await?;
+    if plan.exact_version != exact_version {
+        return Err(AppError::Invalid(
+            "The available module version changed. Review the installation again.".into(),
+        ));
+    }
+    let approved = app
+        .dialog()
+        .message(format!(
+            "Approve once to install {} version {} from {}.\n\nScope: {}\nDestination: {}\n\nExact command:\n{}",
+            plan.tool_name,
+            plan.exact_version,
+            plan.source,
+            plan.scope,
+            plan.destination,
+            plan.command
         ))
-    })?;
+        .title("Confirm exact PowerShell module installation")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Install exact version".into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if !approved {
+        return Err(AppError::Invalid(
+            "Tool installation approval was cancelled.".into(),
+        ));
+    }
+    state.tool_install_approvals.issue(&plan)
+}
+
+#[tauri::command]
+fn install_tool(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    exact_version: String,
+    approval_token: String,
+) -> AppResult<String> {
+    state
+        .tool_install_approvals
+        .consume(&approval_token, &id, &exact_version)?;
+    let spec = tools::install_spec(&id, &exact_version)?;
     spawn_operation(
         app,
         state.operations.clone(),
@@ -243,6 +352,7 @@ fn start_azd_operation(
     action: String,
     project_path: String,
     environment: Option<String>,
+    execution_approval_token: Option<String>,
 ) -> AppResult<String> {
     let canonical = std::fs::canonicalize(&project_path)?;
     if !canonical.join("azure.yaml").is_file() {
@@ -250,6 +360,32 @@ fn start_azd_operation(
             "{} does not contain azure.yaml.",
             canonical.display()
         )));
+    }
+    if matches!(
+        action.as_str(),
+        "preview" | "up" | "provision" | "deploy" | "down"
+    ) {
+        let token = execution_approval_token
+            .as_deref()
+            .ok_or_else(|| AppError::Invalid("A native execution approval is required.".into()))?;
+        let project = state
+            .database
+            .projects()?
+            .into_iter()
+            .find(|project| project.path == canonical.display().to_string());
+        state.execution_approvals.consume(
+            token,
+            ExecutionApprovalRequest {
+                action: action.clone(),
+                project_path: canonical.display().to_string(),
+                environment: environment.clone().unwrap_or_else(|| "dev".into()),
+                template_id: project
+                    .as_ref()
+                    .and_then(|project| project.template_id.clone())
+                    .unwrap_or_default(),
+                revision: project.and_then(|project| project.revision),
+            },
+        )?;
     }
     let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
     spawn_operation(
@@ -288,7 +424,7 @@ async fn preview_external_catalog(
     state: State<'_, AppState>,
     url: String,
 ) -> AppResult<ExternalCatalogPreview> {
-    let source_url = url.trim().to_string();
+    let source_url = catalog::normalize_catalog_url(url.trim())?.to_string();
     let catalog = catalog::preview_external_catalog(&source_url).await?;
     state.catalog_reviews.register(source_url, catalog)
 }
@@ -299,7 +435,7 @@ fn save_catalog_source(
     url: String,
     review_token: String,
 ) -> AppResult<Catalog> {
-    let source_url = url.trim().to_string();
+    let source_url = catalog::normalize_catalog_url(url.trim())?.to_string();
     let accepted_catalog = state.catalog_reviews.accept(&review_token, &source_url)?;
     state.database.save_catalog_source(&CatalogSource {
         id: accepted_catalog.id.clone(),
@@ -322,7 +458,64 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
+    state.execution_approvals.consume(
+        &request.execution_approval_token,
+        ExecutionApprovalRequest {
+            action: "prepare".into(),
+            project_path: request.destination.clone(),
+            environment: request.environment.clone(),
+            template_id: request.template_id.clone(),
+            revision: request.source_revision.clone(),
+        },
+    )?;
     deployment::prepare(request, &state.template_cache, &state.database).await
+}
+
+#[tauri::command]
+fn request_execution_approval(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: ExecutionApprovalRequest,
+) -> AppResult<ExecutionApprovalGrant> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let request = execution_approval::ExecutionApprovals::validate_request(request)?;
+    let destructive = request.action == "down";
+    let action = if destructive {
+        "delete the environment's Azure resources with azd down --force"
+    } else if request.action == "prepare" {
+        "materialize the template and run azd init"
+    } else {
+        request.action.as_str()
+    };
+    let revision = request
+        .revision
+        .as_deref()
+        .map(|revision| format!("\nRevision: {revision}"))
+        .unwrap_or_default();
+    let approved = app
+        .dialog()
+        .message(format!(
+            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
+            request.project_path, request.environment, request.template_id
+        ))
+        .title(if destructive {
+            "Confirm Azure resource deletion"
+        } else {
+            "Confirm template code execution"
+        })
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            if destructive { "Delete resources" } else { "Approve once" }.into(),
+            "Cancel".into(),
+        ))
+        .blocking_show();
+    if !approved {
+        return Err(AppError::Invalid(
+            "Execution approval was cancelled.".into(),
+        ));
+    }
+    state.execution_approvals.issue(request)
 }
 
 #[tauri::command]
@@ -621,8 +814,7 @@ fn draft_keys(
             .lock()
             .map_err(|_| AppError::Invalid("Template inspection cache is unavailable.".into()))?
             .get(template_id)
-            .cloned()
-            .unwrap_or_default(),
+            .cloned(),
     );
     for field in manifests
         .into_iter()
@@ -690,15 +882,19 @@ pub fn run() {
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
                 catalog_reviews: CatalogReviews::default(),
+                execution_approvals: execution_approval::ExecutionApprovals::default(),
+                tool_install_approvals: tools::ToolInstallApprovals::default(),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
+            list_projects,
             inspect_local_template,
             inspect_github_template,
             check_tools,
             preview_tool_install,
+            request_tool_install_approval,
             install_tool,
             check_connections,
             discover_azure_scope,
@@ -711,6 +907,7 @@ pub fn run() {
             save_catalog_source,
             remove_catalog_source,
             prepare_deployment,
+            request_execution_approval,
             get_project_state,
             list_project_environments,
             create_project_environment,
@@ -720,7 +917,8 @@ pub fn run() {
             get_operation_history,
             save_wizard_draft,
             load_wizard_draft,
-            save_app_settings
+            save_app_settings,
+            clear_local_app_data
         ])
         .run(tauri::generate_context!())
         .expect("error while running Azure Deployment Studio");
@@ -826,6 +1024,8 @@ mod draft_tests {
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             catalog_reviews: CatalogReviews::default(),
+            execution_approvals: crate::execution_approval::ExecutionApprovals::default(),
+            tool_install_approvals: crate::tools::ToolInstallApprovals::default(),
         };
 
         let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();
@@ -840,7 +1040,7 @@ mod draft_tests {
             .inspected_manifests
             .lock()
             .unwrap()
-            .insert("local-template".into(), vec![manifest]);
+            .insert("local-template".into(), manifest);
         let (allowed, sensitive) = draft_keys(&state, "local-template").unwrap();
         assert!(allowed.contains("teamschannellink"));
         assert!(!sensitive.contains("teamschannellink"));

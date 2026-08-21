@@ -120,6 +120,8 @@ pub struct ToolStatus {
     #[serde(default)]
     pub installed_version: Option<String>,
     #[serde(default)]
+    pub executable_path: Option<String>,
+    #[serde(default)]
     pub latest_version: Option<String>,
     #[serde(default)]
     pub update_available: bool,
@@ -146,8 +148,15 @@ pub struct ToolInstallPlan {
     pub source: String,
     pub scope: String,
     pub destination: String,
+    pub exact_version: String,
     pub command: String,
     pub documentation_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInstallApprovalGrant {
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -484,13 +493,30 @@ pub struct CatalogSource {
     pub accepted_catalog: Option<Catalog>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionApprovalRequest {
+    pub action: String,
+    pub project_path: String,
+    pub environment: String,
+    pub template_id: String,
+    #[serde(default)]
+    pub revision: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionApprovalGrant {
+    pub token: String,
+    pub project_path: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrepareDeploymentRequest {
     pub template_id: String,
     pub source_mode: String,
-    #[serde(default)]
-    pub source_trust_accepted: bool,
+    pub execution_approval_token: String,
     #[serde(default)]
     pub source_path: Option<String>,
     #[serde(default)]

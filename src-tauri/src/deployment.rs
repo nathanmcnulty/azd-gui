@@ -12,6 +12,10 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+
+const MAX_TEMPLATE_FILE_COUNT: usize = 20_000;
+const MAX_TEMPLATE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_TEMPLATE_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 use uuid::Uuid;
 
 pub(crate) fn validate_environment_name(value: &str) -> AppResult<()> {
@@ -24,19 +28,6 @@ pub(crate) fn validate_environment_name(value: &str) -> AppResult<()> {
         return Err(AppError::Invalid(
             "Environment name may contain letters, numbers, hyphens, underscores, periods, and parentheses."
                 .into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_source_trust(request: &PrepareDeploymentRequest) -> AppResult<()> {
-    if matches!(
-        request.source_mode.as_str(),
-        "github" | "localTemplate" | "existingProject"
-    ) && !request.source_trust_accepted
-    {
-        return Err(AppError::Invalid(
-            "Unvetted sources require explicit trust before materialization.".into(),
         ));
     }
     Ok(())
@@ -216,89 +207,129 @@ async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppRe
     Ok(output.stdout)
 }
 
-async fn cache_pinned_template(
+fn git_command(checkout: &Path, args: impl IntoIterator<Item = impl Into<String>>) -> CommandSpec {
+    CommandSpec::new(Executable::Git, args)
+        .cwd(checkout)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+}
+
+fn validate_template_tree(output: &str) -> AppResult<()> {
+    if output.contains("[output truncated]") {
+        return Err(AppError::Invalid(
+            "Template tree listing exceeded the inspection limit.".into(),
+        ));
+    }
+    let mut file_count = 0_usize;
+    let mut total_bytes = 0_u64;
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let (metadata, _) = line.split_once('\t').ok_or_else(|| {
+            AppError::Invalid("Git returned an invalid template tree entry.".into())
+        })?;
+        let fields = metadata.split_whitespace().collect::<Vec<_>>();
+        if fields.get(1) != Some(&"blob") {
+            continue;
+        }
+        let size = fields
+            .get(3)
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| AppError::Invalid("Git omitted a template file size.".into()))?;
+        file_count = file_count.saturating_add(1);
+        total_bytes = total_bytes.saturating_add(size);
+        if file_count > MAX_TEMPLATE_FILE_COUNT {
+            return Err(AppError::Invalid(format!(
+                "Template contains more than {MAX_TEMPLATE_FILE_COUNT} files."
+            )));
+        }
+        if size > MAX_TEMPLATE_FILE_BYTES {
+            return Err(AppError::Invalid(format!(
+                "Template contains a file larger than {} MB.",
+                MAX_TEMPLATE_FILE_BYTES / 1024 / 1024
+            )));
+        }
+        if total_bytes > MAX_TEMPLATE_TOTAL_BYTES {
+            return Err(AppError::Invalid(format!(
+                "Template content exceeds {} MB.",
+                MAX_TEMPLATE_TOTAL_BYTES / 1024 / 1024
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn checkout_pinned_template(
     cache_root: &Path,
     repository: &str,
     commit: &str,
     template_id: &str,
-) -> AppResult<PathBuf> {
-    let template_root = cache_root.join(template_id).join(commit);
-    if template_root.join(".git").is_dir() {
-        let actual = run_checked(
-            CommandSpec::new(Executable::Git, ["rev-parse", "HEAD"]).cwd(&template_root),
-            "Verifying cached template",
-            Duration::from_secs(15),
-        )
-        .await?;
-        if actual.trim().eq_ignore_ascii_case(commit) {
-            return Ok(template_root);
-        }
-        return Err(AppError::Invalid(
-            "Cached template revision does not match its catalog pin.".into(),
-        ));
+) -> AppResult<tempfile::TempDir> {
+    crate::catalog::require_public_network_url(repository).await?;
+    std::fs::create_dir_all(cache_root)?;
+    let checkout = tempfile::Builder::new()
+        .prefix(&format!("{template_id}-"))
+        .tempdir_in(cache_root)?;
+    run_checked(
+        git_command(checkout.path(), ["init", "--quiet", "--template="]),
+        "Initializing template checkout",
+        Duration::from_secs(20),
+    )
+    .await?;
+    run_checked(
+        git_command(checkout.path(), ["remote", "add", "origin", repository]),
+        "Configuring template source",
+        Duration::from_secs(20),
+    )
+    .await?;
+    run_checked(
+        git_command(
+            checkout.path(),
+            [
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "--depth",
+                "1",
+                "--filter=blob:none",
+                "origin",
+                commit,
+            ],
+        ),
+        "Fetching pinned template",
+        Duration::from_secs(180),
+    )
+    .await?;
+    let tree = run_checked(
+        git_command(checkout.path(), ["ls-tree", "-r", "-l", "FETCH_HEAD"]),
+        "Inspecting pinned template size",
+        Duration::from_secs(30),
+    )
+    .await?;
+    validate_template_tree(&tree)?;
+    run_checked(
+        git_command(
+            checkout.path(),
+            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+        ),
+        "Checking out pinned template",
+        Duration::from_secs(60),
+    )
+    .await?;
+    let actual = run_checked(
+        git_command(checkout.path(), ["rev-parse", "HEAD"]),
+        "Verifying pinned template",
+        Duration::from_secs(15),
+    )
+    .await?;
+    if !actual.trim().eq_ignore_ascii_case(commit) {
+        return Err(AppError::Invalid(format!(
+            "Repository returned {} instead of pinned commit {commit}.",
+            actual.trim()
+        )));
     }
-
-    let parent = template_root
-        .parent()
-        .ok_or_else(|| AppError::Invalid("Invalid template cache path.".into()))?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".download-{}", Uuid::new_v4()));
-    std::fs::create_dir(&temporary)?;
-    let result: AppResult<()> = async {
-        run_checked(
-            CommandSpec::new(Executable::Git, ["init", "--quiet"]).cwd(&temporary),
-            "Initializing template cache",
-            Duration::from_secs(20),
-        )
-        .await?;
-        run_checked(
-            CommandSpec::new(Executable::Git, ["remote", "add", "origin", repository])
-                .cwd(&temporary),
-            "Configuring template source",
-            Duration::from_secs(20),
-        )
-        .await?;
-        run_checked(
-            CommandSpec::new(
-                Executable::Git,
-                ["fetch", "--quiet", "--depth", "1", "origin", commit],
-            )
-            .cwd(&temporary),
-            "Fetching pinned template",
-            Duration::from_secs(180),
-        )
-        .await?;
-        run_checked(
-            CommandSpec::new(
-                Executable::Git,
-                ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
-            )
-            .cwd(&temporary),
-            "Checking out pinned template",
-            Duration::from_secs(60),
-        )
-        .await?;
-        let actual = run_checked(
-            CommandSpec::new(Executable::Git, ["rev-parse", "HEAD"]).cwd(&temporary),
-            "Verifying pinned template",
-            Duration::from_secs(15),
-        )
-        .await?;
-        if !actual.trim().eq_ignore_ascii_case(commit) {
-            return Err(AppError::Invalid(format!(
-                "Repository returned {} instead of pinned commit {commit}.",
-                actual.trim()
-            )));
-        }
-        Ok(())
-    }
-    .await;
-    if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(&temporary);
-        return Err(error);
-    }
-    std::fs::rename(&temporary, &template_root)?;
-    Ok(template_root)
+    Ok(checkout)
 }
 
 fn ensure_destination(path: &str, allow_existing_project: bool) -> AppResult<PathBuf> {
@@ -335,7 +366,6 @@ pub async fn prepare(
     database: &Database,
 ) -> AppResult<ProjectSummary> {
     validate_template_id(&request.template_id)?;
-    validate_source_trust(&request)?;
     validate_environment_name(&request.environment)?;
     validate_location(&request.location)?;
     validate_optional_guid("Tenant ID", request.tenant.as_deref())?;
@@ -358,21 +388,51 @@ pub async fn prepare(
     };
     let environment_assignments = environment_assignments(&request, entry.as_ref())?;
     let destination = ensure_destination(&request.destination, existing_project)?;
+    let name = destination
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("azd-project")
+        .to_string();
+    let mut project = ProjectSummary {
+        id: format!("{}-{}", name, request.environment),
+        name,
+        path: destination.display().to_string(),
+        environment: Some(request.environment.clone()),
+        template_id: Some(request.template_id.clone()),
+        revision: entry
+            .as_ref()
+            .map(|entry| entry.commit.clone())
+            .or_else(|| request.source_revision.clone()),
+        last_operation: Some(Utc::now().to_rfc3339()),
+        state: if existing_project {
+            "ready"
+        } else {
+            "attention"
+        }
+        .into(),
+    };
 
     if !existing_project {
+        database.upsert_project(&project)?;
+    }
+
+    if !existing_project {
+        let mut temporary_checkout = None;
         let source = match request.source_mode.as_str() {
             "catalog" | "externalCatalog" => {
                 let entry = entry
                     .as_ref()
                     .ok_or_else(|| AppError::Invalid("Missing catalog entry.".into()))?;
-                let cached = cache_pinned_template(
+                let checkout = checkout_pinned_template(
                     cache_root,
                     &entry.repository,
                     &entry.commit,
                     &entry.id,
                 )
                 .await?;
-                template_path(&cached, entry)?
+                let source = template_path(checkout.path(), entry)?;
+                temporary_checkout = Some(checkout);
+                source
             }
             "localTemplate" => {
                 let source = request
@@ -403,6 +463,16 @@ pub async fn prepare(
                         "Direct repositories must use an HTTPS GitHub URL.".into(),
                     ));
                 }
+                if !parsed.username().is_empty()
+                    || parsed.password().is_some()
+                    || parsed.query().is_some()
+                    || parsed.fragment().is_some()
+                {
+                    return Err(AppError::Url(
+                        "Direct repository URLs cannot contain credentials, query parameters, or fragments."
+                            .into(),
+                    ));
+                }
                 if commit.len() != 40
                     || !commit
                         .chars()
@@ -410,11 +480,11 @@ pub async fn prepare(
                 {
                     return Err(AppError::Invalid("Invalid pinned GitHub revision.".into()));
                 }
-                let cached =
-                    cache_pinned_template(cache_root, repository, commit, &request.template_id)
+                let checkout =
+                    checkout_pinned_template(cache_root, repository, commit, &request.template_id)
                         .await?;
-                template_path(
-                    &cached,
+                let source = template_path(
+                    checkout.path(),
                     &crate::models::CatalogEntry {
                         id: request.template_id.clone(),
                         title: request.template_id.clone(),
@@ -429,7 +499,9 @@ pub async fn prepare(
                         source: Some("external".into()),
                         trusted: false,
                     },
-                )?
+                )?;
+                temporary_checkout = Some(checkout);
+                source
             }
             _ => {
                 return Err(AppError::Invalid(
@@ -461,6 +533,7 @@ pub async fn prepare(
             Duration::from_secs(180),
         )
         .await?;
+        drop(temporary_checkout);
     } else if !destination.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(
             "Existing project does not contain azure.yaml.".into(),
@@ -497,42 +570,11 @@ pub async fn prepare(
         .await?;
     }
 
-    for (environment_variable, value) in environment_assignments {
-        run_checked(
-            CommandSpec::new(
-                Executable::Azd,
-                [
-                    "env",
-                    "set",
-                    &environment_variable,
-                    &value,
-                    "--environment",
-                    &request.environment,
-                    "--no-prompt",
-                ],
-            )
-            .cwd(&destination),
-            "Applying environment value",
-            Duration::from_secs(30),
-        )
+    azd::environment_set_values(&destination, &request.environment, &environment_assignments)
         .await?;
-    }
 
-    let name = destination
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("azd-project")
-        .to_string();
-    let project = ProjectSummary {
-        id: format!("{}-{}", name, request.environment),
-        name,
-        path: destination.display().to_string(),
-        environment: Some(request.environment),
-        template_id: Some(request.template_id),
-        revision: entry.as_ref().map(|entry| entry.commit.clone()),
-        last_operation: Some(Utc::now().to_rfc3339()),
-        state: "ready".into(),
-    };
+    project.state = "ready".into();
+    project.last_operation = Some(Utc::now().to_rfc3339());
     database.upsert_project(&project)?;
     Ok(project)
 }
@@ -541,20 +583,32 @@ pub async fn prepare(
 mod tests {
     use super::{
         environment_assignments, environment_exists, validate_optional_guid,
-        validate_resource_group, validate_source_trust,
+        validate_resource_group, validate_template_tree, MAX_TEMPLATE_FILE_BYTES,
     };
     use crate::{
         catalog::entry_by_id,
         models::{PrepareDeploymentRequest, ProjectEnvironment},
     };
     use serde_json::json;
+
+    #[test]
+    fn template_tree_limits_files_and_total_content() {
+        let valid = "100644 blob 0123456789abcdef 128\tazure.yaml\n100644 blob fedcba9876543210 64\tsrc/main.ts\n";
+        assert!(validate_template_tree(valid).is_ok());
+        let oversized = format!(
+            "100644 blob 0123456789abcdef {}\tlarge.bin\n",
+            MAX_TEMPLATE_FILE_BYTES + 1
+        );
+        assert!(validate_template_tree(&oversized).is_err());
+        assert!(validate_template_tree("[output truncated]").is_err());
+    }
     use std::collections::HashMap;
 
     fn myworkid_request() -> PrepareDeploymentRequest {
         PrepareDeploymentRequest {
             template_id: "myworkid".into(),
             source_mode: "catalog".into(),
-            source_trust_accepted: false,
+            execution_approval_token: "test-approval".into(),
             source_path: None,
             source_revision: None,
             destination: "/tmp/myworkid".into(),
@@ -635,15 +689,6 @@ mod tests {
         );
         assert!(validate_resource_group(Some("invalid.")).is_err());
         assert!(validate_resource_group(Some("rg-valid_(dev)")).is_ok());
-    }
-
-    #[test]
-    fn requires_explicit_trust_for_unvetted_sources() {
-        let mut request = myworkid_request();
-        request.source_mode = "github".into();
-        assert!(validate_source_trust(&request).is_err());
-        request.source_trust_accepted = true;
-        assert!(validate_source_trust(&request).is_ok());
     }
 
     #[test]

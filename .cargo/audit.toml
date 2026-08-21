@@ -1,6 +1,35 @@
-# RUSTSEC-2024-0429 is currently unavoidable in Tauri 2's Linux-only GTK3
-# dependency chain. GTK3 pins glib ^0.18, the proposed 0.18 backport/release
-# was declined upstream, and Tauri plans to move to GTK4 in v3.
-# Remove this exception when Tauri no longer resolves glib below 0.20.
+# Cargo.lock records dependencies for every supported target, so cargo-audit
+# reports informational advisories even when the crate is absent from the
+# Windows x64 release graph. Tauri 2.11.5's Linux GTK3 backend is the sole path
+# to the GTK crates and proc-macro-error below. RUSTSEC-2024-0429 is a known
+# glib vulnerability in the same Linux-only chain. Remove these exceptions when
+# stable Tauri no longer resolves GTK3/glib 0.18.
+#
+# Stable tauri-utils 2.9.3 also pins urlpattern 0.3, which uses the unmaintained
+# unic family on every platform. Tauri merged the move to urlpattern 0.6/ICU4X
+# in https://github.com/tauri-apps/tauri/pull/15660, but has not released it.
+# Remove the five RUSTSEC-2025 exceptions with the first stable Tauri release
+# containing that change. They are maintenance warnings, not vulnerabilities.
 [advisories]
-ignore = ["RUSTSEC-2024-0429"]
+ignore = [
+  # Tauri's Linux-only GTK3 dependency graph.
+  "RUSTSEC-2024-0370",
+  "RUSTSEC-2024-0411",
+  "RUSTSEC-2024-0412",
+  "RUSTSEC-2024-0413",
+  "RUSTSEC-2024-0414",
+  "RUSTSEC-2024-0415",
+  "RUSTSEC-2024-0416",
+  "RUSTSEC-2024-0417",
+  "RUSTSEC-2024-0418",
+  "RUSTSEC-2024-0419",
+  "RUSTSEC-2024-0420",
+  "RUSTSEC-2024-0429",
+
+  # Stable Tauri's urlpattern 0.3 dependency, pending the merged 0.6 upgrade.
+  "RUSTSEC-2025-0075",
+  "RUSTSEC-2025-0080",
+  "RUSTSEC-2025-0081",
+  "RUSTSEC-2025-0098",
+  "RUSTSEC-2025-0100",
+]

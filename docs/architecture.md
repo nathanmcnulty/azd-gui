@@ -1,13 +1,17 @@
 # Architecture
 
+The supported beta release target is Windows 10/11 on x64. macOS and Linux remain experimental source-build targets until they have their own packaging, signing, and acceptance gates.
+
 ## Runtime boundary
 
-The Svelte renderer owns presentation and wizard state. It calls a narrow set of typed Tauri commands through `src/lib/bridge.ts`; the bridge provides realistic preview data when the UI runs outside Tauri.
+The Svelte renderer owns presentation and wizard state. Small stateless controllers under `src/lib/controllers` compose connection verification, deployment approval/preparation, and project lifecycle workflows without introducing another state-management layer. They call a narrow set of typed Tauri commands through `src/lib/bridge.ts`; the bridge provides realistic preview data when the UI runs outside Tauri.
+
+Browser preview is selected only when the page is genuinely outside Tauri. If native bootstrap fails in the packaged application, the renderer shows a fatal degraded-state screen and exposes no project, authentication, or deployment actions; it never falls back to simulated success data.
 
 Rust owns all privileged behavior:
 
-- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects.
-- `command_runner.rs` enforces the executable allowlist, streams redacted operation events, and manages cancellation.
+- `catalog.rs` validates bundled and external sources, resolves GitHub revisions, and inspects local projects. Catalog HTTP and Git origins must resolve exclusively to public IP space; HTTP clients pin the accepted DNS answers, allow only bounded same-origin HTTPS redirects, verify the final response origin, and stream into capped buffers. Catalog entry counts, cumulative manifest bytes, local metadata files, and the in-memory inspection cache are independently bounded.
+- `command_runner.rs` enforces the executable allowlist, bounds and redacts captured output, limits streamed line size, and supervises complete process trees for cancellation and timeout handling.
 - `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.
 - `permissions.rs` runs only registered, read-only Azure and Microsoft Graph checks and returns structured pass, warning, or failure results.
@@ -17,11 +21,13 @@ Rust owns all privileged behavior:
 
 The hidden `azd vs-server` protocol is intentionally not used.
 
-The product is a management and orchestration interface over installed command-line tools, not a terminal emulator. Known workflows prefer machine-readable CLI or PowerShell output, project that output into typed Rust models, present choices as native GUI controls, and pass only validated selections back as argument arrays. Human-formatted output is diagnostic display only and is never scraped to drive application behavior. The app does not maintain a general-purpose shell or PTY; genuinely interactive, unmodeled template hooks remain an explicit external-terminal fallback.
+New destinations are persisted as `attention` immediately after reservation and promoted to `ready` only after `azd init` and environment configuration complete. A failed preparation therefore remains visible under Projects with guidance to inspect and resume a usable azd project or manually remove the folder for a clean retry; the app does not guess whether partial user or hook output is safe to delete. Remote Git checkouts ignore system/global Git configuration, negotiate a blobless shallow fetch, and validate file count plus individual and total tree sizes before checkout.
 
-Tool installation is a two-step typed flow. The renderer requests an application-owned `ToolInstallPlan` and displays its provider, source, scope, destination, exact command, and documentation. A separate confirmation starts the corresponding registered `CommandSpec`; tool IDs that are not in the native non-elevated registry cannot produce either a plan or an executable command.
+The product is a management and orchestration interface over installed command-line tools, not a terminal emulator. Known workflows prefer machine-readable CLI or PowerShell output, project that output into typed Rust models, present choices as native GUI controls, and pass only validated selections back as argument arrays. Human-formatted output is diagnostic display only and is never scraped to drive application behavior. The app does not maintain a general-purpose shell or PTY; genuinely interactive, unmodeled template hooks remain an explicit external-terminal fallback. Terminal providers are selected from a fixed platform registry and resolved to absolute executable paths before launch.
 
-The Windows Azure CLI provider invokes the official `az.cmd` shim because the MSI also places an extensionless Unix shell wrapper on `PATH`. Renderer and manifest data cannot select this shim, and command-shell metacharacters are rejected from its argument array before process creation. Registered background commands use the Windows no-console process flag so normal checks, authentication, and lifecycle operations do not open a console window.
+Tool installation is a typed, version-pinned flow. The native layer resolves an exact PSGallery version and returns an application-owned `ToolInstallPlan`; the renderer displays its provider, source, scope, destination, version, exact command, and documentation. Confirmation re-resolves the package, presents a native OS dialog, and issues a one-use approval bound to the module ID and exact version. Only that approval can start the corresponding registered `CommandSpec`; tool IDs that are not in the native non-elevated registry cannot produce either a plan or an executable command.
+
+The Windows Azure CLI provider invokes the official `az.cmd` shim because the MSI also places an extensionless Unix shell wrapper on `PATH`. Renderer and manifest data cannot select this shim, and command-shell metacharacters are rejected from its argument array before process creation. Before each command starts, the allowlisted executable is resolved to an absolute path; that exact path is executed, recorded in start events, and shown with detected tools. Registered background commands use the Windows no-console process flag so normal checks, authentication, and lifecycle operations do not open a console window. Every spawned command is attached to a Windows Job Object or Unix process group so cancellation, timeout, and runner shutdown terminate descendant processes as well as the direct child.
 
 When supported by the installed azd version, an explicit tool refresh also consumes the public `azd tool list/check --output json` contracts. The slower network-backed update scan is not part of application bootstrap. It enriches Azure CLI status with azd's installed and latest versions while preserving the direct executable probe as a fallback. Available updates are informational and do not block deployment readiness. Because azd 1.30 dry-run reports the action but not its selected package-manager strategy, elevation, or destination, system-tool installs and upgrades remain user-directed and the app exposes a copyable dry-run command instead of executing them.
 
@@ -34,11 +40,11 @@ When supported by the installed azd version, an explicit tool refresh also consu
 5. Review the exact values and explicitly approve pinned template code execution for the current session.
 6. Run manifest-requested registered permission checks and stop on required failures.
 7. Resolve a remote source to a full commit and cache that exact checkout.
-8. Run `azd init` for new projects or register an environment for an existing project, then apply approved values with `azd env set`.
+8. Run `azd init` for new projects or register an environment for an existing project, then apply approved values through a temporary `azd env set --file` input. Ordinary and sensitive environment configuration use the same transport so values are not exposed in process arguments.
 9. Run `azd provision --preview --no-prompt`.
 10. Run `azd up --no-prompt`, or hand off a manifest-declared interactive workflow to a validated external terminal, then refresh project state.
 
-The consent gate precedes project materialization because both `azd init` and lifecycle commands can execute template hooks. `azd provision --preview` is not treated as read-only: azd does not provide a no-hooks preview flag, so a preview can change local files, Azure resources, or directory objects. Every preview terminal outcome is therefore classified as `possiblyModified`, including success. Opening an existing project creates a fresh session consent gate before preview, provision, deployment, or resource removal; read-only project refresh remains available without that approval.
+The consent gate precedes project materialization because both `azd init` and lifecycle commands can execute template hooks. Renderer acknowledgement is only explanatory: Rust displays a native confirmation and issues a five-minute, one-use approval bound to the action, project path, environment, template ID, and revision. Resource removal receives its own destructive confirmation. `azd provision --preview` is not treated as read-only: azd does not provide a no-hooks preview flag, so a preview can change local files, Azure resources, or directory objects. Every preview terminal outcome is therefore classified as `possiblyModified`, including success. Opening an existing project creates a fresh session consent gate before preview, provision, deployment, or resource removal; read-only project refresh remains available without that approval.
 
 Permission-check IDs are an application-owned registry. Catalogs can select a registered ID but cannot provide a command, script, URL, or executable argument. V1 can perform a live ARM subscription read, a Microsoft Graph organization read, and a Microsoft Graph PowerShell delegated-scope comparison. These checks do not capture tokens and do not mutate Azure or Microsoft Entra resources.
 
@@ -65,6 +71,8 @@ Future app-owned MSAL authentication can be introduced behind the same provider 
 
 SQLite is stored in the Tauri application-data directory. It contains project metadata, catalog sources and trust decisions, non-sensitive wizard drafts, typed appearance and navigation settings, and operation history, including structured terminal outcomes. Draft persistence accepts only typed standard or manifest-declared keys; Rust resolves sensitivity from bundled, accepted, or active inspected manifests and removes stale unsafe values when a draft is loaded. A failed or cancelled operation marks its matching project as needing attention across restarts. azd continues to own `.azure` environment files.
 
-The template cache is content-addressed by template ID and commit. A cached Git checkout must resolve to the catalog commit before it is used.
+The Settings page can clear all app-owned persisted state and cached template material after a native confirmation. Clearing is refused while a command is active, uses SQLite secure deletion followed by WAL truncation and compaction, and invalidates in-memory trust and approval state. It deliberately does not delete project directories or credentials owned by azd, Azure CLI, or PowerShell.
+
+Pinned remote templates are fetched into a fresh temporary checkout for each materialization. The commit is verified after checkout, the checkout remains alive only through `azd init`, and it is then deleted. Executable template working trees are never reused across deployments.
 
 Project workspaces refresh their current environment through the public `azd show --output json` contract. The renderer projects that untrusted JSON into typed service summaries, accepts only HTTPS endpoints, and creates Azure portal links only for validated ARM resource IDs. Raw state remains available as an advanced diagnostic view.

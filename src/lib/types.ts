@@ -62,6 +62,7 @@ export interface Prerequisite {
 export interface ToolStatus extends Prerequisite {
   state: ToolState;
   installedVersion?: string;
+  executablePath?: string;
   latestVersion?: string;
   updateAvailable?: boolean;
   detail?: string;
@@ -77,8 +78,13 @@ export interface ToolInstallPlan {
   source: string;
   scope: string;
   destination: string;
+  exactVersion: string;
   command: string;
   documentationUrl: string;
+}
+
+export interface ToolInstallApprovalGrant {
+  token: string;
 }
 
 export interface ConnectionRequirement {
@@ -329,7 +335,7 @@ export interface BootstrapData {
 export interface PrepareDeploymentRequest {
   templateId: string;
   sourceMode: string;
-  sourceTrustAccepted: boolean;
+  executionApprovalToken: string;
   sourcePath?: string;
   sourceRevision?: string;
   destination: string;
@@ -339,6 +345,19 @@ export interface PrepareDeploymentRequest {
   location: string;
   resourceGroup?: string;
   environmentValues: Record<string, string | boolean | string[] | undefined>;
+}
+
+export interface ExecutionApprovalRequest {
+  action: "prepare" | "preview" | "up" | "provision" | "deploy" | "down";
+  projectPath: string;
+  environment: string;
+  templateId: string;
+  revision?: string;
+}
+
+export interface ExecutionApprovalGrant {
+  token: string;
+  projectPath: string;
 }
 
 export interface TemplateInspection {

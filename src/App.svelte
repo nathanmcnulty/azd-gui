@@ -10,20 +10,20 @@
   import {
     bootstrap,
     cancelOperation,
+    clearLocalAppData,
     chooseFolder,
     createProjectEnvironment,
     discoverAzureScope,
     inspectGitHubTemplate,
     inspectLocalTemplate,
     installTool,
+    listProjects,
     onOperationEvent,
     openExternalTerminal,
     openExternalUrl,
     previewToolInstall,
-    refreshConnections,
+    requestToolInstallApproval,
     refreshTools,
-    prepareDeployment,
-    startAzdOperation,
     login,
     previewExternalCatalog,
     removeCatalogSource,
@@ -31,9 +31,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
-    getOperationHistory,
     getProjectEnvironmentValues,
-    listProjectEnvironments,
     runPermissionChecks,
     saveAppSettings,
     selectProjectEnvironment,
@@ -56,6 +54,7 @@
     PermissionCheckResult,
     ProjectEnvironment,
     ProjectEnvironmentValue,
+    ProjectSummary,
     TemplateInspection,
     ToolInstallPlan,
     ToolStatus,
@@ -65,14 +64,26 @@
   import {
     connectionMeetsRequirements,
     connectionMeetsTarget,
-    missingRequestedScopes,
-    retainGrantedGraphScopes
+    missingRequestedScopes
   } from "./lib/connections";
+  import {
+    previewConnectedProvider,
+    refreshConnectionList,
+    verifyConnectionContext
+  } from "./lib/controllers/connection-controller";
+  import {
+    materializeDeployment as materializeDeploymentProject,
+    startApprovedDeploymentOperation
+  } from "./lib/controllers/deployment-controller";
+  import {
+    loadProjectWorkspace,
+    startProjectOperation,
+    type ProjectAction
+  } from "./lib/controllers/project-operation-controller";
   import { projectServices } from "./lib/project-state";
   import {
     calculateWizardPlan,
     conditionMatches,
-    environmentValuesForPlan,
     sensitiveFieldIds,
     valuesRemovedByPlan,
     visibleFields
@@ -101,10 +112,10 @@
   const defaultOutputHeight = 210;
   const minimumOutputHeight = 120;
   const minimumWorkspaceHeight = 120;
-  const connectionVerificationDelays = [0, 400, 1200];
 
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
+  let bootstrapFailure = "";
   let activeNav: NavId = "home";
   let navigationExpanded = true;
   let outputOpen = false;
@@ -136,7 +147,7 @@
   let terminalOpening = false;
   let installPlan: ToolInstallPlan | null = null;
   let installingToolId: string | null = null;
-  let selectedProject: import("./lib/types").ProjectSummary | null = null;
+  let selectedProject: ProjectSummary | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
@@ -171,6 +182,9 @@
   let catalogPreview: ExternalCatalogPreview | null = null;
   let catalogSourceError = "";
   let pendingCatalogRemovalId: string | null = null;
+  let pendingLocalDataClear = false;
+  let localDataClearing = false;
+  let localDataClearError = "";
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let azureDiscovery: AzureDiscovery | null = null;
   let azureDiscoveryLoading = false;
@@ -355,7 +369,7 @@
         navigationExpanded = data.settings.navigationExpanded;
         applyTheme(theme);
       } catch (error) {
-        addSystemLog(`Native backend unavailable: ${String(error)}. Using preview data.`, "warning");
+        bootstrapFailure = String(error);
       } finally {
         loading = false;
       }
@@ -721,7 +735,8 @@
     installingToolId = plan.id;
     addSystemLog(`Approved: ${plan.action} from ${plan.source} for ${plan.scope.toLowerCase()}.`, "info");
     try {
-      const operationId = await installTool(plan.id);
+      const approval = await requestToolInstallApproval(plan.id, plan.exactVersion);
+      const operationId = await installTool(plan.id, plan.exactVersion, approval.token);
       outputOpen = true;
       if (data.isNative) {
         await waitForOperation(operationId);
@@ -753,7 +768,7 @@
     try {
       data = {
         ...data,
-        connections: retainGrantedGraphScopes(currentConnections, await refreshConnections())
+        connections: await refreshConnectionList(currentConnections)
       };
     } catch (error) {
       addSystemLog(`Connection check failed: ${String(error)}`, "error");
@@ -761,31 +776,13 @@
   }
 
   async function verifyConnection(provider: ConnectionStatus, target?: ConnectionTarget) {
-    let latestConnections = data.connections.map((connection) =>
+    const checkingConnections = data.connections.map((connection) =>
       connection.id === provider.id ? { ...connection, state: "checking" as const } : connection
     );
-    data = { ...data, connections: latestConnections };
-    for (const [attempt, delay] of connectionVerificationDelays.entries()) {
-      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      try {
-        latestConnections = retainGrantedGraphScopes(latestConnections, await refreshConnections(target));
-        const refreshed = latestConnections.find((connection) => connection.id === provider.id);
-        const targetMatches = !target || Boolean(refreshed && connectionMeetsTarget(refreshed, target));
-        if (refreshed?.state === "connected" && targetMatches) {
-          data = { ...data, connections: latestConnections };
-          return;
-        }
-      } catch (error) {
-        if (attempt === connectionVerificationDelays.length - 1) {
-          latestConnections = latestConnections.map((connection) =>
-            connection.id === provider.id
-              ? { ...connection, state: "unknown", detail: `Status check failed: ${String(error)}` }
-              : connection
-          );
-        }
-      }
-    }
-    data = { ...data, connections: latestConnections };
+    data = { ...data, connections: checkingConnections };
+    const result = await verifyConnectionContext(provider, checkingConnections, target);
+    data = { ...data, connections: result.connections };
+    if (result.connected) return;
     addSystemLog(
       target
         ? `${provider.name} sign-in completed, but tenant ${target.tenantId} and subscription ${target.subscriptionId} are not visible yet. Use Check all to retry.`
@@ -820,22 +817,7 @@
       } else {
         data = {
           ...data,
-          connections: data.connections.map((connection) =>
-            connection.id === provider.id
-              ? {
-                  ...connection,
-                  state: "connected",
-                  account: "preview@example.com",
-                  tenantId: target?.tenantId ?? "72f988bf-86f1-41af-91ab-2d7cd011db47",
-                  subscriptionId:
-                    provider.id === "azureCli" || provider.id === "azPowerShell"
-                      ? target?.subscriptionId ?? connection.subscriptionId
-                      : connection.subscriptionId,
-                  grantedScopes:
-                    provider.id === "graphPowerShell" ? [...(provider.scopes ?? [])] : connection.grantedScopes
-                }
-              : connection
-          )
+          connections: previewConnectedProvider(data.connections, provider, target)
         };
       }
     } catch (error) {
@@ -948,8 +930,9 @@
         "Starting azd provision --preview --no-prompt. Pinned template hooks may modify local or cloud state.",
         "warning"
       );
-      const operationId = await startAzdOperation(
+      const operationId = await startApprovedDeploymentOperation(
         "preview",
+        selectedEntry,
         projectPath,
         String(wizardValues.environmentName || "dev")
       );
@@ -973,23 +956,25 @@
     if (!projectPrepared) {
       addSystemLog("Materializing the pinned template and applying environment values.", "info");
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
-      const environmentValues = environmentValuesForPlan(wizardPlan, wizardValues);
-      const project = await prepareDeployment({
-        templateId: selectedEntry.id,
-        sourceMode: String(wizardValues.sourceMode ?? "catalog"),
-        sourceTrustAccepted: Boolean(selectedEntry.trusted || sourceTrustAccepted),
-        sourcePath: String(wizardValues.sourcePath || "") || undefined,
-        sourceRevision: selectedEntry.commit === "local" ? undefined : selectedEntry.commit,
-        destination: projectPath,
-        environment: String(wizardValues.environmentName || "dev"),
-        tenant: String(wizardValues.tenantId || "") || undefined,
-        subscription: String(wizardValues.subscriptionId || "") || undefined,
-        location: String(wizardValues.location || "westus2"),
-        resourceGroup: String(wizardValues.resourceGroup || "") || undefined,
-        environmentValues
-      });
+      let result: Awaited<ReturnType<typeof materializeDeploymentProject>>;
+      try {
+        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues);
+      } catch (error) {
+        if (wizardValues.sourceMode !== "existingProject") {
+          try {
+            data = { ...data, projects: await listProjects() };
+          } catch {
+            // Preserve the original preparation failure when the recovery refresh also fails.
+          }
+          throw new Error(
+            `${String(error)} The destination was preserved and registered under Projects as attention required. Inspect it for a usable azure.yaml before resuming, or remove the folder manually if you want a clean retry.`
+          );
+        }
+        throw error;
+      }
+      const project = result.project;
       projectPath = project.path;
-      wizardValues = { ...wizardValues, projectPath };
+      wizardValues = result.values;
       data = {
         ...data,
         projects: [project, ...data.projects.filter((existing) => existing.path !== project.path)]
@@ -999,7 +984,7 @@
     return projectPath;
   }
 
-  async function runDeployment(action = "up") {
+  async function runDeployment(action: "up" | "provision" | "deploy" = "up") {
     if (!selectedEntry || activeOperationId) return;
     if (!hookExecutionAccepted) {
       addSystemLog("Review and approve pinned template code execution before deployment.", "error");
@@ -1016,8 +1001,9 @@
     addSystemLog(`Starting azd ${action} --no-prompt`, "info");
     try {
       const projectPath = await materializeProject();
-      const operationId = await startAzdOperation(
+      const operationId = await startApprovedDeploymentOperation(
         action,
+        selectedEntry,
         projectPath,
         String(wizardValues.environmentName || "dev")
       );
@@ -1382,7 +1368,7 @@
   }
 
   async function openProjectWorkspace(
-    project: import("./lib/types").ProjectSummary,
+    project: ProjectSummary,
     preserveView = false
   ) {
     if (!preserveView) {
@@ -1400,30 +1386,17 @@
     environmentError = "";
     environmentConfigurationLoaded = false;
     projectLoading = true;
-    const [stateResult, environmentsResult, historyResult] = await Promise.allSettled([
-      getProjectState(project.path, project.environment),
-      listProjectEnvironments(project.path),
-      getOperationHistory(project.path)
-    ]);
-    projectState = stateResult.status === "fulfilled" ? stateResult.value : null;
-    projectEnvironments =
-      environmentsResult.status === "fulfilled"
-        ? environmentsResult.value
-        : project.environment
-          ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
-          : [];
-    const currentEnvironment = projectEnvironments.find((environment) => environment.isDefault)?.name ?? project.environment;
-    if (environmentsResult.status === "fulfilled") applyProjectEnvironments(projectEnvironments);
-    if (currentEnvironment) {
-      await loadEnvironmentConfiguration(project.path, currentEnvironment);
+    const snapshot = await loadProjectWorkspace(project);
+    projectState = snapshot.state;
+    projectEnvironments = snapshot.environments;
+    applyProjectEnvironments(projectEnvironments);
+    if (snapshot.currentEnvironment) {
+      await loadEnvironmentConfiguration(project.path, snapshot.currentEnvironment);
     }
-    projectOperationHistory = historyResult.status === "fulfilled" ? historyResult.value : [];
-    const failures = [stateResult, environmentsResult, historyResult].filter(
-      (result) => result.status === "rejected"
-    );
-    if (failures.length > 0) {
+    projectOperationHistory = snapshot.history;
+    if (snapshot.failedSources > 0) {
       addSystemLog(
-        `Could not refresh ${failures.length} project data source${failures.length === 1 ? "" : "s"}.`,
+        `Could not refresh ${snapshot.failedSources} project data source${snapshot.failedSources === 1 ? "" : "s"}.`,
         "warning"
       );
       outputOpen = true;
@@ -1512,8 +1485,6 @@
     }
   }
 
-  type ProjectAction = "preview" | "up" | "provision" | "deploy" | "refresh" | "down";
-
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
     if (["preview", "up", "provision", "deploy", "down"].includes(action) && !projectExecutionAccepted) {
@@ -1531,14 +1502,6 @@
       outputOpen = true;
       return;
     }
-    if (
-      action === "down" &&
-      !window.confirm(
-        `Delete Azure resources for ${selectedProject.name}/${selectedProject.environment ?? "current environment"}?`
-      )
-    ) {
-      return;
-    }
     outputOpen = true;
     operationState = "running";
     lastOperationResult = null;
@@ -1546,7 +1509,7 @@
       projectPreview = null;
     }
     try {
-      const operationId = await startAzdOperation(action, selectedProject.path, selectedProject.environment);
+      const operationId = await startProjectOperation(selectedProject, action);
       if (action === "up") projectDeploymentResult = null;
       operationProjectPaths.set(operationId, selectedProject.path);
       operationEnvironments.set(operationId, selectedProject.environment);
@@ -1674,6 +1637,20 @@
     }
   }
 
+  async function confirmClearLocalData() {
+    localDataClearing = true;
+    localDataClearError = "";
+    try {
+      const cleared = await clearLocalAppData();
+      if (cleared) window.location.reload();
+      else pendingLocalDataClear = false;
+    } catch (error) {
+      localDataClearError = error instanceof Error ? error.message : String(error);
+    } finally {
+      localDataClearing = false;
+    }
+  }
+
   const commands = [
     { label: "Browse catalog", action: () => navigate("catalog") },
     { label: "Open projects", action: () => navigate("projects") },
@@ -1689,6 +1666,18 @@
   <title>{selectedEntry ? `${selectedEntry.title} — ` : ""}Azure Deployment Studio</title>
 </svelte:head>
 
+{#if bootstrapFailure}
+  <main class="bootstrap-failure" role="alert">
+    <div class="bootstrap-failure-card">
+      <span class="brand-mark"><Icon name="warning" size={22} /></span>
+      <span class="eyebrow">NATIVE BACKEND UNAVAILABLE</span>
+      <h1>Azure Deployment Studio could not start safely</h1>
+      <p>The application has disabled project, authentication, and deployment actions instead of using preview data.</p>
+      <pre>{bootstrapFailure}</pre>
+      <p class="bootstrap-failure-guidance">Close the application, review the local installation and application-data permissions, then start it again.</p>
+    </div>
+  </main>
+{:else}
 <div
   class="app-shell"
   class:output-open={outputOpen}
@@ -1920,7 +1909,7 @@
                   </div>
                   <div class="data-primary">
                     <strong>{tool.name}</strong>
-                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion}` : ""}</span>
+                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion}` : ""}{tool.executablePath ? ` · ${tool.executablePath}` : ""}</span>
                   </div>
                   <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : tool.state === "missing" ? "warning" : "neutral"} label={tool.updateAvailable ? "update available" : tool.state} />
                   {#if tool.updateAvailable && tool.installCommand}
@@ -2656,7 +2645,7 @@
           {#each data.tools as tool}
             <div class="tool-row">
               <div class={`state-icon ${tool.state}`}><Icon name={tool.state === "ready" ? "check" : "tools"} size={16} /></div>
-              <div><strong>{tool.name}</strong><span>{tool.kind === "powershellModule" ? "PowerShell module" : "Command-line tool"}</span></div>
+              <div><strong>{tool.name}</strong><span>{tool.kind === "powershellModule" ? "PowerShell module" : "Command-line tool"}{tool.executablePath ? ` · ${tool.executablePath}` : ""}</span></div>
               <div><small>Installed</small><span>{tool.installedVersion ?? "Not found"}</span>{#if tool.updateAvailable && tool.latestVersion}<small>Latest {tool.latestVersion}</small>{/if}</div>
               <div><small>Required</small><span>{tool.minimumVersion ?? "Any"}</span></div>
               <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : "warning"} label={tool.updateAvailable ? "update available" : tool.state} />
@@ -2704,6 +2693,21 @@
           <div class="setting-row"><div><strong>Telemetry</strong><span>No usage or deployment telemetry is collected.</span></div><StatusPill tone="neutral" label="Off" /></div>
           <div class="setting-row"><div><strong>Secret storage</strong><span>Tokens and sensitive wizard fields are excluded from app storage and logs.</span></div><StatusPill tone="success" label="Protected" /></div>
         </div>
+        <div class="settings-group">
+          <h2>Local application data</h2>
+          <div class="setting-row">
+            <div><strong>Clear saved app state</strong><span>Removes project references, history, drafts, catalog trust, settings, and the app cache. Project folders and CLI credentials remain.</span></div>
+            <div class="catalog-source-actions">
+              {#if pendingLocalDataClear}
+                <button class="secondary compact" disabled={localDataClearing} on:click={() => (pendingLocalDataClear = false)}>Cancel</button>
+                <button class="danger compact" disabled={localDataClearing || operationState === "running"} on:click={confirmClearLocalData}>{localDataClearing ? "Clearing…" : "Confirm clear"}</button>
+              {:else}
+                <button class="danger compact" disabled={operationState === "running"} on:click={() => { pendingLocalDataClear = true; localDataClearError = ""; }}>Clear local data</button>
+              {/if}
+            </div>
+          </div>
+          {#if localDataClearError}<p class="inline-error" role="alert">{localDataClearError}</p>{/if}
+        </div>
       </section>
     {/if}
   </main>
@@ -2734,6 +2738,7 @@
     <span>{data.platform}</span>
   </footer>
 </div>
+{/if}
 
 {#if installPlan}
   <InstallReviewDialog

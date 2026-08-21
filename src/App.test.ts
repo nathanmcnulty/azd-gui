@@ -137,6 +137,18 @@ describe("desktop experience", () => {
     expect(screen.getByRole("textbox", { name: "Filter templates and tags" })).toBeInTheDocument();
   });
 
+  it("requires explicit confirmation before clearing local application data", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Clear local data" }));
+
+    expect(screen.getByRole("button", { name: "Confirm clear" })).toBeInTheDocument();
+    expect(screen.getByText(/project folders and CLI credentials remain/i)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("button", { name: "Confirm clear" })).not.toBeInTheDocument();
+  });
+
   it("requires review before a vetted per-user module installation", async () => {
     render(App);
 

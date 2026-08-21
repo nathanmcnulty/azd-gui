@@ -1,10 +1,84 @@
 use crate::{
     command_runner::{capture, CommandSpec, Executable},
-    models::{ToolInstallPlan, ToolStatus},
+    error::{AppError, AppResult},
+    models::{ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus},
 };
 use serde::Deserialize;
 use serde_json::Value;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
+use uuid::Uuid;
+
+const INSTALL_APPROVAL_LIFETIME: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Clone)]
+struct PendingToolInstall {
+    id: String,
+    exact_version: String,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+pub struct ToolInstallApprovals {
+    pending: Mutex<HashMap<String, PendingToolInstall>>,
+}
+
+impl ToolInstallApprovals {
+    pub fn clear(&self) -> AppResult<()> {
+        self.pending
+            .lock()
+            .map_err(|_| {
+                AppError::Invalid("Tool installation approval cache is unavailable.".into())
+            })?
+            .clear();
+        Ok(())
+    }
+
+    pub fn issue(&self, plan: &ToolInstallPlan) -> AppResult<ToolInstallApprovalGrant> {
+        validate_module_version(&plan.exact_version)?;
+        let token = Uuid::new_v4().to_string();
+        let mut pending = self.pending.lock().map_err(|_| {
+            AppError::Invalid("Tool installation approval cache is unavailable.".into())
+        })?;
+        pending.retain(|_, approval| approval.expires_at > Instant::now());
+        pending.insert(
+            token.clone(),
+            PendingToolInstall {
+                id: plan.id.clone(),
+                exact_version: plan.exact_version.clone(),
+                expires_at: Instant::now() + INSTALL_APPROVAL_LIFETIME,
+            },
+        );
+        Ok(ToolInstallApprovalGrant { token })
+    }
+
+    pub fn consume(&self, token: &str, id: &str, exact_version: &str) -> AppResult<()> {
+        validate_module_version(exact_version)?;
+        let approval = self
+            .pending
+            .lock()
+            .map_err(|_| AppError::Invalid("Tool installation approval cache is unavailable.".into()))?
+            .remove(token)
+            .ok_or_else(|| {
+                AppError::Invalid(
+                    "Tool installation approval is missing, expired, or already used. Review the installation again."
+                        .into(),
+                )
+            })?;
+        if approval.expires_at <= Instant::now()
+            || approval.id != id
+            || approval.exact_version != exact_version
+        {
+            return Err(AppError::Invalid(
+                "Tool installation approval does not match this package and version.".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct AzdToolInventoryItem {
@@ -23,6 +97,12 @@ struct AzdToolUpdateItem {
     latest_version: String,
     #[serde(default)]
     update_available: bool,
+}
+
+#[derive(Default)]
+struct ToolProbe {
+    version: Option<String>,
+    executable_path: Option<String>,
 }
 
 fn parse_azd_tool_inventory(value: &str) -> Option<HashMap<String, AzdToolInventoryItem>> {
@@ -80,29 +160,43 @@ async fn azd_tool_updates() -> Option<HashMap<String, AzdToolUpdateItem>> {
 async fn version(
     executable: Executable,
     args: impl IntoIterator<Item = impl Into<String>>,
-) -> Option<String> {
-    let output = capture(CommandSpec::new(executable, args), Duration::from_secs(12))
-        .await
-        .ok()?;
+) -> ToolProbe {
+    let Ok(output) = capture(CommandSpec::new(executable, args), Duration::from_secs(12)).await
+    else {
+        return ToolProbe::default();
+    };
+    let executable_path = Some(output.executable_path);
     if !output.success {
-        return None;
+        return ToolProbe {
+            version: None,
+            executable_path,
+        };
     }
     let value = output.stdout.trim();
+    let mut version = None;
     if value.starts_with('{') {
-        let json: Value = serde_json::from_str(value).ok()?;
-        for key in ["version", "azure-cli", "Version"] {
-            if let Some(version) = json.get(key).and_then(Value::as_str) {
-                return Some(version.into());
+        if let Ok(json) = serde_json::from_str::<Value>(value) {
+            for key in ["version", "azure-cli", "Version"] {
+                if let Some(value) = json.get(key).and_then(Value::as_str) {
+                    version = Some(value.into());
+                    break;
+                }
             }
         }
     }
-    regex::Regex::new(r"\d+\.\d+(?:\.\d+){0,2}")
-        .ok()?
-        .find(value)
-        .map(|value| value.as_str().to_string())
+    version = version.or_else(|| {
+        regex::Regex::new(r"\d+\.\d+(?:\.\d+){0,2}")
+            .ok()?
+            .find(value)
+            .map(|value| value.as_str().to_string())
+    });
+    ToolProbe {
+        version,
+        executable_path,
+    }
 }
 
-async fn powershell_module_version(name: &str) -> Option<String> {
+async fn powershell_module_version(name: &str) -> ToolProbe {
     let spec = CommandSpec::new(
         Executable::PowerShell,
         [
@@ -114,8 +208,13 @@ async fn powershell_module_version(name: &str) -> Option<String> {
         ],
     )
     .env("AZD_GUI_MODULE", name);
-    let output = capture(spec, Duration::from_secs(15)).await.ok()?;
-    output.success.then(|| output.stdout.trim().to_string())
+    let Ok(output) = capture(spec, Duration::from_secs(15)).await else {
+        return ToolProbe::default();
+    };
+    ToolProbe {
+        version: output.success.then(|| output.stdout.trim().to_string()),
+        executable_path: Some(output.executable_path),
+    }
 }
 
 pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
@@ -159,7 +258,10 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
         "Azure CLI",
         "tool",
         "2.60.0",
-        inventory_azure_cli.or(az),
+        ToolProbe {
+            version: inventory_azure_cli.or(az.version),
+            executable_path: az.executable_path,
+        },
         "azdTool",
         Some("az-cli"),
     );
@@ -213,11 +315,12 @@ fn tool(
     name: &str,
     kind: &str,
     minimum: &str,
-    installed: Option<String>,
+    probe: ToolProbe,
     provider: &str,
     install_id: Option<&str>,
 ) -> ToolStatus {
-    let installed_version = installed
+    let installed_version = probe
+        .version
         .as_deref()
         .and_then(|value| semver::Version::parse(value.trim_start_matches('v')).ok());
     let required_version = semver::Version::parse(minimum).ok();
@@ -230,23 +333,21 @@ fn tool(
                 "outdated"
             }
         })
-        .unwrap_or(if installed.is_some() {
+        .unwrap_or(if probe.version.is_some() {
             "ready"
         } else {
             "missing"
         });
-    let install_plan = install_plan(id);
-    let install_command = install_plan
-        .as_ref()
-        .map(|plan| plan.command.clone())
-        .or_else(|| match provider {
-            "azdTool" => install_id.map(|name| format!("azd tool install {name} --no-prompt")),
-            _ => None,
-        });
-    let documentation_url = install_plan
-        .as_ref()
-        .map(|plan| plan.documentation_url.clone())
-        .or_else(|| documentation_url(id).map(Into::into));
+    let can_install = approved_install(id).is_some();
+    let install_command = match provider {
+        "azdTool" => install_id.map(|name| format!("azd tool install {name} --no-prompt")),
+        _ => None,
+    };
+    let documentation_url = documentation_url(id).map(Into::into).or_else(|| {
+        can_install.then(|| {
+            "https://learn.microsoft.com/powershell/module/microsoft.powershell.psresourceget/install-psresource?view=powershellget-3.x".into()
+        })
+    });
     ToolStatus {
         id: id.into(),
         name: name.into(),
@@ -254,7 +355,8 @@ fn tool(
         minimum_version: Some(minimum.into()),
         required: id == "azd",
         state: state.into(),
-        installed_version: installed.filter(|value| !value.is_empty()),
+        installed_version: probe.version.filter(|value| !value.is_empty()),
+        executable_path: probe.executable_path,
         latest_version: None,
         update_available: false,
         detail: None,
@@ -262,7 +364,7 @@ fn tool(
         install_id: install_id.map(Into::into),
         documentation_url,
         install_command,
-        can_install: install_plan.is_some(),
+        can_install,
     }
 }
 
@@ -287,16 +389,17 @@ struct ApprovedModuleInstall {
 }
 
 impl ApprovedModuleInstall {
-    fn script(&self) -> String {
-        format!(
-            "Install-PSResource {} -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense",
-            self.id
-        )
+    fn script(&self, exact_version: &str) -> AppResult<String> {
+        validate_module_version(exact_version)?;
+        Ok(format!(
+            "Install-PSResource {} -Version '{}' -Repository PSGallery -Scope CurrentUser -TrustRepository -Quiet -AcceptLicense",
+            self.id, exact_version
+        ))
     }
 
-    fn plan(&self) -> ToolInstallPlan {
-        let script = self.script();
-        ToolInstallPlan {
+    fn plan(&self, exact_version: &str) -> AppResult<ToolInstallPlan> {
+        let script = self.script(exact_version)?;
+        Ok(ToolInstallPlan {
             id: self.id.into(),
             tool_name: self.name.into(),
             provider: "PSResourceGet".into(),
@@ -304,24 +407,25 @@ impl ApprovedModuleInstall {
             source: "PowerShell Gallery (PSGallery)".into(),
             scope: "Current user".into(),
             destination: "Current-user PowerShell module path".into(),
+            exact_version: exact_version.into(),
             command: format!(
                 "pwsh -NoLogo -NoProfile -NonInteractive -Command \"{script}\""
             ),
             documentation_url: "https://learn.microsoft.com/powershell/module/microsoft.powershell.psresourceget/install-psresource?view=powershellget-3.x".into(),
-        }
+        })
     }
 
-    fn spec(&self) -> CommandSpec {
-        CommandSpec::new(
+    fn spec(&self, exact_version: &str) -> AppResult<CommandSpec> {
+        Ok(CommandSpec::new(
             Executable::PowerShell,
             [
                 "-NoLogo".into(),
                 "-NoProfile".into(),
                 "-NonInteractive".into(),
                 "-Command".into(),
-                self.script(),
+                self.script(exact_version)?,
             ],
-        )
+        ))
     }
 }
 
@@ -339,18 +443,56 @@ fn approved_install(id: &str) -> Option<ApprovedModuleInstall> {
     }
 }
 
-pub fn install_plan(id: &str) -> Option<ToolInstallPlan> {
-    approved_install(id).map(|install| install.plan())
+fn validate_module_version(version: &str) -> AppResult<()> {
+    semver::Version::parse(version)
+        .map(|_| ())
+        .map_err(|_| AppError::Invalid(format!("Invalid PowerShell module version: {version}")))
 }
 
-pub fn install_spec(id: &str) -> Option<CommandSpec> {
-    approved_install(id).map(|install| install.spec())
+pub async fn resolve_install_plan(id: &str) -> AppResult<ToolInstallPlan> {
+    let install = approved_install(id).ok_or_else(|| {
+        AppError::Invalid(format!(
+            "{id} has no vetted non-elevated installation strategy."
+        ))
+    })?;
+    let spec = CommandSpec::new(
+        Executable::PowerShell,
+        [
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "$r=Find-PSResource -Name $env:AZD_GUI_MODULE -Repository PSGallery | Sort-Object Version -Descending | Select-Object -First 1; if($r){$r.Version.ToString()}",
+        ],
+    )
+    .env("AZD_GUI_MODULE", install.id);
+    let output = capture(spec, Duration::from_secs(30)).await?;
+    if !output.success {
+        return Err(AppError::Command(format!(
+            "Could not resolve an exact PSGallery version for {}: {}",
+            install.id,
+            output.stderr.trim()
+        )));
+    }
+    let version = output.stdout.trim();
+    install.plan(version)
+}
+
+pub fn install_spec(id: &str, exact_version: &str) -> AppResult<CommandSpec> {
+    approved_install(id)
+        .ok_or_else(|| {
+            AppError::Invalid(format!(
+                "{id} has no vetted non-elevated installation strategy."
+            ))
+        })?
+        .spec(exact_version)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        install_plan, install_spec, parse_azd_tool_inventory, parse_azd_tool_updates, tool,
+        approved_install, install_spec, parse_azd_tool_inventory, parse_azd_tool_updates, tool,
+        ToolInstallApprovals, ToolProbe,
     };
 
     #[test]
@@ -378,22 +520,48 @@ mod tests {
 
     #[test]
     fn approved_install_plan_matches_the_executed_script() {
-        let plan = install_plan("Microsoft.Graph").unwrap();
-        let spec = install_spec("Microsoft.Graph").unwrap();
+        let plan = approved_install("Microsoft.Graph")
+            .unwrap()
+            .plan("2.32.0")
+            .unwrap();
+        let spec = install_spec("Microsoft.Graph", "2.32.0").unwrap();
 
         assert_eq!(plan.provider, "PSResourceGet");
         assert_eq!(plan.source, "PowerShell Gallery (PSGallery)");
         assert_eq!(plan.scope, "Current user");
+        assert_eq!(plan.exact_version, "2.32.0");
         assert!(plan.command.contains(spec.args.last().unwrap()));
+        assert!(plan.command.contains("-Version '2.32.0'"));
         assert!(plan.command.contains("-Quiet -AcceptLicense"));
     }
 
     #[test]
     fn unapproved_installers_do_not_produce_plans_or_commands() {
         for id in ["azd", "az-cli", "pwsh", "manifest-supplied"] {
-            assert!(install_plan(id).is_none());
-            assert!(install_spec(id).is_none());
+            assert!(approved_install(id).is_none());
+            assert!(install_spec(id, "1.0.0").is_err());
         }
+    }
+
+    #[test]
+    fn tool_install_approval_is_version_bound_and_single_use() {
+        let plan = approved_install("Az.Accounts")
+            .unwrap()
+            .plan("5.3.1")
+            .unwrap();
+        let approvals = ToolInstallApprovals::default();
+        let grant = approvals.issue(&plan).unwrap();
+
+        assert!(approvals
+            .consume(&grant.token, "Az.Accounts", "5.3.0")
+            .is_err());
+        let grant = approvals.issue(&plan).unwrap();
+        approvals
+            .consume(&grant.token, "Az.Accounts", "5.3.1")
+            .unwrap();
+        assert!(approvals
+            .consume(&grant.token, "Az.Accounts", "5.3.1")
+            .is_err());
     }
 
     #[test]
@@ -403,7 +571,7 @@ mod tests {
             "Azure CLI",
             "tool",
             "2.60.0",
-            None,
+            ToolProbe::default(),
             "azdTool",
             Some("az-cli"),
         );

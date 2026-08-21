@@ -229,18 +229,26 @@ impl Database {
     pub fn accepted_catalogs(&self) -> AppResult<Vec<crate::models::Catalog>> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id, accepted_catalog_json FROM catalog_sources
+            "SELECT id, url, accepted_catalog_json FROM catalog_sources
              WHERE trusted = 1 AND accepted_catalog_json IS NOT NULL",
         )?;
         let rows = statement
             .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         drop(statement);
 
         let mut catalogs = Vec::new();
-        for (id, value) in rows {
+        for (id, url, value) in rows {
+            if catalog::normalize_catalog_url(&url).is_err() {
+                connection.execute("DELETE FROM catalog_sources WHERE id = ?1", [&id])?;
+                continue;
+            }
             let catalog = serde_json::from_str(&value)
                 .map_err(AppError::from)
                 .and_then(|catalog| {
@@ -340,6 +348,24 @@ impl Database {
                 chrono::Utc::now().to_rfc3339()
             ],
         )?;
+        Ok(())
+    }
+
+    pub fn clear_local_data(&self) -> AppResult<()> {
+        let mut connection = self.lock()?;
+        connection.pragma_update(None, "secure_delete", "ON")?;
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "
+            DELETE FROM operation_history;
+            DELETE FROM projects;
+            DELETE FROM catalog_sources;
+            DELETE FROM wizard_drafts;
+            DELETE FROM app_settings;
+            ",
+        )?;
+        transaction.commit()?;
+        connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;")?;
         Ok(())
     }
 
@@ -701,5 +727,70 @@ mod tests {
             )
             .unwrap();
         assert!(!trusted);
+    }
+
+    #[test]
+    fn legacy_catalog_urls_with_credentials_are_deleted() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO catalog_sources
+                 (id, label, url, trusted, accepted_catalog_json)
+                 VALUES ('private-url', 'Private URL', 'https://example.com/catalog.json?sig=secret', 1, '{}')",
+                [],
+            )
+            .unwrap();
+
+        assert!(database.accepted_catalogs().unwrap().is_empty());
+        let count: i64 = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM catalog_sources WHERE id = 'private-url'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn clearing_local_data_preserves_user_project_folders() {
+        let directory = tempdir().unwrap();
+        let project_path = directory.path().join("project");
+        std::fs::create_dir(&project_path).unwrap();
+        std::fs::write(project_path.join("azure.yaml"), "name: sample").unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        database
+            .upsert_project(&ProjectSummary {
+                id: "sample".into(),
+                name: "Sample".into(),
+                path: project_path.display().to_string(),
+                environment: Some("dev".into()),
+                template_id: Some("sample".into()),
+                revision: None,
+                last_operation: None,
+                state: "ready".into(),
+            })
+            .unwrap();
+        database
+            .save_draft("sample", &serde_json::json!({"location": "westus2"}))
+            .unwrap();
+        database
+            .save_app_settings(&AppSettings {
+                theme: ThemePreference::Dark,
+                navigation_expanded: false,
+            })
+            .unwrap();
+
+        database.clear_local_data().unwrap();
+
+        assert!(database.projects().unwrap().is_empty());
+        assert!(database.load_draft("sample").unwrap().is_none());
+        assert_eq!(database.app_settings().unwrap(), AppSettings::default());
+        assert!(project_path.join("azure.yaml").is_file());
     }
 }
