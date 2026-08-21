@@ -29,6 +29,10 @@ describe("catalog contracts", () => {
     expect(validateManifest(json(path)), JSON.stringify(validateManifest.errors, null, 2)).toBe(true);
   });
 
+  it("marks Maester's interactive azd hooks as terminal-required", () => {
+    expect(json("catalog/manifests/maester-automation.json").requiresInteractiveTerminal).toBe(true);
+  });
+
   it("rejects manifests that attempt to define executable commands", () => {
     const manifest = json("catalog/manifests/myworkid.json");
     manifest.preflight = { command: "arbitrary executable" };
