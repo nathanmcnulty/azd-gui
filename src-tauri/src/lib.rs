@@ -332,10 +332,9 @@ fn start_login(
     state: State<'_, AppState>,
     provider_id: String,
     scopes: Vec<String>,
-    device_code: bool,
     target: Option<ConnectionTarget>,
 ) -> AppResult<String> {
-    let spec = connections::login_spec(&provider_id, &scopes, device_code, target.as_ref())?;
+    let spec = connections::login_spec(&provider_id, &scopes, target.as_ref())?;
     spawn_operation(
         app,
         state.operations.clone(),

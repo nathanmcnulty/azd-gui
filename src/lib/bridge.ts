@@ -288,11 +288,10 @@ export async function runPermissionChecks(
 export async function login(
   providerId: ConnectionStatus["id"],
   scopes: string[] = [],
-  deviceCode = false,
   target?: ConnectionTarget
 ): Promise<string> {
   if (!isTauri()) return `mock-login-${providerId}`;
-  return invoke<string>("start_login", { providerId, scopes, deviceCode, target });
+  return invoke<string>("start_login", { providerId, scopes, target });
 }
 
 export async function startAzdOperation(

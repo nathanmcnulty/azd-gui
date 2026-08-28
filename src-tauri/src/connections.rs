@@ -239,7 +239,6 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
 pub fn login_spec(
     provider_id: &str,
     scopes: &[String],
-    device_code: bool,
     target: Option<&ConnectionTarget>,
 ) -> AppResult<CommandSpec> {
     if scopes.iter().any(|scope| {
@@ -258,18 +257,12 @@ pub fn login_spec(
             if let Some(tenant_id) = tenant_id {
                 args.extend(["--tenant-id".into(), tenant_id.into()]);
             }
-            if device_code {
-                args.push("--use-device-code".into());
-            }
             Ok(CommandSpec::new(Executable::Azd, args))
         }
         "azureCli" => {
             let mut args: Vec<String> = vec!["login".into()];
             if let Some(tenant_id) = tenant_id {
                 args.extend(["--tenant".into(), tenant_id.into()]);
-            }
-            if device_code {
-                args.push("--use-device-code".into());
             }
             Ok(CommandSpec::new(Executable::AzureCli, args))
         }
@@ -279,9 +272,6 @@ pub fn login_spec(
                 script.push_str(
                     " -Tenant $env:AZD_GUI_TENANT_ID -Subscription $env:AZD_GUI_SUBSCRIPTION_ID",
                 );
-            }
-            if device_code {
-                script.push_str(" -UseDeviceAuthentication");
             }
             let spec = CommandSpec::new(
                 Executable::PowerShell,
@@ -301,9 +291,6 @@ pub fn login_spec(
             }
             if !scopes.is_empty() {
                 script.push_str(" -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')");
-            }
-            if device_code {
-                script.push_str(" -UseDeviceCode");
             }
             let mut spec = CommandSpec::new(
                 Executable::PowerShell,
@@ -405,19 +392,13 @@ mod tests {
 
     #[test]
     fn graph_login_without_template_scopes_omits_the_scopes_argument() {
-        let interactive = login_spec("graphPowerShell", &[], false, None).unwrap();
-        let device_code = login_spec("graphPowerShell", &[], true, None).unwrap();
+        let interactive = login_spec("graphPowerShell", &[], None).unwrap();
 
         assert_eq!(
             interactive.args.last().unwrap(),
             "Connect-MgGraph -ContextScope CurrentUser"
         );
         assert!(interactive.environment.is_empty());
-        assert_eq!(
-            device_code.args.last().unwrap(),
-            "Connect-MgGraph -ContextScope CurrentUser -UseDeviceCode"
-        );
-        assert!(device_code.environment.is_empty());
     }
 
     #[test]
@@ -426,8 +407,7 @@ mod tests {
             "Application.ReadWrite.All".into(),
             "RoleManagement.ReadWrite.Directory".into(),
         ];
-        let spec = login_spec("graphPowerShell", &scopes, false, None).unwrap();
-        let device_code = login_spec("graphPowerShell", &scopes, true, None).unwrap();
+        let spec = login_spec("graphPowerShell", &scopes, None).unwrap();
 
         assert_eq!(
             spec.args.last().unwrap(),
@@ -440,11 +420,6 @@ mod tests {
                 "Application.ReadWrite.All,RoleManagement.ReadWrite.Directory".into()
             )]
         );
-        assert_eq!(
-            device_code.args.last().unwrap(),
-            "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',') -UseDeviceCode"
-        );
-        assert_eq!(device_code.environment, spec.environment);
     }
 
     #[test]
@@ -456,19 +431,13 @@ mod tests {
             subscription_id: subscription.into(),
         };
 
-        let azd = login_spec("azd", &[], true, Some(&target)).unwrap();
-        assert_eq!(
-            azd.args,
-            ["auth", "login", "--tenant-id", tenant, "--use-device-code"]
-        );
+        let azd = login_spec("azd", &[], Some(&target)).unwrap();
+        assert_eq!(azd.args, ["auth", "login", "--tenant-id", tenant]);
 
-        let azure_cli = login_spec("azureCli", &[], true, Some(&target)).unwrap();
-        assert_eq!(
-            azure_cli.args,
-            ["login", "--tenant", tenant, "--use-device-code"]
-        );
+        let azure_cli = login_spec("azureCli", &[], Some(&target)).unwrap();
+        assert_eq!(azure_cli.args, ["login", "--tenant", tenant]);
 
-        let az_power_shell = login_spec("azPowerShell", &[], false, Some(&target)).unwrap();
+        let az_power_shell = login_spec("azPowerShell", &[], Some(&target)).unwrap();
         assert_eq!(
             az_power_shell.args.last().unwrap(),
             "Connect-AzAccount -Scope CurrentUser -Tenant $env:AZD_GUI_TENANT_ID -Subscription $env:AZD_GUI_SUBSCRIPTION_ID"
@@ -482,7 +451,7 @@ mod tests {
         );
         assert!(!az_power_shell.args.last().unwrap().contains(tenant));
 
-        let graph = login_spec("graphPowerShell", &[], false, Some(&target)).unwrap();
+        let graph = login_spec("graphPowerShell", &[], Some(&target)).unwrap();
         assert_eq!(
             graph.args.last().unwrap(),
             "Connect-MgGraph -ContextScope CurrentUser -TenantId $env:AZD_GUI_TENANT_ID"
@@ -522,7 +491,7 @@ mod tests {
                 tenant_id: tenant.into(),
                 subscription_id: subscription.into(),
             };
-            assert!(login_spec("azd", &[], false, Some(&target)).is_err());
+            assert!(login_spec("azd", &[], Some(&target)).is_err());
         }
     }
 

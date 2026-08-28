@@ -16,7 +16,7 @@ The supported beta is Windows 10/11 on x64. macOS and Linux source builds are ex
 - Direct GitHub templates resolved to immutable commits before use.
 - Local existing-project and copy-as-template workflows.
 - Detection for azd, Azure CLI, PowerShell, Az PowerShell, and Microsoft Graph PowerShell.
-- Native login orchestration for azd, Azure CLI, Az PowerShell, and Graph PowerShell, including device-code fallback and delegated Graph scope verification.
+- Native login orchestration for azd, Azure CLI, Az PowerShell, and Graph PowerShell using their normal broker or system-browser flows, with delegated Graph scope verification.
 - Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
 - Fresh exact-commit template checkouts, explicit template-execution consent, environment value application, conservative hook-aware preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
