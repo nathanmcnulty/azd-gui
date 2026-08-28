@@ -13,6 +13,10 @@ updates:
       - frontend
     commit-message:
       prefix: "deps"
+    groups:
+      npm:
+        patterns:
+          - "*"
 
   - package-ecosystem: cargo
     directory: /src-tauri
@@ -27,6 +31,10 @@ updates:
       - rust
     commit-message:
       prefix: "deps"
+    groups:
+      cargo:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -41,3 +49,7 @@ updates:
       - github-actions
     commit-message:
       prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
