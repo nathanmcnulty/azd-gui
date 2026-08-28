@@ -140,7 +140,6 @@
   let operationEvents: OperationEvent[] = [];
   let operationState: "idle" | "running" | "succeeded" | "failed" | "cancelled" = "idle";
   let lastOperationResult: OperationEvent | null = null;
-  let deviceCode = false;
   let theme: "system" | "dark" | "light" = "system";
   let projectPrepared = false;
   let terminalLaunch: ExternalTerminalLaunch | null = null;
@@ -800,7 +799,7 @@
     );
     outputOpen = true;
     try {
-      const operationId = await login(provider.id, provider.scopes ?? [], deviceCode, target);
+      const operationId = await login(provider.id, provider.scopes ?? [], target);
       if (data.isNative) {
         await waitForOperation(operationId);
         if (provider.id === "graphPowerShell" && provider.scopes?.length) {
@@ -1932,10 +1931,6 @@
               <div><h2>Template connections</h2><p>Each tool keeps its own credentials. Tokens never pass through this app.</p></div>
               <button class="primary" on:click={connectRequired}><Icon name="connections" size={15} /> Connect required</button>
             </div>
-            <label class="toggle-line">
-              <input type="checkbox" bind:checked={deviceCode} />
-              <span><strong>Use device code</strong><small>Use when a browser or broker cannot complete sign-in.</small></span>
-            </label>
             {#if requiredTenantMismatch}
               <div class="callout warning">
                 <Icon name="warning" size={18} />
@@ -2625,7 +2620,7 @@
     {:else if activeNav === "connections"}
       <section class="page">
         <div class="page-header"><div><span class="eyebrow">AUTHENTICATION</span><h1>Connections</h1><p>See which Azure tools are connected without sharing or storing their tokens.</p></div><button class="secondary" on:click={checkConnections}><Icon name="refresh" size={15} /> Check all</button></div>
-        <div class="callout info"><Icon name="connections" size={18} /><div><strong>Credentials stay with each tool</strong><p>Sign-in uses the tool’s native broker, system browser, or device-code flow. This app retains status only.</p></div></div>
+        <div class="callout info"><Icon name="connections" size={18} /><div><strong>Credentials stay with each tool</strong><p>Sign-in uses the tool’s native broker or system browser flow. This app retains status only.</p></div></div>
         {#if tenantMismatch}<div class="callout warning"><Icon name="warning" size={18} /><div><strong>Tenant mismatch detected</strong><p>Connected tools are using different tenants. Reconnect them before starting a deployment that requires multiple providers.</p></div></div>{/if}
         <div class="connection-grid">
           {#each data.connections as connection}
