@@ -1,8 +1,8 @@
 use crate::{
     error::{AppError, AppResult},
     models::{
-        CatalogEntry, ConfigurationField, ConnectionRequirement, FieldCondition, PermissionCheck,
-        Prerequisite, ProjectTemplateSnapshot, TemplateManifest,
+        CatalogEntry, ConfigurationField, FieldCondition, Prerequisite, ProjectTemplateSnapshot,
+        TemplateManifest,
     },
     permissions,
 };
@@ -432,42 +432,6 @@ pub(crate) fn effective_prerequisites(
     Ok(effective)
 }
 
-pub(crate) fn effective_connections(
-    manifest: &TemplateManifest,
-    environment_values: &HashMap<String, String>,
-) -> AppResult<Vec<ConnectionRequirement>> {
-    validate_requirement_value_keys(manifest, environment_values)?;
-    let mut effective = Vec::new();
-    for requirement in &manifest.connections {
-        if requirement_condition_matches(
-            manifest,
-            requirement.condition.as_ref(),
-            environment_values,
-        )? {
-            effective.push(requirement.clone());
-        }
-    }
-    Ok(effective)
-}
-
-pub(crate) fn effective_permission_checks(
-    manifest: &TemplateManifest,
-    environment_values: &HashMap<String, String>,
-) -> AppResult<Vec<PermissionCheck>> {
-    validate_requirement_value_keys(manifest, environment_values)?;
-    let mut effective = Vec::new();
-    for requirement in &manifest.permission_checks {
-        if requirement_condition_matches(
-            manifest,
-            requirement.condition.as_ref(),
-            environment_values,
-        )? {
-            effective.push(requirement.clone());
-        }
-    }
-    Ok(effective)
-}
-
 pub(crate) fn requirement_controller_variables(
     manifest: &TemplateManifest,
 ) -> AppResult<Vec<String>> {
@@ -610,41 +574,20 @@ mod tests {
     }
 
     #[test]
-    fn requirement_conditions_filter_all_requirement_classes_and_use_defaults() {
+    fn prerequisite_conditions_use_defaults_and_explicit_values() {
         let manifest = conditional_manifest();
         validate(&manifest).unwrap();
-
         assert_eq!(
             effective_prerequisites(&manifest, &HashMap::new())
                 .unwrap()
                 .len(),
             1
         );
-        assert_eq!(
-            effective_connections(&manifest, &HashMap::new())
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(
-            effective_permission_checks(&manifest, &HashMap::new())
-                .unwrap()
-                .len(),
-            1
-        );
-
         let disabled = HashMap::from([("INCLUDE_EXCHANGE".into(), "false".into())]);
         assert!(effective_prerequisites(&manifest, &disabled)
             .unwrap()
             .is_empty());
-        assert!(effective_connections(&manifest, &disabled)
-            .unwrap()
-            .is_empty());
-        assert!(effective_permission_checks(&manifest, &disabled)
-            .unwrap()
-            .is_empty());
     }
-
     #[test]
     fn requirement_controller_values_fail_closed_even_without_a_prerequisite() {
         let mut manifest = conditional_manifest();
