@@ -15,6 +15,7 @@ import type {
   AzdProjectState,
   BootstrapData,
   Catalog,
+  CatalogEntry,
   ConnectionStatus,
   ConnectionTarget,
   ExternalCatalogPreview,
@@ -408,17 +409,19 @@ export async function refreshProjectTemplate(projectPath: string): Promise<Proje
 
 export async function saveWizardDraft(
   templateId: string,
-  values: Record<string, string | boolean | string[] | undefined>
+  values: Record<string, string | boolean | string[] | undefined>,
+  identity: CatalogEntry
 ): Promise<void> {
   if (!isTauri()) return;
-  await invoke("save_wizard_draft", { templateId, values });
+  await invoke("save_wizard_draft", { templateId, values, identity });
 }
 
 export async function loadWizardDraft(
-  templateId: string
+  templateId: string,
+  identity: CatalogEntry
 ): Promise<Record<string, string | boolean | string[]> | null> {
   if (!isTauri()) return null;
-  return invoke("load_wizard_draft", { templateId });
+  return invoke("load_wizard_draft", { templateId, identity });
 }
 
 export async function getProjectState(

@@ -207,7 +207,7 @@
   let azureTargetGeneration = 0;
   let wizardEditGeneration = 0;
   let draftNotice: { kind: "restored" | "loadError" | "saveError"; message: string } | null = null;
-  let pendingDraft: { templateId: string; values: WizardValues; session: number } | null = null;
+  let pendingDraft: { templateId: string; identity: CatalogEntry; values: WizardValues; session: number } | null = null;
   let draftSaveQueue = Promise.resolve();
   let azureDiscovery: AzureDiscovery | null = null;
   let azureDiscoveryLoading = false;
@@ -582,7 +582,8 @@
     azureDiscoveryLoading = false;
     azureDiscoveryError = "";
     manualAzureScope = false;
-    void draftSaveQueue.then(() => loadWizardDraft(entry.id)).then((draft) => {
+    const draftIdentity = structuredClone(entry);
+    void draftSaveQueue.then(() => loadWizardDraft(entry.id, draftIdentity)).then((draft) => {
       if (session !== wizardSession || selectedEntry?.id !== entry.id || wizardEditGeneration !== 0 || activeStep !== 0) return;
       if (!draft || Object.keys(draft).length === 0) return;
       wizardValues = { ...wizardValues, ...draft };
@@ -661,7 +662,7 @@
         ([key, value]) => !sensitiveWizardFields.has(key) && value !== undefined
       )
     );
-    pendingDraft = { templateId: selectedEntry.id, values: structuredClone(values), session: wizardSession };
+    pendingDraft = { templateId: selectedEntry.id, identity: structuredClone(selectedEntry), values: structuredClone(values), session: wizardSession };
     if (draftTimer) clearTimeout(draftTimer);
     draftTimer = setTimeout(flushDraftSave, 500);
   }
@@ -674,7 +675,7 @@
     if (!draft) return;
     draftSaveQueue = draftSaveQueue.then(async () => {
       try {
-        await saveWizardDraft(draft.templateId, draft.values);
+        await saveWizardDraft(draft.templateId, draft.values, draft.identity);
         if (draft.session === wizardSession && draftNotice?.kind === "saveError") draftNotice = null;
       } catch {
         addSystemLog("Wizard choices could not be saved locally. Recent changes may need to be entered again when reopening the template.", "warning");

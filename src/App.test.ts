@@ -58,7 +58,10 @@ describe("desktop experience", () => {
     await fireEvent.click(
       screen.getAllByRole("button", { name: /configure deployment/i })[2]
     );
-    await waitFor(() => expect(loadDraft).toHaveBeenCalledWith("entra-health-monitoring"));
+    await waitFor(() => expect(loadDraft).toHaveBeenCalledWith(
+      "entra-health-monitoring",
+      expect.objectContaining({ id: "entra-health-monitoring" })
+    ));
 
     const destination = screen.getByPlaceholderText(/empty destination folder/i);
     await fireEvent.input(destination, {
@@ -161,11 +164,12 @@ describe("desktop experience", () => {
     await waitFor(() => expect(screen.queryByRole("status", { name: /saved wizard choices/i })).not.toBeInTheDocument());
     expect(saveDraft).toHaveBeenLastCalledWith(
       "entra-health-monitoring",
-      expect.objectContaining({ projectPath: "C:\\Deployments\\latest-draft" })
+      expect.objectContaining({ projectPath: "C:\\Deployments\\latest-draft" }),
+      expect.objectContaining({ id: "entra-health-monitoring" })
     );
   });
 
-  it("flushes the original draft before another wizard starts", async () => {
+  it("flushes the original draft identity before another wizard starts", async () => {
     const saveDraft = vi.spyOn(bridge, "saveWizardDraft").mockResolvedValue(undefined);
     vi.spyOn(bridge, "loadWizardDraft").mockResolvedValue(null);
     render(App);
@@ -184,7 +188,11 @@ describe("desktop experience", () => {
 
     await waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
       "entra-health-monitoring",
-      expect.objectContaining({ projectPath: "C:\\Deployments\\original-draft" })
+      expect.objectContaining({ projectPath: "C:\\Deployments\\original-draft" }),
+      expect.objectContaining({
+        id: "entra-health-monitoring",
+        repository: "https://github.com/nathanmcnulty/azd-entra-health-monitoring"
+      })
     ));
   });
 
@@ -269,7 +277,10 @@ describe("desktop experience", () => {
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
-    await waitFor(() => expect(loadDraft).toHaveBeenCalledWith("maester-automation"));
+    await waitFor(() => expect(loadDraft).toHaveBeenCalledWith(
+      "maester-automation",
+      expect.objectContaining({ id: "maester-automation" })
+    ));
     const folder = screen.getByPlaceholderText("Choose a folder");
     expect(folder).toHaveValue("C:\\GitHub\\sample-azd-project");
     await act(() => {
