@@ -213,6 +213,18 @@ mod tests {
     }
 
     #[test]
+    fn accepts_a_plan_with_no_applied_actions() {
+        let root = tempdir().unwrap();
+        let mut value = fixture();
+        value["mode"] = json!("plan");
+        value["summary"]["applied"] = json!(0);
+        write_receipt(root.path(), value);
+        let receipt = read(root.path()).receipt.unwrap();
+        assert!(matches!(receipt.mode, super::ReceiptMode::Plan));
+        assert_eq!(receipt.summary.applied, 0);
+    }
+
+    #[test]
     fn rejects_absolute_traversal_and_excessive_artifact_paths() {
         let root = tempdir().unwrap();
         for path in [
@@ -263,6 +275,29 @@ mod tests {
         )
         .unwrap();
         symlink(target.path(), root.path().join("reports")).unwrap();
+        assert_eq!(read(root.path()).state, DeploymentReceiptState::UnsafePath);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_a_windows_junction_report_directory() {
+        use std::os::windows::process::CommandExt;
+        let root = tempdir().unwrap();
+        let target = tempdir().unwrap();
+        fs::write(
+            target.path().join("deployment-receipt.json"),
+            fixture().to_string(),
+        )
+        .unwrap();
+        let status = std::process::Command::new("powershell.exe")
+            .creation_flags(0x08000000)
+            .args(["-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:AZD_GUI_RECEIPT_TEST_LINK -Target $env:AZD_GUI_RECEIPT_TEST_TARGET | Out-Null"])
+            .env("AZD_GUI_RECEIPT_TEST_LINK", root.path().join("reports"))
+            .env("AZD_GUI_RECEIPT_TEST_TARGET", target.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
         assert_eq!(read(root.path()).state, DeploymentReceiptState::UnsafePath);
     }
 }

@@ -319,6 +319,17 @@ export interface ProjectTemplateSnapshot {
 }
 
 export type ValidationReportState = "available" | "notFound" | "invalid" | "unsafePath" | "tooLarge";
+
+export interface DeploymentReceiptRead {
+  state: ValidationReportState;
+  receipt?: {
+    generatedAt: string;
+    mode: "plan" | "enforce";
+    summary: { applied: number; unchanged: number; skipped: number; warnings: number; failed: number };
+    artifactCount: number;
+    outstandingActionCount: number;
+  };
+}
 export type ValidationMode = "plan" | "verify" | "delivery";
 export type ValidationOutcome = "planned" | "passed" | "passedWithWarnings" | "failed";
 export type ValidationPhase = "context" | "infrastructure" | "identity" | "configuration" | "security" | "runtime" | "delivery";

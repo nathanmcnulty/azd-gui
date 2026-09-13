@@ -8,6 +8,7 @@
   import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
   import OutputPanel from "./components/OutputPanel.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
+  import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
   import StatusPill from "./components/StatusPill.svelte";
   import WizardConfigurationReview from "./components/WizardConfigurationReview.svelte";
   import {
@@ -2666,6 +2667,7 @@
                 <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
               <ProjectValidationReport project={selectedProject} />
+              <ProjectDeploymentReceipt project={selectedProject} />
               {#if activeOperationKind === "up" || projectDeploymentResult}
                 <section class="workspace-panel full project-deployment-result" aria-label="Latest deployment">
                   <div class="section-toolbar">

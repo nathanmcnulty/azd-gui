@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "generatedAt": "2026-08-22T12:00:00Z",
+  "generatedAt": "2026-08-22T12:00:00.0000000Z",
   "template": "azd-example",
   "templateVersion": "0.1.0",
   "mode": "enforce",
@@ -11,8 +11,12 @@
     "warnings": 0,
     "failed": 0
   },
-  "artifacts": ["reports/deployment-validation.json"],
-  "operationalActions": ["Prove live notification delivery."],
+  "artifacts": [
+    "reports/deployment-validation.json"
+  ],
+  "operationalActions": [
+    "Prove live notification delivery."
+  ],
   "details": {
     "feature": "example"
   }
