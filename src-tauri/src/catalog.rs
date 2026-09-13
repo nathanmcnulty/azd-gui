@@ -222,7 +222,9 @@ fn read_bounded_local_text(path: &Path, limit: usize, label: &str) -> AppResult<
     use std::io::Read;
     require_payload_size(Some(std::fs::metadata(path)?.len()), None, limit, label)?;
     let mut text = String::new();
-    std::fs::File::open(path)?.take(limit as u64 + 1).read_to_string(&mut text)?;
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_string(&mut text)?;
     require_payload_size(None, Some(text.len()), limit, label)?;
     Ok(text)
 }
