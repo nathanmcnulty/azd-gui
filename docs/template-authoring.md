@@ -52,7 +52,9 @@ Each external catalog entry with a `manifest` sidecar must also declare `manifes
 
 The GUI checks the digest before parsing and retains the accepted contract for preparation. The sidecar must remain on the catalog's exact HTTPS host and port. A digest without a sidecar is invalid. Bundled manifests and manifests embedded in an inspected local or pinned GitHub template do not use this external-sidecar field.
 
-This establishes consistency with the catalog the administrator reviewed. It does not authenticate the publisher or prove that sidecar declarations agree with the repository's implementation. Review the immutable template commit and its hooks. Old external contracts without this digest require a fresh catalog review.
+For new external-gallery preparation, embed the exact sidecar bytes as `azd-gui.json` at the selected template root (inside `subdirectory` when specified). The GUI verifies this file's digest in the pinned checkout and compares the parsed effective contract, including interactive hooks discovered in `azure.yaml`, with the reviewed sidecar. Missing, mismatched, or understated contracts stop preparation before creating the destination, registering a project, or initializing with azd. The verified checkout is retained for initialization. A gallery with no sidecar can still be browsed but cannot prepare through this route; inspect its repository directly instead.
+
+This binds the new preparation's reviewed metadata to the fetched pinned revision. It does not authenticate the publisher or prove that the template implements every declaration correctly. Review the immutable template commit and its hooks. Existing project registrations are not retroactively verified, and prepared working trees remain mutable. The temporary checkout is not protected against a hostile process running as the same local user or administrator. Old external contracts without a digest require a fresh catalog review.
 
 ## Interactive hooks
 

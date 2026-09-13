@@ -512,6 +512,46 @@ pub(crate) fn normalize_catalog_url(input: &str) -> AppResult<Url> {
     Ok(url)
 }
 
+/// The caller supplies a verified pinned checkout, scoped to the template subdirectory.
+pub(crate) fn validate_external_checkout(entry: &CatalogEntry, source: &Path) -> AppResult<()> {
+    let declared = entry.manifest.as_ref().ok_or_else(|| AppError::Invalid(
+        "External gallery preparation requires a reviewed manifest sidecar matching the template's embedded azd-gui.json. Review the catalog or inspect the repository directly.".into()
+    ))?;
+    let digest = entry.manifest_sha256.as_deref().ok_or_else(|| {
+        AppError::Invalid(
+            "External gallery manifest has no reviewed digest. Review the catalog again.".into(),
+        )
+    })?;
+    let inspection = inspect_local(
+        source
+            .to_str()
+            .ok_or_else(|| AppError::Invalid("Template path is not valid Unicode.".into()))?,
+    )?;
+    if inspection.manifest_source != "embedded" {
+        return Err(AppError::Invalid(
+            "The pinned template must embed azd-gui.json matching the reviewed gallery sidecar. Review the catalog or inspect the repository directly.".into()
+        ));
+    }
+    let text = read_bounded_local_text(
+        &source.join("azd-gui.json"),
+        TEMPLATE_MANIFEST_LIMIT,
+        "azd-gui.json",
+    )?;
+    require_manifest_digest(text.as_bytes(), digest).map_err(|_| AppError::Invalid(
+        "The pinned template's azd-gui.json does not match the reviewed gallery sidecar. Review the catalog again.".into()
+    ))?;
+    // Inspection adds interactive requirements detected from azure.yaml. A sidecar
+    // must describe those requirements before approval, rather than weakening them.
+    if serde_json::to_value(inspection.entry.manifest.as_ref())?
+        != serde_json::to_value(Some(declared))?
+    {
+        return Err(AppError::Invalid(
+            "The pinned template's effective manifest differs from the reviewed gallery contract, including detected interactive hooks. Review an updated catalog before preparation.".into()
+        ));
+    }
+    Ok(())
+}
+
 pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
     let source_binding = crate::local_source::inspect(Path::new(path))?;
     let canonical = PathBuf::from(&source_binding.source_path);
@@ -999,6 +1039,47 @@ mod tests {
             .unwrap();
         assert!(require_manifest_digest(bytes, &digest).is_ok());
         assert!(require_manifest_digest(br#"{"schemaVersion":"changed"}"#, &digest).is_err());
+    }
+
+    #[test]
+    fn external_checkout_requires_matching_embedded_bytes_and_effective_contract() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("nested-template");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("azure.yaml"), "name: binding-test\n").unwrap();
+        let mut entry = bundled_catalog().unwrap().entries.remove(0);
+        entry.manifest = Some(serde_json::from_str(r#"{"schemaVersion":"1.0"}"#).unwrap());
+        let bytes = serde_json::to_vec(entry.manifest.as_ref().unwrap()).unwrap();
+        entry.manifest_sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+        // A manifest at the repository root cannot satisfy a subdirectory template.
+        std::fs::write(root.path().join("azd-gui.json"), &bytes).unwrap();
+        assert!(super::validate_external_checkout(&entry, &source).is_err());
+        std::fs::write(source.join("azd-gui.json"), &bytes).unwrap();
+        super::validate_external_checkout(&entry, &source).unwrap();
+
+        // Even semantically equivalent reformatted bytes require a catalog update.
+        std::fs::write(
+            source.join("azd-gui.json"),
+            [bytes.as_slice(), b"\n"].concat(),
+        )
+        .unwrap();
+        assert!(super::validate_external_checkout(&entry, &source).is_err());
+        std::fs::write(source.join("azd-gui.json"), &bytes).unwrap();
+        entry
+            .manifest
+            .as_mut()
+            .unwrap()
+            .requires_interactive_terminal = true;
+        assert!(super::validate_external_checkout(&entry, &source).is_err());
+        entry
+            .manifest
+            .as_mut()
+            .unwrap()
+            .requires_interactive_terminal = false;
+        std::fs::write(source.join("azure.yaml"), "name: binding-test\nservices:\n  web:\n    hooks:\n      predeploy:\n        interactive: true\n        run: echo prompt\n").unwrap();
+        assert!(super::validate_external_checkout(&entry, &source).is_err());
+        entry.manifest = None;
+        assert!(super::validate_external_checkout(&entry, &source).is_err());
     }
 
     #[test]
