@@ -127,7 +127,93 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
             validate_condition(field.condition.as_ref(), &fields)?;
         }
     }
+    let mut profiles = HashSet::new();
+    for profile in &manifest.recommendation_profiles {
+        if profile.id.is_empty()
+            || profile.id.len() > 128
+            || !profile.id.starts_with(|c: char| c.is_ascii_alphabetic())
+            || !profile
+                .id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            || profile.title.trim().is_empty()
+            || profile.description.trim().is_empty()
+            || !profiles.insert(profile.id.as_str())
+        {
+            return Err(AppError::Invalid(
+                "Recommendation profile IDs and descriptions must be nonempty and unique.".into(),
+            ));
+        }
+        for (field_id, value) in &profile.values {
+            let field = fields.get(field_id.as_str()).ok_or_else(|| {
+                AppError::Invalid("Recommendation profiles must reference declared fields.".into())
+            })?;
+            validate_recommendation_value(field, value)?;
+        }
+    }
     Ok(())
+}
+
+fn validate_recommendation_value(
+    field: &ConfigurationField,
+    value: &serde_json::Value,
+) -> AppResult<()> {
+    if field.sensitive || field.field_type == "secret" {
+        return Err(AppError::Invalid(
+            "Recommendation profiles cannot set sensitive fields.".into(),
+        ));
+    }
+    let valid = match field.field_type.as_str() {
+        "boolean" => value.is_boolean(),
+        "multiselect" => value.as_array().is_some_and(|values| {
+            let options = field
+                .options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<HashSet<_>>();
+            values
+                .iter()
+                .all(|item| item.as_str().is_some_and(|item| options.contains(item)))
+        }),
+        "select" => value
+            .as_str()
+            .is_some_and(|item| field.options.iter().any(|option| option.value == item)),
+        "tenant" | "subscription" | "entraObject" => value.as_str().is_some_and(is_uuid),
+        "location" => value.as_str().is_some_and(|item| {
+            !item.is_empty() && item.len() <= 64 && item.chars().all(|c| c.is_ascii_alphanumeric())
+        }),
+        "resourceGroup" => value.as_str().is_some_and(|item| {
+            !item.is_empty()
+                && item.len() <= 90
+                && !item.ends_with('.')
+                && item
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '(' | ')' | '-'))
+        }),
+        "text" => value.is_string(),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(format!(
+            "Recommendation profile value for '{}' does not match its field type.",
+            field.id
+        )))
+    }
+}
+
+fn is_uuid(value: &str) -> bool {
+    let groups = [8, 4, 4, 4, 12];
+    let mut parts = value.split('-');
+    groups.iter().all(|length| {
+        parts.next().is_some_and(|part| {
+            part.len() == *length && part.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    }) && parts.next().is_none()
+        && value
+            .chars()
+            .any(|character| character != '-' && character != '0')
 }
 
 fn validate_condition(
@@ -276,5 +362,38 @@ mod tests {
         assert!(altered
             .validate_binding(Some(&snapshot.entry.id), Some(&snapshot.entry.commit))
             .is_err());
+    }
+
+    #[test]
+    fn recommendation_profiles_only_set_declared_non_sensitive_values() {
+        let mut manifest = crate::catalog::entry_by_id("maester-automation")
+            .unwrap()
+            .manifest
+            .unwrap();
+        validate(&manifest).unwrap();
+
+        manifest.recommendation_profiles[0]
+            .values
+            .insert("unknownField".into(), serde_json::json!(true));
+        assert!(validate(&manifest).is_err());
+
+        manifest.recommendation_profiles[0]
+            .values
+            .remove("unknownField");
+        manifest.recommendation_profiles[0]
+            .values
+            .insert("permissionProfile".into(), serde_json::json!(true));
+        assert!(validate(&manifest).is_err());
+
+        manifest.recommendation_profiles[0]
+            .values
+            .insert("permissionProfile".into(), serde_json::json!("Unsupported"));
+        assert!(validate(&manifest).is_err());
+
+        manifest.recommendation_profiles[0]
+            .values
+            .insert("permissionProfile".into(), serde_json::json!("Minimal"));
+        manifest.configuration.groups[2].fields[0].sensitive = true;
+        assert!(validate(&manifest).is_err());
     }
 }

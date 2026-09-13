@@ -29,6 +29,11 @@
         }
       }
     },
+    "recommendationProfiles": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/recommendationProfile" },
+      "uniqueItems": true
+    },
     "permissionChecks": {
       "type": "array",
       "items": { "$ref": "#/$defs/permissionCheck" }
@@ -130,6 +135,23 @@
         "description": { "type": "string" },
         "condition": { "$ref": "#/$defs/condition" },
         "fields": { "type": "array", "items": { "$ref": "#/$defs/field" }, "minItems": 1 }
+      }
+    },
+    "recommendationProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "description", "values"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]*$" },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "values": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["string", "boolean", "array"],
+            "items": { "type": "string" }
+          }
+        }
       }
     },
     "permissionCheck": {

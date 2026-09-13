@@ -87,7 +87,18 @@ pub struct TemplateManifest {
     #[serde(default)]
     pub configuration: Configuration,
     #[serde(default)]
+    pub recommendation_profiles: Vec<RecommendationProfile>,
+    #[serde(default)]
     pub permission_checks: Vec<PermissionCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendationProfile {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub values: std::collections::HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

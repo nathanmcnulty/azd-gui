@@ -59,6 +59,7 @@
     ProjectEnvironmentValue,
     ProjectSummary,
     ProjectTemplateSnapshot,
+    RecommendationProfile,
     TemplateInspection,
     ToolInstallPlan,
     ToolStatus,
@@ -278,6 +279,8 @@
     );
   });
   $: selectedManifest = selectedEntry?.manifest;
+  $: recommendationProfiles = selectedManifest?.recommendationProfiles ?? [];
+  $: firstConfigurationPageId = wizardPlan?.pages.find((page) => page.kind === "configuration")?.id;
   $: selectedPrerequisites = selectedManifest?.prerequisites ?? [];
   $: selectedPrerequisiteKey = JSON.stringify({
     prerequisites: selectedPrerequisites,
@@ -597,6 +600,13 @@
     draftTimer = setTimeout(() => void saveCurrentDraft(), 500);
   }
 
+  function applyRecommendationProfile(profile: RecommendationProfile) {
+    for (const [id, value] of Object.entries(profile.values)) {
+      setWizardValue(id, value);
+    }
+    addSystemLog(`Applied the '${profile.title}' template recommendation. Review the resulting choices before continuing.`, "info");
+  }
+
   function serializeConfigurationValue(value: WizardValues[string]): string {
     if (Array.isArray(value)) return value.join(",");
     if (typeof value === "boolean") return value ? "true" : "false";
@@ -912,6 +922,11 @@
 
   async function runPreflight() {
     if (!selectedEntry || activeOperationId) return;
+    if (requiresInteractiveTerminal) {
+      addSystemLog("This template requires interactive terminal input. Use Prepare and open terminal to continue.", "warning");
+      outputOpen = true;
+      return;
+    }
     preflightRan = false;
     outputOpen = true;
     if (!selectedEntry.trusted && !sourceTrustAccepted) {
@@ -2269,6 +2284,24 @@
               {#each azureDiscovery?.resourceGroups ?? [] as group}<option value={group.name}>{group.location}</option>{/each}
             </datalist>
           {:else if activePage.kind === "configuration" && activePage.group}
+            {#if activePage.id === firstConfigurationPageId && recommendationProfiles.length > 0}
+              <section class="recommendation-profiles" aria-label="Recommended configurations">
+                <div class="section-toolbar">
+                  <div><h2>Recommended starting points</h2><p>Template author suggestions that set only the listed configuration fields.</p></div>
+                </div>
+                <div class="recommendation-profile-grid">
+                  {#each recommendationProfiles as profile}
+                    <article class="recommendation-profile">
+                      <div>
+                        <h3>{profile.title}</h3>
+                        <p>{profile.description}</p>
+                      </div>
+                      <button class="secondary" on:click={() => applyRecommendationProfile(profile)}>Apply {profile.title}</button>
+                    </article>
+                  {/each}
+                </div>
+              </section>
+            {/if}
               <div class="form-grid">
                 {#each activePage.group.fields as field}
                   <ConfigurationFieldControl
@@ -2288,15 +2321,16 @@
               <div class="preflight-ring">
                 {#if preflightRan}<Icon name="check" size={34} />{:else}<Icon name="cloud" size={34} />{/if}
               </div>
-              <h2>{preflightRan ? "Preview completed" : "Run checks and template preview"}</h2>
-              <p>{preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview completed. Review Output for hook-driven changes." : "Permission checks are read-only. Project initialization and azd preview can execute pinned template hooks that modify local or cloud state."}</p>
-              <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
+              <h2>{requiresInteractiveTerminal ? "Prepare for interactive terminal" : preflightRan ? "Preview completed" : "Run checks and template preview"}</h2>
+              <p>{requiresInteractiveTerminal ? "Permission checks remain read-only. Prepare the approved project, then finish its prompts in an external terminal." : preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview completed. Review Output for hook-driven changes." : "Permission checks are read-only. Project initialization and azd preview can execute pinned template hooks that modify local or cloud state."}</p>
               {#if requiresInteractiveTerminal}
-                <button class="secondary" disabled={terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={15} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+                <button class="primary large" disabled={terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+              {:else}
+                <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
               {/if}
             </div>
             <div class="check-grid">
-              {#each ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Registered permissions", "Infrastructure preview"] as check}
+              {#each (requiresInteractiveTerminal ? ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Registered permissions", "Interactive terminal handoff"] : ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Registered permissions", "Infrastructure preview"]) as check}
                 <div class:complete={preflightRan} class="check-item"><Icon name={preflightRan ? "check" : "chevron"} size={15} /><span>{check}</span></div>
               {/each}
             </div>

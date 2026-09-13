@@ -45,7 +45,15 @@ export interface TemplateManifest {
   configuration: {
     groups: ConfigurationGroup[];
   };
+  recommendationProfiles?: RecommendationProfile[];
   permissionChecks?: PermissionCheck[];
+}
+
+export interface RecommendationProfile {
+  id: string;
+  title: string;
+  description: string;
+  values: Record<string, string | boolean | string[]>;
 }
 
 export interface Prerequisite {

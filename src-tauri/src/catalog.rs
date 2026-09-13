@@ -761,6 +761,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
             reason: "Deploy the local azd project.".into(),
         }],
         configuration: Configuration::default(),
+        recommendation_profiles: vec![],
         permission_checks: vec![],
     }
 }
