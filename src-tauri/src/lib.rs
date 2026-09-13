@@ -21,12 +21,13 @@ use crate::{
     command_runner::{spawn_operation, OperationManager, OperationPersistence},
     error::{AppError, AppResult},
     models::{
-        AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogSource, ConnectionStatus,
-        ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest, ExternalCatalogPreview,
-        OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
-        ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        ProjectTemplateSnapshot, SecurityGroupSearch, TemplateInspection, TemplateManifest,
-        ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus,
+        AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogEntry, CatalogSource,
+        ConnectionStatus, ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest,
+        ExternalCatalogPreview, OperationEvent, PermissionCheckRequest, PermissionCheckResult,
+        PrepareDeploymentRequest, ProjectEnvironment, ProjectEnvironmentValue,
+        ProjectEnvironmentValueInput, ProjectSummary, ProjectTemplateSnapshot, SecurityGroupSearch,
+        TemplateInspection, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan,
+        ToolStatus,
     },
     persistence::Database,
 };
@@ -39,6 +40,7 @@ use std::{
 use tauri::{AppHandle, Manager, State};
 
 const MAX_INSPECTED_MANIFESTS: usize = 128;
+const MAX_DRAFT_IDENTITY_BYTES: usize = 1024 * 1024;
 
 pub struct AppState {
     database: Arc<Database>,
@@ -968,18 +970,33 @@ fn draft_keys(
     Ok((allowed_keys, sensitive_keys))
 }
 
+fn draft_storage_key(template_id: &str, identity: &CatalogEntry) -> AppResult<String> {
+    if template_id.len() > 128 {
+        return Err(AppError::Invalid("Template ID is too long.".into()));
+    }
+    if identity.id != template_id {
+        return Err(AppError::Invalid(
+            "Draft identity does not match the template ID.".into(),
+        ));
+    }
+    if serde_json::to_vec(identity)?.len() > MAX_DRAFT_IDENTITY_BYTES {
+        return Err(AppError::Invalid("Draft identity is too large.".into()));
+    }
+    let snapshot = ProjectTemplateSnapshot::new(identity.clone())?;
+    Ok(format!("v2:{template_id}:{}", snapshot.digest))
+}
+
 #[tauri::command]
 fn save_wizard_draft(
     state: State<'_, AppState>,
     template_id: String,
+    identity: CatalogEntry,
     values: serde_json::Value,
 ) -> AppResult<()> {
-    if template_id.len() > 128 {
-        return Err(AppError::Invalid("Template ID is too long.".into()));
-    }
+    let storage_key = draft_storage_key(&template_id, &identity)?;
     let (allowed_keys, sensitive_keys) = draft_keys(state.inner(), &template_id)?;
     state.database.save_draft(
-        &template_id,
+        &storage_key,
         &sanitized_draft(values, &allowed_keys, &sensitive_keys)?,
     )
 }
@@ -988,17 +1005,16 @@ fn save_wizard_draft(
 fn load_wizard_draft(
     state: State<'_, AppState>,
     template_id: String,
+    identity: CatalogEntry,
 ) -> AppResult<Option<serde_json::Value>> {
-    if template_id.len() > 128 {
-        return Err(AppError::Invalid("Template ID is too long.".into()));
-    }
-    let Some(values) = state.database.load_draft(&template_id)? else {
+    let storage_key = draft_storage_key(&template_id, &identity)?;
+    let Some(values) = state.database.load_draft(&storage_key)? else {
         return Ok(None);
     };
     let (allowed_keys, sensitive_keys) = draft_keys(state.inner(), &template_id)?;
     let sanitized = sanitized_draft(values.clone(), &allowed_keys, &sensitive_keys)?;
     if sanitized != values {
-        state.database.save_draft(&template_id, &sanitized)?;
+        state.database.save_draft(&storage_key, &sanitized)?;
     }
     Ok(Some(sanitized))
 }
@@ -1123,8 +1139,10 @@ mod catalog_review_tests {
 #[cfg(test)]
 mod draft_tests {
     use super::{
-        catalog, draft_keys, sanitized_draft, AppState, CatalogReviews, Database, OperationManager,
+        catalog, draft_keys, draft_storage_key, sanitized_draft, AppState, CatalogReviews,
+        Database, OperationManager, MAX_DRAFT_IDENTITY_BYTES,
     };
+    use crate::models::CatalogEntry;
     use std::{
         collections::{HashMap, HashSet},
         sync::{Arc, Mutex},
@@ -1133,6 +1151,71 @@ mod draft_tests {
 
     fn keys(values: &[&str]) -> HashSet<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    fn draft_identity() -> CatalogEntry {
+        catalog::entry_by_id("myworkid").unwrap()
+    }
+
+    #[test]
+    fn draft_storage_keys_bind_the_complete_template_identity() {
+        let identity = draft_identity();
+        let key = draft_storage_key(&identity.id, &identity).unwrap();
+        assert_eq!(key, draft_storage_key(&identity.id, &identity).unwrap());
+        assert!(key.starts_with(&format!("v2:{}:", identity.id)));
+
+        let mut changed_revision = identity.clone();
+        changed_revision.commit = "different-revision".into();
+        assert_ne!(
+            key,
+            draft_storage_key(&identity.id, &changed_revision).unwrap()
+        );
+
+        let mut changed_repository = identity.clone();
+        changed_repository.repository = "https://example.invalid/other-template".into();
+        assert_ne!(
+            key,
+            draft_storage_key(&identity.id, &changed_repository).unwrap()
+        );
+
+        let mut changed_subdirectory = identity.clone();
+        changed_subdirectory.subdirectory = Some("other-subdirectory".into());
+        assert_ne!(
+            key,
+            draft_storage_key(&identity.id, &changed_subdirectory).unwrap()
+        );
+
+        let mut changed_manifest = identity.clone();
+        let manifest = changed_manifest.manifest.as_mut().unwrap();
+        manifest.requires_interactive_terminal = !manifest.requires_interactive_terminal;
+        assert_ne!(
+            key,
+            draft_storage_key(&identity.id, &changed_manifest).unwrap()
+        );
+    }
+
+    #[test]
+    fn draft_storage_key_rejects_mismatched_or_oversized_identity() {
+        let identity = draft_identity();
+        assert!(draft_storage_key("different-template", &identity).is_err());
+
+        let mut oversized = identity.clone();
+        oversized.summary = "x".repeat(MAX_DRAFT_IDENTITY_BYTES + 1);
+        assert!(draft_storage_key(&oversized.id, &oversized).is_err());
+    }
+
+    #[test]
+    fn legacy_template_id_drafts_are_safe_misses_without_deletion() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let identity = draft_identity();
+        let legacy = serde_json::json!({"location": "westus2"});
+        database.save_draft(&identity.id, &legacy).unwrap();
+
+        let storage_key = draft_storage_key(&identity.id, &identity).unwrap();
+        assert_ne!(storage_key, identity.id);
+        assert!(database.load_draft(&storage_key).unwrap().is_none());
+        assert_eq!(database.load_draft(&identity.id).unwrap(), Some(legacy));
     }
 
     #[test]
