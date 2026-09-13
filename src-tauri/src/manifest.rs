@@ -194,6 +194,20 @@ fn validate_recommendation_value(
         _ => false,
     };
     if valid {
+        if let (Some(pattern), Some(value)) = (field.pattern.as_deref(), value.as_str()) {
+            let pattern = regex::Regex::new(pattern).map_err(|_| {
+                AppError::Invalid(
+                    "Recommendation field patterns must use supported native regular expressions."
+                        .into(),
+                )
+            })?;
+            if !value.is_empty() && !pattern.is_match(value) {
+                return Err(AppError::Invalid(format!(
+                    "Recommendation profile value for '{}' does not match its validation rule.",
+                    field.id
+                )));
+            }
+        }
         Ok(())
     } else {
         Err(AppError::Invalid(format!(
@@ -424,5 +438,24 @@ mod tests {
         reopened
             .validate_binding(Some(&legacy.entry.id), Some(&legacy.entry.commit))
             .unwrap();
+    }
+
+    #[test]
+    fn recommendation_profiles_respect_declared_text_patterns() {
+        let mut manifest = crate::catalog::entry_by_id("maester-automation")
+            .unwrap()
+            .manifest
+            .unwrap();
+        let field = &mut manifest.configuration.groups[2].fields[0];
+        field.pattern = Some("^[^@]+@example\\.com$".into());
+        manifest.recommendation_profiles[0]
+            .values
+            .insert("mailRecipient".into(), serde_json::json!("invalid"));
+        assert!(validate(&manifest).is_err());
+        manifest.recommendation_profiles[0].values.insert(
+            "mailRecipient".into(),
+            serde_json::json!("pilot@example.com"),
+        );
+        validate(&manifest).unwrap();
     }
 }

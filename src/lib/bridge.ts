@@ -378,6 +378,18 @@ export async function getProjectTemplate(projectPath: string): Promise<ProjectTe
   return invoke<ProjectTemplateSnapshot | null>("get_project_template", { projectPath });
 }
 
+export async function refreshProjectTemplate(projectPath: string): Promise<ProjectTemplateSnapshot> {
+  if (!isTauri()) {
+    const project = mockBootstrap.projects.find((candidate) => candidate.path === projectPath);
+    const entry = mockBootstrap.catalog.entries.find((candidate) => candidate.id === project?.templateId && candidate.commit === project?.revision);
+    if (!entry || !entry.id.startsWith("external-")) throw new Error("Review the exact catalog template and revision first.");
+    const snapshot = { entry: structuredClone(entry), digest: "browser-preview" };
+    previewProjectTemplates.set(projectPath, snapshot);
+    return snapshot;
+  }
+  return invoke<ProjectTemplateSnapshot>("refresh_project_template", { projectPath });
+}
+
 export async function saveWizardDraft(
   templateId: string,
   values: Record<string, string | boolean | string[] | undefined>

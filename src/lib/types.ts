@@ -19,6 +19,7 @@ export interface CatalogSourceSummary {
   id: string;
   label: string;
   url: string;
+  requiresReview?: boolean;
 }
 
 export interface CatalogEntry {

@@ -23,6 +23,7 @@ pub struct CatalogSourceSummary {
     pub id: String,
     pub label: String,
     pub url: String,
+    pub requires_review: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

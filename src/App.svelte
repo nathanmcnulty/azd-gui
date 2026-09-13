@@ -33,6 +33,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
+    refreshProjectTemplate,
     getProjectEnvironmentValues,
     listProjectEnvironments,
     runPermissionChecks,
@@ -1134,6 +1135,11 @@
 
   async function prepareAndOpenInteractiveTerminal() {
     if (!selectedEntry || activeOperationId || interactivePreparing) return;
+    if (!selectedEntry.trusted && !sourceTrustAccepted) {
+      addSystemLog("Review and accept this unvetted source before opening the terminal.", "error");
+      outputOpen = true;
+      return;
+    }
     if (!hookExecutionAccepted) {
       addSystemLog("Review and approve pinned template code execution before opening the terminal.", "error");
       outputOpen = true;
@@ -1631,6 +1637,21 @@
 
   function refreshSelectedProject() {
     if (selectedProject) void openProjectWorkspace(selectedProject, true);
+  }
+
+  async function useReviewedProjectContract() {
+    const project = selectedProject;
+    if (!project || activeOperationId) return;
+    try {
+      await refreshProjectTemplate(project.path);
+      projectExecutionAccepted = false;
+      projectPreview = null;
+      await openProjectWorkspace(project, true);
+      addSystemLog("Applied the reviewed catalog contract for the same template revision. Review configuration before running template code.", "success");
+    } catch (error) {
+      addSystemLog(String(error), "error");
+      outputOpen = true;
+    }
   }
 
   function applyProjectEnvironments(environments: ProjectEnvironment[]) {
@@ -2532,6 +2553,9 @@
               </section>
               <section class="workspace-panel">
                 <h2>Source</h2>
+                {#if !selectedProjectTemplate && selectedProject.templateId?.startsWith("external-")}
+                  <div class="callout warning"><div><strong>Catalog contract needs review</strong><p>Review this catalog in Settings, then apply its contract for this exact template revision. Project files and Azure resources are preserved.</p><button class="secondary compact" on:click={() => (activeNav = "settings")}>Review catalog sources</button><button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={useReviewedProjectContract}>Use reviewed catalog contract</button></div></div>
+                {/if}
                 <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
               {#if activeOperationKind === "up" || projectDeploymentResult}
@@ -2883,6 +2907,7 @@
             <div class="setting-row catalog-source-row">
               <div><strong>{source.label}</strong><span>{source.url} · {data.catalog.entries.filter((entry) => entry.id.startsWith(`external-${source.id}.`)).length} pinned templates</span></div>
               <div class="catalog-source-actions">
+                {#if source.requiresReview}<StatusPill tone="warning" label="Review required" />{/if}
                 <button class="secondary compact" on:click={() => openCatalogSource(source)}>Review latest</button>
                 {#if pendingCatalogRemovalId === source.id}
                   <button class="secondary compact" on:click={() => (pendingCatalogRemovalId = null)}>Cancel</button>

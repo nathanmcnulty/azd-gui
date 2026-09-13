@@ -286,8 +286,8 @@ impl Database {
     pub fn catalog_sources(&self) -> AppResult<Vec<CatalogSourceSummary>> {
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id, label, url FROM catalog_sources
-             WHERE trusted = 1 AND accepted_catalog_json IS NOT NULL
+            "SELECT id, label, url, trusted FROM catalog_sources
+             WHERE accepted_catalog_json IS NOT NULL
              ORDER BY label COLLATE NOCASE, id",
         )?;
         let rows = statement.query_map([], |row| {
@@ -295,6 +295,7 @@ impl Database {
                 id: row.get(0)?,
                 label: row.get(1)?,
                 url: row.get(2)?,
+                requires_review: !row.get::<_, bool>(3)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -310,6 +311,29 @@ impl Database {
             )));
         }
         Ok(())
+    }
+
+    pub fn refresh_project_template(
+        &self,
+        project_path: &str,
+    ) -> AppResult<ProjectTemplateSnapshot> {
+        let project = self
+            .project_by_path(project_path)?
+            .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
+        let id = project
+            .template_id
+            .as_deref()
+            .filter(|id| id.starts_with("external-"))
+            .ok_or_else(|| {
+                AppError::Invalid(
+                    "Only external catalog project contracts can be refreshed here.".into(),
+                )
+            })?;
+        let entry = self.accepted_catalog_entry(id)?.filter(|entry| project.revision.as_deref() == Some(entry.commit.as_str())).ok_or_else(|| AppError::Invalid("Review and accept a catalog containing this exact template ID and revision in Settings first.".into()))?;
+        catalog::validate_external_entry_snapshot(&entry)?;
+        let snapshot = ProjectTemplateSnapshot::new(entry)?;
+        self.save_project_template(&project, &snapshot)?;
+        Ok(snapshot)
     }
 
     pub fn accepted_catalogs(&self) -> AppResult<Vec<crate::models::Catalog>> {
@@ -765,6 +789,30 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("Review the catalog again"));
+        let mut source = CatalogSource {
+            id: "legacy-review".into(),
+            label: "Legacy catalog".into(),
+            url: "https://example.com/catalog.json".into(),
+            trusted: true,
+            pinned_revision: None,
+            accepted_catalog: Some(crate::models::Catalog {
+                schema_version: "1.0".into(),
+                id: "legacy-review".into(),
+                title: "Legacy catalog".into(),
+                entries: vec![snapshot.entry.clone()],
+            }),
+        };
+        database.save_catalog_source(&source).unwrap();
+        assert!(database.accepted_catalogs().unwrap().is_empty());
+        assert!(database.catalog_sources().unwrap()[0].requires_review);
+        assert!(database.refresh_project_template(&project.path).is_err());
+        source.accepted_catalog.as_mut().unwrap().entries[0].manifest_sha256 = Some("a".repeat(64));
+        database.save_catalog_source(&source).unwrap();
+        database.refresh_project_template(&project.path).unwrap();
+        assert!(database.project_template(&project.path).unwrap().is_some());
+        source.accepted_catalog.as_mut().unwrap().entries[0].commit = "b".repeat(40);
+        database.save_catalog_source(&source).unwrap();
+        assert!(database.refresh_project_template(&project.path).is_err());
     }
 
     #[test]
