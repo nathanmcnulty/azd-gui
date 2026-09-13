@@ -27,15 +27,15 @@ describe("project validation report", () => {
         outcome: "passedWithWarnings",
         environmentBinding: "environmentMatch",
         summary: { pass: 1, fail: 0, warning: 1, info: 0, skipped: 0, planned: 0 },
-        checks: [{ id: "infrastructure.resource-group", phase: "infrastructure", status: "pass", sideEffect: "readOnly", durationMs: 5 }]
+        checks: [{ phase: "infrastructure", status: "pass", sideEffect: "readOnly", durationMs: 5 }, { phase: "identity", status: "warning", sideEffect: "readOnly", durationMs: 3 }]
       }
     });
 
     render(ProjectValidationReport, { project });
 
     expect(await screen.findByText("passedWithWarnings")).toBeInTheDocument();
-    expect(screen.getByText("infrastructure.resource-group")).toBeInTheDocument();
-    expect(screen.getByText(/read-only validation checks/i)).toBeInTheDocument();
+    expect(screen.getByText("Check 1")).toBeInTheDocument();
+    expect(screen.getByText(/verification checks recorded/i)).toBeInTheDocument();
     expect(screen.queryByText(/Latest deployment/i)).not.toBeInTheDocument();
   });
 
@@ -46,5 +46,21 @@ describe("project validation report", () => {
 
     await waitFor(() => expect(screen.getByText(/path is unsafe/i)).toBeInTheDocument());
     expect(screen.queryByText(/secret|exception|stack/i)).not.toBeInTheDocument();
+  });
+
+  it("shows plan totals and removes old results while switching projects", async () => {
+    readReport.mockResolvedValueOnce({ state: "available", report: {
+      startedAt: "2026-09-12T12:00:00Z", completedAt: "2026-09-12T12:00:01Z",
+      durationMs: 1000, mode: "plan", outcome: "planned", environmentBinding: "environmentUnbound",
+      summary: { pass: 0, fail: 0, warning: 0, info: 0, skipped: 1, planned: 3 },
+      checks: [{ phase: "context", status: "planned", sideEffect: "none", durationMs: 0 }]
+    } });
+    const view = render(ProjectValidationReport, { project });
+    expect(await screen.findByText("Check 1")).toBeInTheDocument();
+    expect(screen.getByText("Planned", { selector: "dt" }).nextElementSibling).toHaveTextContent("3");
+    readReport.mockImplementationOnce(() => new Promise(() => {}));
+    await view.rerender({ project: { ...project, path: "C:\\Projects\\other" } });
+    await waitFor(() => expect(screen.queryByText("Check 1")).not.toBeInTheDocument());
+    expect(screen.getByText(/Reading the selected project's report/)).toBeInTheDocument();
   });
 });

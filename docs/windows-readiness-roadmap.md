@@ -29,6 +29,8 @@ An unsigned development executable was built with a separate review application 
 - Offer explicit template-authored recommendation profiles. Maester includes a Minimal pilot starting point with service extensions and notifications disabled; the eight baseline Graph application roles still apply. Profiles preserve unrelated target values and invalidate prior wizard review.
 - Detect project, service, and layer hooks from YAML structure and persist the interactive requirement in the saved contract. Interactive preflight uses terminal preparation as the primary route.
 - Exercise the restricted Git path against the merged reference commit. Fetch blobs together with the shallow commit: blobless cloning made size inspection perform individual lazy fetches and time out; the corrected public-reference checkout completed in about two seconds. Git fetch remains time-bounded, and file/count/size limits are enforced before checkout; this is not a byte quota on the downloaded pack.
+- Read the reference version 1.0 validation report from registered projects and display it separately from deployment state. Bound reads to 1 MiB and 500 checks, reject linked paths, discard free text and target identifiers, and validate totals and outcomes against check statuses using the reference producer's precedence. A real offline reference plan is checked in as the compatibility fixture. Environment-name matching is advisory and does not establish target identity, provenance, or freshness.
+- Label interactive wizard steps as preparation and terminal handoff, matching the actual execution route.
 
 ## Next milestones
 
@@ -38,7 +40,7 @@ An unsigned development executable was built with a separate review application 
 | 2 | One real Windows template pilot | Select a simple ARM template or make Maester's interactive route explicit. On a disposable authorized target: configure, prepare, preview where supported, deploy, reopen, verify, and clean up. Record remaining manual steps. |
 | 3 | Effective optional features | Selected features determine required tools, connections, scopes, checks, and acknowledgements. Changing a feature invalidates stale approval and preview. Template scripts enforce the same choices. |
 | 4 | Better admin inputs | Add one registered Entra picker. Template-authored recommendation profiles are implemented; expand proven profiles with permission, cost, and component explanations as templates are adopted. Keep unsupported lookups explicit. |
-| 5 | Verification and management | Consume reference deployment receipts and validation reports. Present deployment status, verification status, outstanding actions, and ownership separately. Prove rerun and cleanup behavior before adding PIM or Device Notifications. |
+| 5 | Verification and management | Validation report reading is implemented. Next consume deployment receipts and bind evidence to the exact deployment, target, and source. Present outstanding actions and ownership separately; prove rerun and cleanup behavior before adding PIM or Device Notifications. |
 | 6 | Windows beta release | Build and sign a reviewed candidate, then execute the clean-VM installer, WebView2, authentication, upgrade, and uninstall acceptance checklist. |
 
 The GUI remains an orchestrator over public CLI contracts. Templates own infrastructure, hooks, optional feature semantics, and verification. The gallery supplies discovery and source identity; descriptive `.azd/catalog.json` commands are never an execution interface.

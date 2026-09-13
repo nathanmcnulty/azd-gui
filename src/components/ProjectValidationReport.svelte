@@ -18,8 +18,8 @@
   let request = 0;
 
   const modeDetail: Record<ValidationMode, string> = {
-    plan: "Planned checks only; no cloud verification ran.",
-    verify: "Read-only validation checks recorded by the project.",
+    plan: "A plan describes intended checks and does not establish cloud verification.",
+    verify: "Verification checks recorded by the project.",
     delivery: "Validation may have sent a synthetic delivery event."
   };
 
@@ -81,7 +81,9 @@
     {/if}
   </div>
 
-  {#if result.state === "available" && result.report}
+  {#if loading}
+    <p class="muted-copy">Reading the selected project's report…</p>
+  {:else if result.state === "available" && result.report}
     <dl class="summary-list columns">
       <div><dt>Mode</dt><dd>{result.report.mode}</dd></div>
       <div><dt>Completed</dt><dd>{new Date(result.report.completedAt).toLocaleString()}</dd></div>
@@ -91,14 +93,17 @@
       <div><dt>Warnings</dt><dd>{result.report.summary.warning}</dd></div>
       <div><dt>Failed</dt><dd>{result.report.summary.fail}</dd></div>
       <div><dt>Skipped</dt><dd>{result.report.summary.skipped}</dd></div>
+      <div><dt>Planned</dt><dd>{result.report.summary.planned}</dd></div>
+      <div><dt>Informational</dt><dd>{result.report.summary.info}</dd></div>
     </dl>
     <p class="muted-copy">{modeDetail[result.report.mode]}</p>
     <p class="muted-copy">{bindingDetail[result.report.environmentBinding]}</p>
+    <p class="muted-copy">This local report is not independently authenticated and does not prove provisioning, delivery, or cleanup.</p>
     {#if result.report.checks.length > 0}
       <div class="validation-check-list" aria-label="Validation checks">
-        {#each result.report.checks as check}
+        {#each result.report.checks as check, index}
           <div class="validation-check">
-            <div><code>{check.id}</code><small>{checkLabel(check)}</small></div>
+            <div><strong>Check {index + 1}</strong><small>{checkLabel(check)}</small></div>
             <StatusPill tone={statusTone(check.status)} label={check.status} />
           </div>
         {/each}
@@ -120,3 +125,9 @@
     <button class="secondary compact" disabled={loading} on:click={refresh}><Icon name="refresh" size={14} /> Refresh report</button>
   </div>
 </section>
+
+<style>
+  .validation-check-list { display: grid; gap: 8px; margin: 16px 0; }
+  .validation-check { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 5px; }
+  .validation-check small { display: block; margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }
+</style>

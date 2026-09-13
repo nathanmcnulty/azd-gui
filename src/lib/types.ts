@@ -320,7 +320,6 @@ export interface ValidationSummary {
 }
 
 export interface ValidationCheck {
-  id: string;
   phase: ValidationPhase;
   status: ValidationStatus;
   sideEffect: ValidationSideEffect;

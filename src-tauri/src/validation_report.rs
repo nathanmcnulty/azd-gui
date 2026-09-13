@@ -3,7 +3,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::{fs, path::Path};
+use std::{fs, io::Read, path::Path};
 
 const REPORT_DIRECTORY: &str = "reports";
 const REPORT_FILE: &str = "deployment-validation.json";
@@ -62,7 +62,7 @@ pub enum ValidationMode {
     Delivery,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ValidationOutcome {
     Planned,
@@ -113,7 +113,7 @@ pub enum EnvironmentBinding {
     Unbound,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ValidationSummary {
     pub pass: u32,
@@ -127,7 +127,6 @@ pub struct ValidationSummary {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationCheck {
-    pub id: String,
     pub phase: ValidationPhase,
     pub status: ValidationStatus,
     pub side_effect: ValidationSideEffect,
@@ -225,7 +224,12 @@ fn read_inner(
         return Err(ValidationReportState::TooLarge);
     }
 
-    let bytes = fs::read(&report_path).map_err(|_| ValidationReportState::Invalid)?;
+    let mut bytes = Vec::new();
+    fs::File::open(&report_path)
+        .map_err(|_| ValidationReportState::Invalid)?
+        .take(MAX_REPORT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ValidationReportState::Invalid)?;
     if bytes.len() as u64 > MAX_REPORT_BYTES {
         return Err(ValidationReportState::TooLarge);
     }
@@ -313,6 +317,7 @@ fn project_report(
         .ok()?
         .to_rfc3339();
 
+    let mut summary = ValidationSummary::default();
     let checks = raw
         .checks
         .into_iter()
@@ -331,8 +336,15 @@ fn project_report(
                 check.actual,
                 check.metadata,
             );
+            match check.status {
+                ValidationStatus::Pass => summary.pass += 1,
+                ValidationStatus::Fail => summary.fail += 1,
+                ValidationStatus::Warning => summary.warning += 1,
+                ValidationStatus::Info => summary.info += 1,
+                ValidationStatus::Skipped => summary.skipped += 1,
+                ValidationStatus::Planned => summary.planned += 1,
+            }
             Some(ValidationCheck {
-                id: check.id,
                 phase: check.phase,
                 status: check.status,
                 side_effect: check.side_effect,
@@ -340,6 +352,20 @@ fn project_report(
             })
         })
         .collect::<Option<Vec<_>>>()?;
+
+    // Match the reference producer's precedence; never display contradictory totals or success.
+    let outcome = if summary.fail > 0 {
+        ValidationOutcome::Failed
+    } else if matches!(raw.mode, ValidationMode::Plan) {
+        ValidationOutcome::Planned
+    } else if summary.warning > 0 {
+        ValidationOutcome::PassedWithWarnings
+    } else {
+        ValidationOutcome::Passed
+    };
+    if summary != raw.summary || outcome != raw.outcome {
+        return None;
+    }
 
     // Parsing these fields validates the envelope but deliberately does not disclose them.
     let _ = (
@@ -374,8 +400,8 @@ fn project_report(
         completed_at,
         duration_ms: raw.duration_ms,
         mode: raw.mode,
-        outcome: raw.outcome,
-        summary: raw.summary,
+        outcome,
+        summary,
         environment_binding,
         checks,
     })
@@ -402,7 +428,7 @@ mod tests {
             "outcome": "passed",
             "summary": { "pass": 1, "fail": 0, "warning": 0, "info": 0, "skipped": 0, "planned": 0 },
             "checks": [{
-                "id": "infrastructure.resource-group",
+                "id": "token.secret-value",
                 "phase": "infrastructure",
                 "title": "Bearer secret-value",
                 "status": "pass",
@@ -436,12 +462,37 @@ mod tests {
         let result = read(root.path(), Some("dev"));
         assert!(matches!(result.state, ValidationReportState::Available));
         let serialized = serde_json::to_string(&result).unwrap();
-        assert!(serialized.contains("infrastructure.resource-group"));
+        assert!(serialized.contains("infrastructure"));
         assert!(!serialized.contains("secret-value"));
         assert!(!serialized.contains("tenant-secret"));
         assert_eq!(
             result.report.unwrap().environment_binding,
             super::EnvironmentBinding::Match
+        );
+    }
+
+    #[test]
+    fn rejects_contradictory_totals_and_outcomes() {
+        let root = tempdir().unwrap();
+        let mut value = report("dev");
+        value["checks"][0]["status"] = json!("fail");
+        write_report(root.path(), value.clone());
+        assert_eq!(
+            read(root.path(), None).state,
+            ValidationReportState::Invalid
+        );
+        value["summary"]["pass"] = json!(0);
+        value["summary"]["fail"] = json!(1);
+        write_report(root.path(), value.clone());
+        assert_eq!(
+            read(root.path(), None).state,
+            ValidationReportState::Invalid
+        );
+        value["outcome"] = json!("failed");
+        write_report(root.path(), value);
+        assert_eq!(
+            read(root.path(), None).state,
+            ValidationReportState::Available
         );
     }
 
