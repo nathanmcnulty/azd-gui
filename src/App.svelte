@@ -9,6 +9,7 @@
   import OutputPanel from "./components/OutputPanel.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
   import StatusPill from "./components/StatusPill.svelte";
+  import WizardConfigurationReview from "./components/WizardConfigurationReview.svelte";
   import {
     bootstrap,
     cancelOperation,
@@ -682,6 +683,14 @@
     if (wizardPlan.pages[activeStep]?.kind === "environment" && !azureDiscovery && !manualAzureScope) {
       void loadAzureDiscovery();
     }
+  }
+
+  function editReviewSection(pageId: string) {
+    if (!wizardPlan || activePage?.kind !== "review") return;
+    const index = wizardPlan.pages.findIndex((page) => page.id === pageId);
+    if (index < 0 || index >= activeStep) return;
+    hookExecutionAccepted = false;
+    activeStep = index;
   }
 
   async function loadAzureDiscovery(subscriptionId?: string, refresh = false) {
@@ -2394,7 +2403,7 @@
           {:else if activePage.kind === "review"}
             <div class="review-grid">
               <section>
-                <h3>Project</h3>
+                <div class="review-section-heading"><h3>Project</h3><button class="text-button" aria-label="Edit project source" on:click={() => editReviewSection("source")}>Edit</button></div>
                 <dl class="summary-list">
                   <div><dt>Template</dt><dd>{selectedEntry.title}</dd></div>
                   <div><dt>Revision</dt><dd><code>{selectedEntry.commit.slice(0, 12)}</code></dd></div>
@@ -2402,21 +2411,16 @@
                 </dl>
               </section>
               <section>
-                <h3>Azure environment</h3>
+                <div class="review-section-heading"><h3>Azure environment</h3><button class="text-button" aria-label="Edit Azure environment" on:click={() => editReviewSection("environment")}>Edit</button></div>
                 <dl class="summary-list">
                   <div><dt>Name</dt><dd>{wizardValues.environmentName}</dd></div>
                   <div><dt>Region</dt><dd>{wizardValues.location}</dd></div>
+                  <div><dt>Tenant</dt><dd>{wizardValues.tenantId}</dd></div>
                   <div><dt>Subscription</dt><dd>{wizardValues.subscriptionId || "Connected default"}</dd></div>
+                  <div><dt>Resource group</dt><dd>{wizardValues.resourceGroup || "Template default"}</dd></div>
                 </dl>
               </section>
-              <section class="full">
-                <h3>Template values</h3>
-                <dl class="summary-list columns">
-                  {#each Object.entries(wizardValues).filter(([key]) => !["projectPath", "subscriptionId", "tenantId"].includes(key)) as [key, value]}
-                    <div><dt>{key}</dt><dd>{sensitiveWizardFields.has(key) ? "••••••••" : String(value)}</dd></div>
-                  {/each}
-                </dl>
-              </section>
+              <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} on:edit={(event) => editReviewSection(event.detail)} />
             </div>
             <div class="callout warning interactive-hook-warning">
               <Icon name="warning" size={18} />
