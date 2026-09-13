@@ -2735,6 +2735,18 @@ button.compact {
   background: var(--panel);
 }
 
+.review-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.review-section-heading h3 {
+  margin: 0;
+}
+
 .summary-list {
   margin: 0;
 }

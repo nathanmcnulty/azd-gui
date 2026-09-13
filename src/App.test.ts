@@ -101,6 +101,67 @@ describe("desktop experience", () => {
     expect(within(preflightPage).queryByText("Infrastructure preview")).not.toBeInTheDocument();
   });
 
+  it("edits grouped review sections and clears approval until the updated values are reviewed", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\entra-health-review" }
+    });
+
+    const continueWizard = async () => {
+      const button = screen.getByRole("button", { name: /^continue$/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      await fireEvent.click(button);
+    };
+
+    for (let step = 0; step < 4; step += 1) await continueWizard();
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /subscription/i })).toHaveValue(
+        "11111111-1111-1111-1111-111111111111"
+      );
+    });
+    await continueWizard();
+
+    const initialLink = "https://teams.microsoft.com/l/channel/example/Initial";
+    await fireEvent.input(screen.getByLabelText(/teams channel link/i), {
+      target: { value: initialLink }
+    });
+    await continueWizard();
+    expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
+    const configurationReview = screen.getByRole("region", { name: /review entra health alerts/i });
+    expect(within(configurationReview).getByText(initialLink)).toBeInTheDocument();
+
+    const approval = screen.getByRole("checkbox", { name: /approve pinned template code execution/i });
+    await fireEvent.click(approval);
+    expect(approval).toBeChecked();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit Entra health alerts" }));
+    expect(screen.getByRole("heading", { name: "Entra health alerts" })).toBeInTheDocument();
+    const updatedLink = "https://teams.microsoft.com/l/channel/example/Updated";
+    await fireEvent.input(screen.getByLabelText(/teams channel link/i), {
+      target: { value: updatedLink }
+    });
+    await continueWizard();
+    expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
+    expect(within(screen.getByRole("region", { name: /review entra health alerts/i })).getByText(updatedLink)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /approve pinned template code execution/i })).not.toBeChecked();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Edit Azure environment" }));
+    expect(screen.getByRole("heading", { name: /configure environment/i })).toBeInTheDocument();
+    await fireEvent.input(screen.getByLabelText(/environment name/i), {
+      target: { value: "reviewed" }
+    });
+    await continueWizard();
+    await continueWizard();
+    expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
+    expect(screen.getByText("reviewed", { selector: ".summary-list dd" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /approve pinned template code execution/i })).not.toBeChecked();
+  });
+
   it("navigates the command palette by keyboard and restores focus", async () => {
     render(App);
     const trigger = screen.getByRole("button", { name: /search projects, templates, and commands/i });
@@ -347,7 +408,7 @@ describe("desktop experience", () => {
     }
 
     expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
-    await fireEvent.click(screen.getByRole("button", { name: /Notifications$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^\d+\. Notifications$/i }));
     await fireEvent.input(screen.getByLabelText(/mail recipient/i), { target: { value: "review@example.invalid" } });
     await fireEvent.click(screen.getByRole("button", { name: /Review deployment$/i }));
     await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
@@ -360,7 +421,7 @@ describe("desktop experience", () => {
     expect(starts).not.toHaveBeenCalled();
 
     await fireEvent.click(screen.getByRole("button", { name: /dismiss terminal notice/i }));
-    await fireEvent.click(screen.getByRole("button", { name: /Notifications$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^\d+\. Notifications$/i }));
     await fireEvent.input(screen.getByLabelText(/mail recipient/i), { target: { value: "" } });
     await fireEvent.click(screen.getByRole("button", { name: /Review deployment$/i }));
     await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
