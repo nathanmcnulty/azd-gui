@@ -358,13 +358,6 @@ fn ensure_destination(path: &str, allow_existing_project: bool) -> AppResult<Pat
     Ok(std::fs::canonicalize(destination)?)
 }
 
-pub(crate) async fn resolve_entry(
-    request: &PrepareDeploymentRequest,
-    database: &Database,
-) -> AppResult<CatalogEntry> {
-    resolve_entry_with_local_source(request, database, None).await
-}
-
 async fn resolve_entry_with_local_source(
     request: &PrepareDeploymentRequest,
     database: &Database,
@@ -723,6 +716,33 @@ mod tests {
                 ),
             ]),
         }
+    }
+
+    #[tokio::test]
+    async fn staged_local_contract_preserves_reviewed_identity() {
+        let source = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("azure.yaml"), "name: staged-sample").unwrap();
+        let inspected = crate::catalog::inspect_local(source.path().to_str().unwrap()).unwrap();
+        let mut request = myworkid_request();
+        request.template_id = inspected.entry.id.clone();
+        request.source_mode = "localTemplate".into();
+        request.source_path = Some(source.path().display().to_string());
+        request.source_binding = inspected.source_binding;
+        let staged = super::stage_local_source(&request, cache.path())
+            .unwrap()
+            .unwrap();
+        let database = crate::persistence::Database::open(&cache.path().join("review.db")).unwrap();
+        let entry =
+            super::resolve_entry_with_local_source(&request, &database, Some(staged.path()))
+                .await
+                .unwrap();
+        assert_eq!(entry.id, inspected.entry.id);
+        assert_eq!(
+            entry.repository,
+            request.source_binding.unwrap().source_path
+        );
+        assert_eq!(entry.commit, "local");
     }
 
     #[test]

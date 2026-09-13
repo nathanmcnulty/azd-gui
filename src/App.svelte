@@ -151,7 +151,7 @@
   let theme: "system" | "dark" | "light" = "system";
   let projectPrepared = false;
   let preparedEnvironmentName: string | null = null;
-  let preparedEnvironmentVariables = new Set<string>();
+  let preparedEnvironmentVariables = new Map<string, Set<string>>();
   let terminalLaunch: ExternalTerminalLaunch | null = null;
   let terminalOpening = false;
   let interactivePreparing = false;
@@ -552,7 +552,7 @@
     lastOperationResult = null;
     projectPrepared = false;
     preparedEnvironmentName = null;
-    preparedEnvironmentVariables = new Set();
+    preparedEnvironmentVariables = new Map();
     azureDiscovery = null;
     azureDiscoveryLoading = false;
     azureDiscoveryError = "";
@@ -573,7 +573,7 @@
     ) {
       projectPrepared = false;
       preparedEnvironmentName = null;
-      preparedEnvironmentVariables = new Set();
+      preparedEnvironmentVariables = new Map();
     }
     if (
       id === "sourceMode" ||
@@ -1007,11 +1007,11 @@
       const values = Object.entries(targetValues)
         .filter(([, value]) => value !== undefined)
         .map(([name, value]) => ({ name, value: serializeConfigurationValue(value) }));
-      for (const name of preparedEnvironmentVariables) {
+      for (const name of preparedEnvironmentVariables.get(environment) ?? []) {
         if (!Object.hasOwn(targetValues, name)) values.push({ name, value: "" });
       }
       await setProjectEnvironmentValues(projectPath, environment, values);
-      for (const [name] of Object.entries(targetValues)) preparedEnvironmentVariables.add(name);
+      preparedEnvironmentVariables.set(environment, new Set(values.map(({ name }) => name)));
       addSystemLog("Refreshed the prepared project environment with the reviewed values.", "success");
       return projectPath;
     }
@@ -1020,7 +1020,7 @@
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
       let result: Awaited<ReturnType<typeof materializeDeploymentProject>>;
       try {
-        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues);
+        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues, selectedInspection?.sourceBinding);
       } catch (error) {
         if (wizardValues.sourceMode !== "existingProject") {
           try {
@@ -1043,9 +1043,9 @@
       };
       projectPrepared = true;
       preparedEnvironmentName = String(wizardValues.environmentName || "dev");
-      preparedEnvironmentVariables = new Set(
+      preparedEnvironmentVariables.set(preparedEnvironmentName, new Set(
         Object.keys(environmentValuesForPlan(wizardPlan, wizardValues))
-      );
+      ));
     }
     return projectPath;
   }

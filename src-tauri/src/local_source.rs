@@ -28,7 +28,7 @@ fn is_link_or_reparse(path: &Path) -> AppResult<bool> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        return Ok(metadata.file_attributes() & 0x400 != 0);
+        Ok(metadata.file_attributes() & 0x400 != 0)
     }
     #[cfg(not(windows))]
     Ok(false)
@@ -159,7 +159,7 @@ impl<'a> TreeWriter<'a> {
             .as_ref()
             .map(fs::File::create)
             .transpose()?;
-        let mut buffer = [0u8; COPY_BUFFER_BYTES];
+        let mut buffer = vec![0u8; COPY_BUFFER_BYTES];
         let mut actual_size = 0u64;
         loop {
             let count = input.read(&mut buffer)?;
