@@ -131,8 +131,16 @@ export function calculateWizardPlan(
 
   pages.push(
     standardPage("review", "review", "Review deployment", "Confirm values and approve pinned template code execution."),
-    standardPage("preflight", "preflight", "Run checks and preview", "Validate access and run the template's infrastructure preview."),
-    standardPage("deploy", "deploy", "Deploy", "Run azd up and follow live progress.")
+    standardPage("preflight", "preflight",
+      manifest?.requiresInteractiveTerminal ? "Prepare for terminal" : "Run checks and preview",
+      manifest?.requiresInteractiveTerminal
+        ? "Check access and prepare the project for interactive deployment."
+        : "Validate access and run the template's infrastructure preview."),
+    standardPage("deploy", "deploy",
+      manifest?.requiresInteractiveTerminal ? "Continue in terminal" : "Deploy",
+      manifest?.requiresInteractiveTerminal
+        ? "Complete deployment in the external terminal and refresh project state."
+        : "Run azd up and follow live progress.")
   );
 
   return {

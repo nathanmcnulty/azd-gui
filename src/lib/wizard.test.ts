@@ -11,6 +11,15 @@ import {
 } from "./wizard";
 
 describe("wizard planning", () => {
+  it("labels interactive deployment steps as a terminal handoff", () => {
+    const entry = structuredClone(bundledCatalog.entries[0]);
+    entry.manifest!.requiresInteractiveTerminal = true;
+    const pages = calculateWizardPlan(entry, {}).pages;
+    expect(pages.find((page) => page.kind === "preflight")?.title).toBe("Prepare for terminal");
+    expect(pages.find((page) => page.kind === "deploy")?.title).toBe("Continue in terminal");
+    entry.manifest!.requiresInteractiveTerminal = false;
+    expect(calculateWizardPlan(entry, {}).pages.find((page) => page.kind === "deploy")?.title).toBe("Deploy");
+  });
   it("accepts native conditions whose unused comparisons are null", () => {
     const condition = JSON.parse('{"field":"components","equals":null,"notEquals":null,"includes":"worker"}');
     expect(conditionMatches(condition, { components: ["web", "worker"] })).toBe(true);

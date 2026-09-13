@@ -31,7 +31,7 @@ describe("desktop experience", () => {
     expect(deploymentSteps[0]).toBeEnabled();
     expect(deploymentSteps.slice(1).every((step) => step.hasAttribute("disabled"))).toBe(true);
 
-    const continueButton = screen.getByRole("button", { name: /continue/i });
+    const continueButton = screen.getByRole("button", { name: /^continue$/i });
     expect(continueButton).toBeDisabled();
 
     const destination = screen.getByPlaceholderText(/empty destination folder/i);
@@ -54,7 +54,7 @@ describe("desktop experience", () => {
     });
 
     for (let step = 0; step < 4; step += 1) {
-      await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+      await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     }
 
     expect(screen.getByRole("heading", { name: /configure environment/i })).toBeInTheDocument();
@@ -64,7 +64,7 @@ describe("desktop experience", () => {
       );
     });
     expect(screen.getByRole("combobox", { name: /azure region/i })).toHaveValue("westus2");
-    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
   });
 
   it("routes interactive templates to the terminal handoff instead of preview", async () => {
@@ -79,20 +79,20 @@ describe("desktop experience", () => {
     });
 
     for (let step = 0; step < 4; step += 1) {
-      await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+      await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     }
     await waitFor(() => {
       expect(screen.getByRole("combobox", { name: /subscription/i })).toHaveValue(
         "11111111-1111-1111-1111-111111111111"
       );
     });
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     await fireEvent.input(screen.getByLabelText(/teams channel link/i), {
       target: { value: "https://teams.microsoft.com/l/channel/example/Alerts?groupId=group&tenantId=tenant" }
     });
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
     const preflightPage = screen.getByRole("heading", { name: /prepare for interactive terminal/i }).closest("section")!;
     expect(preflightPage).toBeInTheDocument();
@@ -214,13 +214,13 @@ describe("desktop experience", () => {
     await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
       target: { value: "C:\\Deployments\\maester-scopes" }
     });
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
     expect(screen.getByText("Azure CLI")).toBeInTheDocument();
     expect(screen.getByText("PowerShell")).toBeInTheDocument();
     expect(screen.queryByText("Microsoft Graph PowerShell")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
   });
 
   it("applies a template recommendation profile without replacing other values", async () => {
@@ -234,7 +234,7 @@ describe("desktop experience", () => {
       target: { value: "C:\\Deployments\\maester-profile" }
     });
     for (let step = 0; step < 5; step += 1) {
-      const continueButton = screen.getByRole("button", { name: /continue/i });
+      const continueButton = screen.getByRole("button", { name: /^continue$/i });
       await waitFor(() => expect(continueButton).toBeEnabled());
       await fireEvent.click(continueButton);
     }
@@ -300,12 +300,12 @@ describe("desktop experience", () => {
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
     expect(await screen.findByText(/interactive terminal required/i)).toBeInTheDocument();
     expect(screen.getByText(/local source can change/i)).toBeInTheDocument();
     expect(screen.getByText(/inferred from azure.yaml/i)).toBeInTheDocument();
-    const continueButton = screen.getByRole("button", { name: /continue/i });
+    const continueButton = screen.getByRole("button", { name: /^continue$/i });
     expect(continueButton).toBeDisabled();
     await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
     expect(continueButton).toBeEnabled();
@@ -324,11 +324,11 @@ describe("desktop experience", () => {
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
-    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
 
     for (let attempt = 0; attempt < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); attempt += 1) {
-      const continueButton = screen.getByRole("button", { name: /continue/i });
+      const continueButton = screen.getByRole("button", { name: /^continue$/i });
       await waitFor(() => expect(continueButton).toBeEnabled());
       await fireEvent.click(continueButton);
     }

@@ -34,7 +34,8 @@ import type {
   ToolInstallApprovalGrant,
   ToolInstallPlan,
   ToolStatus,
-  TemplateManifest
+  TemplateManifest,
+  ValidationReportRead
 } from "./types";
 
 let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
@@ -427,6 +428,11 @@ export async function getProjectState(
     };
   }
   return invoke<AzdProjectState>("get_project_state", { projectPath, environment });
+}
+
+export async function getProjectValidationReport(projectPath: string): Promise<ValidationReportRead> {
+  if (!isTauri()) return { state: "notFound" };
+  return invoke<ValidationReportRead>("get_project_validation_report", { projectPath });
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
