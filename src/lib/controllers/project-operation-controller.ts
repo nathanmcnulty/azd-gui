@@ -1,6 +1,7 @@
 import {
   getOperationHistory,
   getProjectState,
+  getProjectTemplate,
   listProjectEnvironments,
   requestExecutionApproval,
   startAzdOperation
@@ -13,6 +14,7 @@ import type {
 } from "../types";
 
 export type ProjectWorkspaceSnapshot = {
+  template: Awaited<ReturnType<typeof getProjectTemplate>>;
   state: AzdProjectState | null;
   environments: ProjectEnvironment[];
   history: OperationEvent[];
@@ -21,10 +23,11 @@ export type ProjectWorkspaceSnapshot = {
 };
 
 export async function loadProjectWorkspace(project: ProjectSummary): Promise<ProjectWorkspaceSnapshot> {
-  const [stateResult, environmentsResult, historyResult] = await Promise.allSettled([
+  const [stateResult, environmentsResult, historyResult, templateResult] = await Promise.allSettled([
     getProjectState(project.path, project.environment),
     listProjectEnvironments(project.path),
-    getOperationHistory(project.path)
+    getOperationHistory(project.path),
+    getProjectTemplate(project.path)
   ]);
   const environments =
     environmentsResult.status === "fulfilled"
@@ -33,12 +36,13 @@ export async function loadProjectWorkspace(project: ProjectSummary): Promise<Pro
         ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
         : [];
   return {
+    template: templateResult.status === "fulfilled" ? templateResult.value : null,
     state: stateResult.status === "fulfilled" ? stateResult.value : null,
     environments,
     history: historyResult.status === "fulfilled" ? historyResult.value : [],
     currentEnvironment:
       environments.find((environment) => environment.isDefault)?.name ?? project.environment,
-    failedSources: [stateResult, environmentsResult, historyResult].filter(
+    failedSources: [stateResult, environmentsResult, historyResult, templateResult].filter(
       (result) => result.status === "rejected"
     ).length
   };
@@ -51,19 +55,19 @@ export async function startProjectOperation(
   action: ProjectAction
 ): Promise<string> {
   const requiresApproval = ["preview", "up", "provision", "deploy", "down"].includes(action);
-  const approval = requiresApproval
-    ? await requestExecutionApproval({
-        action: action as Exclude<ProjectAction, "refresh">,
-        projectPath: project.path,
-        environment: project.environment ?? "dev",
-        templateId: project.templateId ?? "",
-        revision: project.revision
-      })
-    : undefined;
-  return startAzdOperation(
-    action,
-    approval?.projectPath ?? project.path,
-    project.environment,
-    approval?.token
-  );
+  const environment = project.environment;
+  if (requiresApproval) {
+    if (!environment?.trim()) {
+      throw new Error("Select an environment before starting this lifecycle action.");
+    }
+    const approval = await requestExecutionApproval({
+      action: action as Exclude<ProjectAction, "refresh">,
+      projectPath: project.path,
+      environment,
+      templateId: project.templateId ?? "",
+      revision: project.revision
+    });
+    return startAzdOperation(action, approval.projectPath, environment, approval.token);
+  }
+  return startAzdOperation(action, project.path, environment);
 }

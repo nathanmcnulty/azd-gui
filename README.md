@@ -72,6 +72,9 @@ Local validation is the normal development path. The dependency audit requires `
 
 See [docs/actions-policy.md](docs/actions-policy.md) for the hosted-runner budget policy and release checklist.
 Use [docs/windows-beta-acceptance.md](docs/windows-beta-acceptance.md) for the required clean-VM release acceptance and publication gate.
+The [Windows readiness roadmap](docs/windows-readiness-roadmap.md) tracks template adoption and remaining acceptance work.
+
+Use a build directory specific to the checkout when working across drives or worktrees. Tauri-generated build metadata contains absolute paths; copying an existing `target` directory can retain references to a previous checkout. Set `$env:CARGO_TARGET_DIR` to a fresh directory on a drive with sufficient space, then rerun validation. Release-equivalent validation uses Node.js 22.
 
 ## Catalog contracts
 

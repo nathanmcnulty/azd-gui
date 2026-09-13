@@ -3,6 +3,7 @@
   import AppSidebar from "./components/AppSidebar.svelte";
   import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
+  import ConfigurationFieldControl from "./components/ConfigurationFieldControl.svelte";
   import Icon from "./components/Icon.svelte";
   import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
   import OutputPanel from "./components/OutputPanel.svelte";
@@ -10,6 +11,7 @@
   import {
     bootstrap,
     cancelOperation,
+    checkTemplatePrerequisites,
     clearLocalAppData,
     chooseFolder,
     createProjectEnvironment,
@@ -55,6 +57,7 @@
     ProjectEnvironment,
     ProjectEnvironmentValue,
     ProjectSummary,
+    ProjectTemplateSnapshot,
     TemplateInspection,
     ToolInstallPlan,
     ToolStatus,
@@ -84,7 +87,9 @@
   import {
     calculateWizardPlan,
     conditionMatches,
+    environmentValuesForPlan,
     sensitiveFieldIds,
+    validateField,
     valuesRemovedByPlan,
     visibleFields
   } from "./lib/wizard";
@@ -126,6 +131,8 @@
   let commandQuery = "";
   let catalogQuery = "";
   let selectedEntry: CatalogEntry | null = null;
+  let evaluatedRequiredTools: ToolStatus[] | null = null;
+  let prerequisiteEvaluationKey = "";
   let selectedInspection: TemplateInspection | null = null;
   let wizardPlan: WizardPlan | null = null;
   let wizardValues: WizardValues = {};
@@ -144,9 +151,11 @@
   let projectPrepared = false;
   let terminalLaunch: ExternalTerminalLaunch | null = null;
   let terminalOpening = false;
+  let interactivePreparing = false;
   let installPlan: ToolInstallPlan | null = null;
   let installingToolId: string | null = null;
   let selectedProject: ProjectSummary | null = null;
+  let selectedProjectTemplate: ProjectTemplateSnapshot | null = null;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
@@ -203,11 +212,8 @@
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
   $: sensitiveWizardFields = sensitiveFieldIds(selectedEntry);
-  $: selectedProjectConfigurationFields = selectedProject?.templateId
-    ? data.catalog.entries
-        .find((entry) => entry.id === selectedProject?.templateId)
-        ?.manifest?.configuration.groups.flatMap((group) => group.fields) ?? []
-    : [];
+  $: selectedProjectConfigurationFields = selectedProjectTemplate?.entry.manifest?.configuration.groups
+    .flatMap((group) => group.fields) ?? [];
   $: projectConfigurationWizardValues = Object.fromEntries(
       selectedProjectConfigurationFields.map((field) => [
         field.id,
@@ -219,10 +225,7 @@
       ])
   );
   $: visibleProjectConfigurationFields =
-    (selectedProject?.templateId
-      ? data.catalog.entries.find((entry) => entry.id === selectedProject?.templateId)?.manifest?.configuration.groups
-      : undefined
-    )
+    selectedProjectTemplate?.entry.manifest?.configuration.groups
       ?.filter((group) => conditionMatches(group.condition, projectConfigurationWizardValues))
       .flatMap((group) => visibleFields(group.fields, projectConfigurationWizardValues)) ?? [];
   $: missingProjectConfiguration = environmentConfigurationLoaded
@@ -271,11 +274,50 @@
       entry.tags.some((tag) => tag.toLowerCase().includes(query))
     );
   });
-  $: requiredTools =
-    selectedEntry?.manifest?.prerequisites.map((required) => {
-      const status = data.tools.find((tool) => tool.id === required.id);
-      return status ? { ...status, ...required } : ({ ...required, state: "unknown" } as ToolStatus);
-    }) ?? [];
+  $: selectedManifest = selectedEntry?.manifest;
+  $: selectedPrerequisites = selectedManifest?.prerequisites ?? [];
+  $: selectedPrerequisiteKey = JSON.stringify({
+    prerequisites: selectedPrerequisites,
+    minimumAzdVersion: selectedManifest?.minimumAzdVersion
+  });
+  $: pendingRequiredTools = [
+    ...selectedPrerequisites,
+    ...(selectedManifest?.minimumAzdVersion && !selectedPrerequisites.some((tool) => tool.id === "azd")
+      ? [{
+          id: "azd",
+          name: "Azure Developer CLI",
+          kind: "tool" as const,
+          minimumVersion: selectedManifest.minimumAzdVersion,
+          required: true,
+          installProvider: "manual" as const,
+          documentationUrl: "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
+        }]
+      : [])
+  ].map((required) => ({
+    ...required,
+    state: "checking",
+    canInstall: false
+  } as ToolStatus));
+  $: if (selectedPrerequisiteKey !== prerequisiteEvaluationKey) {
+    prerequisiteEvaluationKey = selectedPrerequisiteKey;
+    evaluatedRequiredTools = pendingRequiredTools.length ? null : [];
+    const requestedKey = selectedPrerequisiteKey;
+    if (selectedManifest) {
+      void checkTemplatePrerequisites(selectedManifest).then(
+        (statuses) => {
+          if (prerequisiteEvaluationKey === requestedKey) evaluatedRequiredTools = statuses;
+        },
+        () => {
+          if (prerequisiteEvaluationKey === requestedKey) {
+            evaluatedRequiredTools = pendingRequiredTools.map(
+              (tool) => ({ ...tool, state: "unknown" } as ToolStatus)
+            );
+          }
+        }
+      );
+    }
+  }
+  $: requiredTools = evaluatedRequiredTools ?? pendingRequiredTools;
   $: requiredConnections =
     selectedEntry?.manifest?.connections.map((required) => {
       const status = data.connections.find((connection) => connection.id === required.id);
@@ -522,6 +564,14 @@
     if (
       id === "sourceMode" ||
       id === "sourcePath" ||
+      id === "projectPath" ||
+      id === "environmentName"
+    ) {
+      projectPrepared = false;
+    }
+    if (
+      id === "sourceMode" ||
+      id === "sourcePath" ||
       (id === "projectPath" && wizardValues.sourceMode === "existingProject")
     ) {
       sourceTrustAccepted = false;
@@ -539,6 +589,12 @@
     activeStep = nextIndex >= 0 ? nextIndex : Math.min(activeStep, wizardPlan.pages.length - 1);
     if (draftTimer) clearTimeout(draftTimer);
     draftTimer = setTimeout(() => void saveCurrentDraft(), 500);
+  }
+
+  function serializeConfigurationValue(value: WizardValues[string]): string {
+    if (Array.isArray(value)) return value.join(",");
+    if (typeof value === "boolean") return value ? "true" : "false";
+    return value ?? "";
   }
 
   async function saveCurrentDraft() {
@@ -714,6 +770,7 @@
     data = { ...data, tools: data.tools.map((tool) => ({ ...tool, state: "checking" })) };
     try {
       data = { ...data, tools: await refreshTools() };
+      prerequisiteEvaluationKey = "";
     } catch (error) {
       addSystemLog(`Tool check failed: ${String(error)}`, "error");
     }
@@ -885,42 +942,7 @@
       configurationIssues.forEach((issue) => addSystemLog(issue, "error"));
       return;
     }
-    const checks = selectedEntry.manifest?.permissionChecks ?? [];
-    permissionCheckResults = [];
-    if (checks.length > 0) {
-      permissionChecksRunning = true;
-      addSystemLog(`Running ${checks.length} registered permission check${checks.length === 1 ? "" : "s"}.`, "info");
-      try {
-        const requiredGraphScopes = Array.from(
-          new Set(
-            (selectedEntry.manifest?.connections ?? [])
-              .filter((connection) => connection.id === "graphPowerShell")
-              .flatMap((connection) => connection.scopes ?? [])
-          )
-        );
-        permissionCheckResults = await runPermissionChecks({
-          checks,
-          tenantId: String(wizardValues.tenantId),
-          subscriptionId: String(wizardValues.subscriptionId),
-          requiredGraphScopes
-        });
-        for (const result of permissionCheckResults) {
-          addSystemLog(
-            `${result.name}: ${result.detail}`,
-            result.state === "failed" ? "error" : result.state === "warning" ? "warning" : "success"
-          );
-        }
-        if (permissionCheckResults.some((result) => result.blocking)) {
-          addSystemLog("Resolve the required permission failures before infrastructure preview.", "error");
-          return;
-        }
-      } catch (error) {
-        addSystemLog(`Permission checks failed: ${String(error)}`, "error");
-        return;
-      } finally {
-        permissionChecksRunning = false;
-      }
-    }
+    if (!(await runRegisteredPermissionChecks())) return;
     addSystemLog("Validated template manifest and pinned source revision.", "success");
     addSystemLog("Checked required tools, connection state, and environment inputs.", "success");
     try {
@@ -952,6 +974,23 @@
   async function materializeProject(): Promise<string> {
     if (!selectedEntry) throw new Error("No template is selected.");
     let projectPath = String(wizardValues.projectPath || "");
+    if (projectPrepared) {
+      if (!wizardPlan) throw new Error("The deployment plan is not available.");
+      const environment = String(wizardValues.environmentName || "dev");
+      const targetValues: Record<string, string | boolean | string[] | undefined> = {
+        ...environmentValuesForPlan(wizardPlan, wizardValues, true),
+        AZURE_LOCATION: wizardValues.location,
+        AZURE_TENANT_ID: wizardValues.tenantId,
+        AZURE_SUBSCRIPTION_ID: wizardValues.subscriptionId,
+        AZURE_RESOURCE_GROUP: wizardValues.resourceGroup
+      };
+      const values = Object.entries(targetValues)
+        .filter(([, value]) => value !== undefined)
+        .map(([name, value]) => ({ name, value: serializeConfigurationValue(value) }));
+      await setProjectEnvironmentValues(projectPath, environment, values);
+      addSystemLog("Refreshed the prepared project environment with the reviewed values.", "success");
+      return projectPath;
+    }
     if (!projectPrepared) {
       addSystemLog("Materializing the pinned template and applying environment values.", "info");
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
@@ -981,6 +1020,127 @@
       projectPrepared = true;
     }
     return projectPath;
+  }
+
+  async function runRegisteredPermissionChecks(): Promise<boolean> {
+    if (!selectedEntry) return false;
+    if (permissionChecksRunning) return false;
+    const checks = selectedEntry.manifest?.permissionChecks ?? [];
+    permissionCheckResults = [];
+    if (checks.length === 0) return true;
+    permissionChecksRunning = true;
+    addSystemLog(`Running ${checks.length} registered permission check${checks.length === 1 ? "" : "s"}.`, "info");
+    try {
+      const permissionTenantId = String(
+        wizardValues.tenantId || requiredConnections.find((connection) => connection.tenantId)?.tenantId || ""
+      );
+      const permissionSubscriptionId = String(
+        wizardValues.subscriptionId || requiredConnections.find((connection) => connection.subscriptionId)?.subscriptionId || ""
+      );
+      if (!permissionTenantId || !permissionSubscriptionId) {
+        addSystemLog("Select an Azure tenant and subscription before running registered permission checks.", "error");
+        return false;
+      }
+      const requiredGraphScopes = Array.from(
+        new Set(
+          (selectedEntry.manifest?.connections ?? [])
+            .filter((connection) => connection.id === "graphPowerShell")
+            .flatMap((connection) => connection.scopes ?? [])
+        )
+      );
+      permissionCheckResults = await runPermissionChecks({
+        checks,
+        tenantId: permissionTenantId,
+        subscriptionId: permissionSubscriptionId,
+        requiredGraphScopes
+      });
+      for (const result of permissionCheckResults) {
+        addSystemLog(
+          `${result.name}: ${result.detail}`,
+          result.state === "failed" ? "error" : result.state === "warning" ? "warning" : "success"
+        );
+      }
+      if (permissionCheckResults.some((result) => result.blocking)) {
+        addSystemLog("Resolve the required permission failures before continuing.", "error");
+        return false;
+      }
+      return true;
+    } catch (error) {
+      addSystemLog(`Permission checks failed: ${String(error)}`, "error");
+      return false;
+    } finally {
+      permissionChecksRunning = false;
+    }
+  }
+
+  async function openExistingProjectTerminal() {
+    if (!selectedEntry || interactivePreparing || terminalOpening) return;
+    if (!selectedPlatformSupported || !requiredToolsReady || !requiredConnectionsReady || requiredTenantMismatch) {
+      addSystemLog("Resolve the template platform, tool, and connection requirements before opening the terminal.", "error");
+      outputOpen = true;
+      return;
+    }
+    if (!(await runRegisteredPermissionChecks())) return;
+    outputOpen = true;
+    try {
+      await launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"));
+    } catch (error) {
+      addSystemLog(`Could not open the project terminal: ${String(error)}`, "error");
+    }
+  }
+
+  async function prepareAndOpenInteractiveTerminal() {
+    if (!selectedEntry || activeOperationId || interactivePreparing) return;
+    if (!hookExecutionAccepted) {
+      addSystemLog("Review and approve pinned template code execution before opening the terminal.", "error");
+      outputOpen = true;
+      return;
+    }
+    if (!selectedPlatformSupported || !requiredToolsReady || !requiredConnectionsReady || requiredTenantMismatch) {
+      addSystemLog("Resolve the template platform, tool, and connection requirements before opening the terminal.", "error");
+      outputOpen = true;
+      return;
+    }
+    const permissionTenantId = String(
+      wizardValues.tenantId || requiredConnections.find((connection) => connection.tenantId)?.tenantId || ""
+    );
+    const permissionSubscriptionId = String(
+      wizardValues.subscriptionId || requiredConnections.find((connection) => connection.subscriptionId)?.subscriptionId || ""
+    );
+    const permissionTargetMismatch = Boolean(
+      permissionTenantId &&
+      permissionSubscriptionId &&
+      requiredConnections
+        .filter((connection) => connection.required)
+        .some(
+          (connection) =>
+            connection.tenantId &&
+            connection.tenantId.toLowerCase() !== permissionTenantId.toLowerCase()
+        )
+    );
+    if (!permissionTenantId || !permissionSubscriptionId || selectedTenantMismatch || permissionTargetMismatch) {
+      addSystemLog("Select an Azure tenant and subscription that match the connected tools before opening the terminal.", "error");
+      outputOpen = true;
+      return;
+    }
+    const configurationIssues = wizardPlan?.pages.flatMap((page) => page.blockingIssues) ?? [];
+    if (configurationIssues.length > 0) {
+      configurationIssues.forEach((issue) => addSystemLog(issue, "error"));
+      outputOpen = true;
+      return;
+    }
+    if (!(await runRegisteredPermissionChecks())) return;
+    interactivePreparing = true;
+    outputOpen = true;
+    addSystemLog("Preparing the approved project before opening an interactive terminal.", "info");
+    try {
+      const projectPath = await materializeProject();
+      await launchExternalTerminal(projectPath, String(wizardValues.environmentName || "dev"));
+    } catch (error) {
+      addSystemLog(`Could not prepare the interactive project: ${String(error)}`, "error");
+    } finally {
+      interactivePreparing = false;
+    }
   }
 
   async function runDeployment(action: "up" | "provision" | "deploy" = "up") {
@@ -1286,9 +1446,29 @@
     }
   }
 
+  function setProjectConfigurationValue(field: ConfigurationField, value: WizardValues[string]) {
+    setEnvironmentConfigurationValue(field, serializeConfigurationValue(value));
+  }
+
   async function saveEnvironmentConfiguration() {
     if (!selectedProject?.environment || environmentConfigurationBusy) return;
     const fields = selectedProjectConfigurationFields;
+    const validationIssue = visibleProjectConfigurationFields
+      .filter((field) => {
+        const current = projectEnvironmentValues.find((item) => item.name === field.environmentVariable);
+        const isConfiguredSensitive = Boolean(
+          current?.isSet &&
+          (current.sensitive || field.sensitive || field.type === "secret") &&
+          !environmentConfigurationDirty.includes(field.environmentVariable)
+        );
+        return !isConfiguredSensitive;
+      })
+      .map((field) => validateField(field, projectConfigurationWizardValues[field.id]))
+      .find((issue): issue is string => issue !== null);
+    if (validationIssue) {
+      environmentConfigurationError = validationIssue;
+      return;
+    }
     const values = environmentConfigurationDirty
       .map((name) => fields.find((field) => field.environmentVariable === name))
       .filter((field): field is ConfigurationField => Boolean(field))
@@ -1380,12 +1560,15 @@
       projectTab = "overview";
     }
     selectedProject = project;
+    selectedProjectTemplate = null;
     activeNav = "projects";
     environmentEditorOpen = false;
     environmentError = "";
     environmentConfigurationLoaded = false;
     projectLoading = true;
     const snapshot = await loadProjectWorkspace(project);
+    if (selectedProject?.path !== project.path) return;
+    selectedProjectTemplate = snapshot.template;
     projectState = snapshot.state;
     projectEnvironments = snapshot.environments;
     applyProjectEnvironments(projectEnvironments);
@@ -1889,9 +2072,9 @@
             {#if requiresInteractiveTerminal}
               <div class="callout warning interactive-hook-warning">
                 <Icon name="warning" size={18} />
-                <div><strong>Interactive terminal required</strong><p>Finish the guided configuration and preview, then use the terminal handoff for prompts the output-only panel cannot answer.</p></div>
+                <div><strong>Interactive terminal required</strong><p>Finish the guided configuration and permission checks, then prepare the project and open a terminal for interactive prompts.</p></div>
                 {#if wizardValues.sourceMode === "existingProject"}
-                  <button class="secondary" disabled={terminalOpening} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={14} /> Open external terminal</button>
+                  <button class="secondary" disabled={terminalOpening || interactivePreparing} on:click={openExistingProjectTerminal}><Icon name="terminal" size={14} /> Open external terminal</button>
                 {/if}
               </div>
             {/if}
@@ -2058,42 +2241,14 @@
               {#each azureDiscovery?.resourceGroups ?? [] as group}<option value={group.name}>{group.location}</option>{/each}
             </datalist>
           {:else if activePage.kind === "configuration" && activePage.group}
-            <div class="form-grid">
-              {#each activePage.group.fields as field}
-                <div class:full={field.type === "multiselect" || field.type === "secret"} class="field">
-                  {#if field.type === "boolean"}
-                    <label class="toggle-line card">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(wizardValues[field.id])}
-                        on:change={(e) => setWizardValue(field.id, e.currentTarget.checked)}
-                      />
-                      <span><strong>{field.label}</strong>{#if field.help}<small>{field.help}</small>{/if}</span>
-                    </label>
-                  {:else if field.type === "select"}
-                    <label>
-                      <span>{field.label}{#if field.required} <em>Required</em>{/if}</span>
-                      <select value={String(wizardValues[field.id] ?? "")} on:change={(e) => setWizardValue(field.id, e.currentTarget.value)} required={field.required}>
-                        {#each field.options ?? [] as option}<option value={option.value}>{option.label}</option>{/each}
-                      </select>
-                    </label>
-                  {:else}
-                    <label>
-                      <span>{field.label}{#if field.required} <em>Required</em>{/if}</span>
-                      <input
-                        type={sensitiveWizardFields.has(field.id) ? "password" : "text"}
-                        value={String(wizardValues[field.id] ?? "")}
-                        on:input={(e) => setWizardValue(field.id, e.currentTarget.value)}
-                        placeholder={field.placeholder ?? ""}
-                        autocomplete={sensitiveWizardFields.has(field.id) ? "new-password" : "off"}
-                        required={field.required}
-                      />
-                      {#if field.help}<small>{field.help}</small>{/if}
-                      {#if field.sensitive}<small class="sensitive-note">This value is never saved in the app draft or logs.</small>{/if}
-                    </label>
-                  {/if}
-                </div>
-              {/each}
+              <div class="form-grid">
+                {#each activePage.group.fields as field}
+                  <ConfigurationFieldControl
+                    {field}
+                    value={wizardValues[field.id]}
+                    on:change={(event) => setWizardValue(field.id, event.detail ?? "")}
+                  />
+                {/each}
             </div>
             {#if activePage.blockingIssues.length}
               <div class="validation-list">
@@ -2108,6 +2263,9 @@
               <h2>{preflightRan ? "Preview completed" : "Run checks and template preview"}</h2>
               <p>{preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview completed. Review Output for hook-driven changes." : "Permission checks are read-only. Project initialization and azd preview can execute pinned template hooks that modify local or cloud state."}</p>
               <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
+              {#if requiresInteractiveTerminal}
+                <button class="secondary" disabled={terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={15} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+              {/if}
             </div>
             <div class="check-grid">
               {#each ["Pinned source revision", "Platform compatibility", "Required tools", "Account alignment", "Environment inputs", "Registered permissions", "Infrastructure preview"] as check}
@@ -2165,7 +2323,7 @@
                 <p>Project initialization, preview, and deployment can execute template hooks. Hooks may change local files, Azure resources, or directory objects. A hook that requests input may require the external terminal.</p>
               </div>
               {#if requiresInteractiveTerminal}
-                <button class="secondary" disabled={terminalOpening || !projectPrepared} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={14} /> Open external terminal</button>
+                <button class="secondary" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={14} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
               {/if}
             </div>
             <label class="toggle-line card">
@@ -2183,7 +2341,7 @@
                 <button class="danger" on:click={stopOperation}><Icon name="stop" size={15} /> Cancel deployment</button>
               {:else}
                 {#if requiresInteractiveTerminal}
-                  <button class="primary large" disabled={terminalOpening || !projectPrepared} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}><Icon name="terminal" size={16} /> Open terminal to finish</button>
+                  <button class="primary large" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
                 {:else}
                   <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {operationState === "succeeded" ? "Deploy again" : lastOperationResult?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
                 {/if}
@@ -2205,7 +2363,7 @@
               <div class="callout warning interactive-hook-warning">
                 <Icon name="terminal" size={18} />
                 <div><strong>Need interactive input?</strong><p>Open a terminal in the materialized project and run the copyable command without <code>--no-prompt</code>.</p></div>
-                <button class="secondary" disabled={terminalOpening || !projectPrepared || operationState === "running"} on:click={() => launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"))}>Open external terminal</button>
+                <button class="secondary" disabled={terminalOpening || interactivePreparing || !projectPrepared || operationState === "running"} on:click={prepareAndOpenInteractiveTerminal}>Open external terminal</button>
               </div>
             {/if}
             <div class="deployment-progress">
@@ -2483,20 +2641,12 @@
                   {#if visibleProjectConfigurationFields.length > 0}
                     <div class="configuration-editor-grid">
                       {#each visibleProjectConfigurationFields as field}
-                        <label class:configuration-checkbox={field.type === "boolean"}>
-                          <span>{field.label}{#if field.required}<small>Required</small>{/if}</span>
-                          {#if field.type === "boolean"}
-                            <input type="checkbox" checked={environmentConfigurationValues[field.id] === "true"} on:change={(event) => setEnvironmentConfigurationValue(field, event.currentTarget.checked ? "true" : "false")} />
-                          {:else if field.type === "select"}
-                            <select value={environmentConfigurationValues[field.id] ?? ""} on:change={(event) => setEnvironmentConfigurationValue(field, event.currentTarget.value)}>
-                              <option value="">Choose a value</option>
-                              {#each field.options ?? [] as option}<option value={option.value}>{option.label}</option>{/each}
-                            </select>
-                          {:else}
-                            <input type={field.type === "secret" || field.sensitive ? "password" : "text"} value={environmentConfigurationValues[field.id] ?? ""} placeholder={projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.sensitive && projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet ? "Configured — enter to replace" : field.placeholder ?? "Enter a value"} autocomplete={field.type === "secret" || field.sensitive ? "new-password" : "off"} on:input={(event) => setEnvironmentConfigurationValue(field, event.currentTarget.value)} />
-                          {/if}
-                          <small><code>{field.environmentVariable}</code>{#if field.help} · {field.help}{/if}</small>
-                        </label>
+                        <ConfigurationFieldControl
+                          {field}
+                          value={projectConfigurationWizardValues[field.id]}
+                          configuredSensitive={Boolean(projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.sensitive && projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet)}
+                          on:change={(event) => setProjectConfigurationValue(field, event.detail)}
+                        />
                       {/each}
                     </div>
                     <div class="environment-configuration-actions">

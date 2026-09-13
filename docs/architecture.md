@@ -15,7 +15,7 @@ Rust owns all privileged behavior:
 - `azd.rs` owns typed lifecycle and environment operations using supported public CLI commands.
 - `connections.rs` checks and starts native tool authentication without handling tokens.
 - `permissions.rs` runs only registered, read-only Azure and Microsoft Graph checks and returns structured pass, warning, or failure results.
-- `tools.rs` detects versions and exposes only vetted per-user module installers.
+- `tools.rs` detects versions, evaluates the selected template's version requirements, and exposes only vetted per-user module installers. Required unknown tools and invalid version ranges block preparation.
 - `deployment.rs` verifies pinned source content, initializes projects, applies azd environment values, and records the project.
 - `persistence.rs` stores non-sensitive projects, catalog trust, drafts, and operation history in SQLite.
 
@@ -41,8 +41,12 @@ When supported by the installed azd version, an explicit tool refresh also consu
 6. Run manifest-requested registered permission checks and stop on required failures.
 7. Resolve a remote source to a full commit and cache that exact checkout.
 8. Run `azd init` for new projects or register an environment for an existing project, then apply approved values through a temporary `azd env set --file` input. Ordinary and sensitive environment configuration use the same transport so values are not exposed in process arguments.
-9. Run `azd provision --preview --no-prompt`.
-10. Run `azd up --no-prompt`, or hand off a manifest-declared interactive workflow to a validated external terminal, then refresh project state.
+9. For guided templates, run `azd provision --preview --no-prompt`. For templates requiring interactive input, prepare and hand off directly to a validated external terminal after permission checks; a noninteractive preview is not a prerequisite for this route.
+10. Run `azd up --no-prompt` for guided templates, then refresh project state. Terminal handoff does not establish deployment success.
+
+Mutating lifecycle commands require an explicit, validated environment. Approval and the CLI argument use that same environment; neither can fall back to azd's current default. Native preparation and subsequent registered-project lifecycle operations reevaluate the saved template's required tool versions.
+
+Project registration stores the effective catalog entry and manifest with a SHA-256 integrity digest and binds it to the project's template ID and revision. Sensitive defaults are removed. Local and direct GitHub projects therefore retain their guided configuration across restarts and catalog changes. This digest detects inconsistent local state; it is not a publisher signature. Legacy projects use a catalog fallback only when its revision exactly matches their recorded revision. Remote sidecar provenance and local source changes still require source review.
 
 The consent gate precedes project materialization because both `azd init` and lifecycle commands can execute template hooks. Renderer acknowledgement is only explanatory: Rust displays a native confirmation and issues a five-minute, one-use approval bound to the action, project path, environment, template ID, and revision. Resource removal receives its own destructive confirmation. `azd provision --preview` is not treated as read-only: azd does not provide a no-hooks preview flag, so a preview can change local files, Azure resources, or directory objects. Every preview terminal outcome is therefore classified as `possiblyModified`, including success. Opening an existing project creates a fresh session consent gate before preview, provision, deployment, or resource removal; read-only project refresh remains available without that approval.
 

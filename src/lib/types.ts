@@ -287,6 +287,11 @@ export interface ProjectSummary {
   state: "ready" | "attention" | "deploying";
 }
 
+export interface ProjectTemplateSnapshot {
+  entry: CatalogEntry;
+  digest: string;
+}
+
 export interface ProjectEnvironment {
   name: string;
   dotEnvPath: string;

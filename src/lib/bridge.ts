@@ -28,14 +28,18 @@ import type {
   ProjectEnvironmentValue,
   ProjectEnvironmentValueInput,
   ProjectSummary,
+  ProjectTemplateSnapshot,
   PrepareDeploymentRequest,
   TemplateInspection,
   ToolInstallApprovalGrant,
   ToolInstallPlan,
-  ToolStatus
+  ToolStatus,
+  TemplateManifest
 } from "./types";
 
 let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+const previewInspectedEntries = new Map<string, ProjectTemplateSnapshot["entry"]>();
+const previewProjectTemplates = new Map<string, ProjectTemplateSnapshot>();
 let previewCatalogReview: (ExternalCatalogPreview & { sourceUrl: string }) | null = null;
 function createPreviewEnvironmentValueState(): Record<string, ProjectEnvironmentValue[]> {
   return {
@@ -68,6 +72,8 @@ export async function bootstrap(): Promise<BootstrapData> {
   if (!isTauri()) {
     previewProjectEnvironments = structuredClone(mockProjectEnvironments);
     previewProjectEnvironmentValues = createPreviewEnvironmentValueState();
+    previewInspectedEntries.clear();
+    previewProjectTemplates.clear();
     return { ...structuredClone(mockBootstrap), settings: readPreviewSettings() };
   }
   return invoke<BootstrapData>("bootstrap");
@@ -84,6 +90,8 @@ export async function saveAppSettings(settings: AppSettings): Promise<void> {
 export async function clearLocalAppData(): Promise<boolean> {
   if (!isTauri()) {
     window.localStorage.removeItem(previewSettingsKey);
+    previewInspectedEntries.clear();
+    previewProjectTemplates.clear();
     return true;
   }
   return invoke<boolean>("clear_local_app_data");
@@ -103,6 +111,7 @@ export async function inspectLocalTemplate(path: string): Promise<TemplateInspec
     entry.source = "local";
     entry.trusted = false;
     entry.commit = "local";
+    previewInspectedEntries.set(entry.id, structuredClone(entry));
     return {
       entry,
       sourcePath: path,
@@ -129,6 +138,7 @@ export async function inspectGitHubTemplate(url: string): Promise<TemplateInspec
     entry.commit = "0123456789abcdef0123456789abcdef01234567";
     entry.source = "external";
     entry.trusted = false;
+    previewInspectedEntries.set(entry.id, structuredClone(entry));
     return {
       entry,
       azureYamlFound: true,
@@ -188,6 +198,20 @@ export async function removeCatalogSource(id: string): Promise<void> {
 export async function refreshTools(): Promise<ToolStatus[]> {
   if (!isTauri()) return structuredClone(mockBootstrap.tools);
   return invoke<ToolStatus[]>("check_tools");
+}
+
+export async function checkTemplatePrerequisites(
+  manifest: TemplateManifest
+): Promise<ToolStatus[]> {
+  if (!isTauri()) {
+    return manifest.prerequisites.map((prerequisite) => {
+      const tool = mockBootstrap.tools.find((candidate) => candidate.id === prerequisite.id);
+      return tool
+        ? { ...tool, ...prerequisite }
+        : ({ ...prerequisite, state: "unknown", canInstall: false } as ToolStatus);
+    });
+  }
+  return invoke<ToolStatus[]>("check_template_prerequisites", { manifest });
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {
@@ -326,6 +350,9 @@ export async function openExternalTerminal(
 
 export async function prepareDeployment(request: PrepareDeploymentRequest): Promise<ProjectSummary> {
   if (!isTauri()) {
+    const entry = previewInspectedEntries.get(request.templateId)
+      ?? mockBootstrap.catalog.entries.find((candidate) => candidate.id === request.templateId);
+    if (entry) previewProjectTemplates.set(request.destination, { entry: structuredClone(entry), digest: "browser-preview" });
     return {
       id: `${request.templateId}-${request.environment}`,
       name: request.templateId,
@@ -338,6 +365,17 @@ export async function prepareDeployment(request: PrepareDeploymentRequest): Prom
     };
   }
   return invoke<ProjectSummary>("prepare_deployment", { request });
+}
+
+export async function getProjectTemplate(projectPath: string): Promise<ProjectTemplateSnapshot | null> {
+  if (!isTauri()) {
+    const saved = previewProjectTemplates.get(projectPath);
+    if (saved) return structuredClone(saved);
+    const project = mockBootstrap.projects.find((candidate) => candidate.path === projectPath);
+    const entry = mockBootstrap.catalog.entries.find((candidate) => candidate.id === project?.templateId);
+    return entry ? { entry: structuredClone(entry), digest: "browser-preview" } : null;
+  }
+  return invoke<ProjectTemplateSnapshot | null>("get_project_template", { projectPath });
 }
 
 export async function saveWizardDraft(

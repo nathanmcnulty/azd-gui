@@ -279,11 +279,11 @@ pub struct ConfigurationGroup {
 #[serde(rename_all = "camelCase")]
 pub struct FieldCondition {
     pub field: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_equals: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub includes: Option<String>,
 }
 
@@ -370,6 +370,14 @@ pub struct ProjectSummary {
     #[serde(default)]
     pub last_operation: Option<String>,
     pub state: String,
+}
+
+/// The reviewed template contract, never the entered environment values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTemplateSnapshot {
+    pub entry: CatalogEntry,
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
