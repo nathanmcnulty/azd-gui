@@ -19,6 +19,7 @@ export interface CatalogSourceSummary {
   id: string;
   label: string;
   url: string;
+  requiresReview?: boolean;
 }
 
 export interface CatalogEntry {
@@ -32,6 +33,7 @@ export interface CatalogEntry {
   tags: string[];
   platforms: Platform[];
   manifest?: TemplateManifest;
+  manifestSha256?: string;
   source?: "bundled" | "external" | "local";
   trusted?: boolean;
 }
@@ -45,7 +47,15 @@ export interface TemplateManifest {
   configuration: {
     groups: ConfigurationGroup[];
   };
+  recommendationProfiles?: RecommendationProfile[];
   permissionChecks?: PermissionCheck[];
+}
+
+export interface RecommendationProfile {
+  id: string;
+  title: string;
+  description: string;
+  values: Record<string, string | boolean | string[]>;
 }
 
 export interface Prerequisite {

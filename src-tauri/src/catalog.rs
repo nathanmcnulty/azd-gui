@@ -8,6 +8,7 @@ use crate::{
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -219,8 +220,12 @@ async fn read_bounded_response(
 }
 
 fn read_bounded_local_text(path: &Path, limit: usize, label: &str) -> AppResult<String> {
+    use std::io::Read;
     require_payload_size(Some(std::fs::metadata(path)?.len()), None, limit, label)?;
-    let text = std::fs::read_to_string(path)?;
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(limit as u64 + 1)
+        .read_to_string(&mut text)?;
     require_payload_size(None, Some(text.len()), limit, label)?;
     Ok(text)
 }
@@ -232,6 +237,42 @@ fn require_catalog_entry_count(count: usize) -> AppResult<()> {
         )))
     } else {
         Ok(())
+    }
+}
+
+fn normalized_sha256(value: &str, label: &str) -> AppResult<String> {
+    if value.len() != 64 || !value.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(AppError::Invalid(format!(
+            "{label} must be a 64-character SHA-256 digest."
+        )));
+    }
+    Ok(value.to_ascii_lowercase())
+}
+
+fn external_manifest_digest(
+    manifest: Option<&str>,
+    manifest_sha256: Option<&str>,
+) -> AppResult<Option<String>> {
+    match (manifest, manifest_sha256) {
+        (Some(_), Some(digest)) => normalized_sha256(digest, "External manifest digest").map(Some),
+        (Some(_), None) => Err(AppError::Invalid(
+            "External manifest sidecars require a SHA-256 digest in the catalog.".into(),
+        )),
+        (None, Some(_)) => Err(AppError::Invalid(
+            "External manifest digest must name a manifest sidecar.".into(),
+        )),
+        (None, None) => Ok(None),
+    }
+}
+
+fn require_manifest_digest(bytes: &[u8], expected_digest: &str) -> AppResult<()> {
+    let actual_digest = format!("{:x}", Sha256::digest(bytes));
+    if actual_digest == expected_digest {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(
+            "External manifest bytes do not match the catalog SHA-256 digest.".into(),
+        ))
     }
 }
 
@@ -308,6 +349,7 @@ pub fn bundled_catalog() -> AppResult<Catalog> {
             tags: entry.tags,
             platforms: entry.platforms,
             manifest,
+            manifest_sha256: None,
             source: Some("bundled".into()),
             trusted: true,
         });
@@ -355,6 +397,8 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
             commit: &entry.commit,
             subdirectory: entry.subdirectory.as_deref(),
         })?;
+        let manifest_sha256 =
+            external_manifest_digest(entry.manifest.as_deref(), entry.manifest_sha256.as_deref())?;
         let manifest = if let Some(path) = entry.manifest.as_deref() {
             if path.contains("..")
                 || path.starts_with('/')
@@ -368,9 +412,7 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
             let manifest_url = resolved_catalog_url
                 .join(path)
                 .map_err(|error| AppError::Url(error.to_string()))?;
-            if manifest_url.scheme() != "https"
-                || manifest_url.host_str() != resolved_catalog_url.host_str()
-            {
+            if !same_origin(&resolved_catalog_url, &manifest_url) {
                 return Err(AppError::Url(
                     "External manifests must use the catalog's HTTPS origin.".into(),
                 ));
@@ -395,6 +437,12 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
                 MAX_CATALOG_MANIFEST_BYTES,
                 "Catalog manifest total",
             )?;
+            require_manifest_digest(
+                &manifest_bytes,
+                manifest_sha256
+                    .as_deref()
+                    .expect("external manifest digest was validated"),
+            )?;
             let manifest: TemplateManifest = serde_json::from_slice(&manifest_bytes)?;
             if manifest.schema_version != "1.0" {
                 return Err(AppError::Invalid(format!(
@@ -418,6 +466,7 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
             tags: entry.tags,
             platforms: entry.platforms,
             manifest,
+            manifest_sha256,
             source: Some("external".into()),
             trusted: false,
         });
@@ -483,7 +532,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
         .unwrap_or("local-azd-project")
         .to_string();
     let embedded_path = canonical.join("azd-gui.json");
-    let (manifest, manifest_source) = if embedded_path.is_file() {
+    let (mut manifest, manifest_source) = if embedded_path.is_file() {
         (
             serde_json::from_str(&read_bounded_local_text(
                 &embedded_path,
@@ -502,9 +551,8 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
         )));
     }
     crate::manifest::validate(&manifest)?;
-    let interactive_hooks = yaml_text.to_ascii_lowercase().contains("interactive: true");
-    let windows_hooks = yaml_text.contains("windows:");
-    let posix_hooks = yaml_text.contains("posix:");
+    let (interactive_hooks, windows_hooks, posix_hooks) = hook_characteristics(&yaml);
+    manifest.requires_interactive_terminal |= interactive_hooks;
     let platforms = if windows_hooks && !posix_hooks {
         vec!["windows".into()]
     } else {
@@ -531,6 +579,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
             tags: vec!["Local".into(), "Unvetted".into()],
             platforms,
             manifest: Some(manifest),
+            manifest_sha256: None,
             source: Some("local".into()),
             trusted: false,
         },
@@ -638,7 +687,7 @@ async fn inspect_github_revision(
         .send()
         .await?;
     require_response_origin(&raw_origin, &embedded_manifest)?;
-    let (manifest, manifest_source) = if embedded_manifest.status().is_success() {
+    let (mut manifest, manifest_source) = if embedded_manifest.status().is_success() {
         let manifest_bytes =
             read_bounded_response(embedded_manifest, TEMPLATE_MANIFEST_LIMIT, "azd-gui.json")
                 .await?;
@@ -665,7 +714,8 @@ async fn inspect_github_revision(
         .get("name")
         .and_then(serde_yaml::Value::as_str)
         .unwrap_or(repository_name);
-    let interactive_hooks = yaml_text.to_ascii_lowercase().contains("interactive: true");
+    let (interactive_hooks, _, _) = hook_characteristics(&yaml);
+    manifest.requires_interactive_terminal |= interactive_hooks;
     Ok(TemplateInspection {
         entry: CatalogEntry {
             id: format!("github-{}", repository_name.to_ascii_lowercase()),
@@ -678,6 +728,7 @@ async fn inspect_github_revision(
             tags: vec!["GitHub".into(), "Unvetted".into()],
             platforms: vec!["windows".into(), "macos".into(), "linux".into()],
             manifest: Some(manifest),
+            manifest_sha256: None,
             source: Some("external".into()),
             trusted: false,
         },
@@ -691,6 +742,39 @@ async fn inspect_github_revision(
                 .into(),
         ],
     })
+}
+
+fn hook_characteristics(yaml: &serde_yaml::Value) -> (bool, bool, bool) {
+    let mut containers = vec![yaml];
+    if let Some(services) = yaml.get("services").and_then(serde_yaml::Value::as_mapping) {
+        containers.extend(services.values());
+    }
+    if let Some(layers) = yaml.get("infra").and_then(|infra| infra.get("layers")) {
+        match layers {
+            serde_yaml::Value::Sequence(layers) => containers.extend(layers),
+            serde_yaml::Value::Mapping(layers) => containers.extend(layers.values()),
+            _ => {}
+        }
+    }
+    let mut pending: Vec<_> = containers
+        .into_iter()
+        .filter_map(|item| item.get("hooks"))
+        .collect();
+    let (mut interactive, mut windows, mut posix) = (false, false, false);
+    while let Some(node) = pending.pop() {
+        match node {
+            serde_yaml::Value::Mapping(entries) => {
+                interactive |=
+                    node.get("interactive").and_then(serde_yaml::Value::as_bool) == Some(true);
+                windows |= node.get("windows").is_some();
+                posix |= node.get("posix").is_some();
+                pending.extend(entries.values());
+            }
+            serde_yaml::Value::Sequence(entries) => pending.extend(entries),
+            _ => {}
+        }
+    }
+    (interactive, windows, posix)
 }
 
 fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
@@ -724,6 +808,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
             reason: "Deploy the local azd project.".into(),
         }],
         configuration: Configuration::default(),
+        recommendation_profiles: vec![],
         permission_checks: vec![],
     }
 }
@@ -734,6 +819,33 @@ pub fn entry_by_id(template_id: &str) -> AppResult<CatalogEntry> {
         .into_iter()
         .find(|entry| entry.id == template_id)
         .ok_or_else(|| AppError::Invalid(format!("Unknown bundled template: {template_id}")))
+}
+
+pub(crate) fn validate_external_entry_snapshot(entry: &CatalogEntry) -> AppResult<()> {
+    validate_entry(&CatalogFileEntryRef {
+        id: &entry.id,
+        repository: &entry.repository,
+        commit: &entry.commit,
+        subdirectory: entry.subdirectory.as_deref(),
+    })?;
+    if entry
+        .manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.schema_version != "1.0")
+    {
+        return Err(AppError::Invalid(format!(
+            "Unsupported manifest schema for {}.",
+            entry.id
+        )));
+    }
+    if let Some(manifest) = &entry.manifest {
+        crate::manifest::validate(manifest)?;
+    }
+    external_manifest_digest(
+        entry.manifest.as_ref().map(|_| "persisted"),
+        entry.manifest_sha256.as_deref(),
+    )?;
+    Ok(())
 }
 
 pub fn validate_external_snapshot(catalog: &Catalog) -> AppResult<()> {
@@ -751,25 +863,7 @@ pub fn validate_external_snapshot(catalog: &Catalog) -> AppResult<()> {
                 entry.id
             )));
         }
-        validate_entry(&CatalogFileEntryRef {
-            id: &entry.id,
-            repository: &entry.repository,
-            commit: &entry.commit,
-            subdirectory: entry.subdirectory.as_deref(),
-        })?;
-        if entry
-            .manifest
-            .as_ref()
-            .is_some_and(|manifest| manifest.schema_version != "1.0")
-        {
-            return Err(AppError::Invalid(format!(
-                "Unsupported manifest schema for {}.",
-                entry.id
-            )));
-        }
-        if let Some(manifest) = &entry.manifest {
-            crate::manifest::validate(manifest)?;
-        }
+        validate_external_entry_snapshot(entry)?;
     }
     Ok(())
 }
@@ -791,11 +885,32 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_inspection_uses_yaml_structure_and_preserves_terminal_requirement() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("azure.yaml"), "name: hook-test\nhooks:\n  preprovision: {shell: pwsh, interactive: true, run: ./setup.ps1}\n").unwrap();
+        let inspection = super::inspect_local(source.path().to_str().unwrap()).unwrap();
+        assert!(inspection.interactive_hooks);
+        assert!(
+            inspection
+                .entry
+                .manifest
+                .unwrap()
+                .requires_interactive_terminal
+        );
+        let yaml = serde_yaml::from_str("name: sample\n# interactive: true\nmetadata: {windows: documentation}\nhooks: {preprovision: {run: 'echo interactive: true', interactive: false}}\n").unwrap();
+        assert_eq!(super::hook_characteristics(&yaml), (false, false, false));
+        let yaml = serde_yaml::from_str("services:\n  api:\n    hooks:\n      predeploy:\n        - windows: {interactive: true, shell: pwsh, run: ./setup.ps1}\ninfra:\n  layers:\n    - name: shared\n      hooks:\n        preprovision: {posix: {run: ./setup.sh}}\n").unwrap();
+        assert_eq!(super::hook_characteristics(&yaml), (true, true, true));
+    }
+
     use super::is_public_ip;
     use super::{
-        bundled_catalog, inspect_local, normalize_catalog_url, require_catalog_entry_count,
-        require_payload_size, same_origin, AZURE_YAML_LIMIT, MAX_CATALOG_ENTRIES,
+        bundled_catalog, external_manifest_digest, inspect_local, normalize_catalog_url,
+        require_catalog_entry_count, require_manifest_digest, require_payload_size, same_origin,
+        validate_external_snapshot, AZURE_YAML_LIMIT, MAX_CATALOG_ENTRIES,
     };
+    use sha2::{Digest, Sha256};
     use std::{fs, net::IpAddr};
     use tempfile::tempdir;
     use url::Url;
@@ -804,10 +919,9 @@ mod tests {
     fn bundled_entries_are_pinned_and_trusted() {
         let catalog = bundled_catalog().unwrap();
         assert!(!catalog.entries.is_empty());
-        assert!(catalog
-            .entries
-            .iter()
-            .all(|entry| entry.trusted && entry.commit.len() == 40));
+        assert!(catalog.entries.iter().all(|entry| entry.trusted
+            && entry.commit.len() == 40
+            && entry.manifest_sha256.is_none()));
     }
 
     #[test]
@@ -836,6 +950,10 @@ mod tests {
         assert!(!same_origin(
             &origin,
             &Url::parse("http://catalog.example:8443/redirected.json").unwrap()
+        ));
+        assert!(!same_origin(
+            &origin,
+            &Url::parse("https://catalog.example:9443/redirected.json").unwrap()
         ));
     }
 
@@ -868,6 +986,37 @@ mod tests {
     }
 
     #[test]
+    fn external_manifest_sidecars_require_and_verify_a_digest() {
+        assert!(external_manifest_digest(Some("manifest.json"), None).is_err());
+        assert!(external_manifest_digest(None, Some("0".repeat(64).as_str())).is_err());
+
+        let bytes = br#"{"schemaVersion":"1.0"}"#;
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        let digest = external_manifest_digest(Some("manifest.json"), Some(&digest))
+            .unwrap()
+            .unwrap();
+        assert!(require_manifest_digest(bytes, &digest).is_ok());
+        assert!(require_manifest_digest(br#"{"schemaVersion":"changed"}"#, &digest).is_err());
+    }
+
+    #[test]
+    fn legacy_external_snapshot_without_manifest_digest_requires_review() {
+        let mut catalog = bundled_catalog().unwrap();
+        catalog.id = "legacy-review".into();
+        for entry in &mut catalog.entries {
+            entry.id = format!("external-legacy-review.{}", entry.id);
+            entry.source = Some("external".into());
+            entry.trusted = false;
+        }
+        assert!(validate_external_snapshot(&catalog).is_err());
+
+        for entry in &mut catalog.entries {
+            entry.manifest_sha256 = Some("0".repeat(64));
+        }
+        assert!(validate_external_snapshot(&catalog).is_ok());
+    }
+
+    #[test]
     fn catalog_and_local_inspection_limits_are_enforced() {
         assert!(require_catalog_entry_count(MAX_CATALOG_ENTRIES).is_ok());
         assert!(require_catalog_entry_count(MAX_CATALOG_ENTRIES + 1).is_err());
@@ -889,6 +1038,7 @@ mod tests {
         let inspection = inspect_local(directory.path().to_str().unwrap()).unwrap();
         assert_eq!(inspection.manifest_source, "inferred");
         assert!(!inspection.entry.trusted);
+        assert!(inspection.entry.manifest_sha256.is_none());
         assert_eq!(
             inspection.source_binding.unwrap().source_path,
             std::fs::canonicalize(directory.path())

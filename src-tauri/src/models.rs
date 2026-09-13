@@ -23,6 +23,7 @@ pub struct CatalogSourceSummary {
     pub id: String,
     pub label: String,
     pub url: String,
+    pub requires_review: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +41,9 @@ pub struct CatalogEntry {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub manifest: Option<TemplateManifest>,
+    /// SHA-256 declared by an external catalog for its fetched manifest sidecar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_sha256: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -70,6 +74,8 @@ pub struct CatalogFileEntry {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub manifest: Option<String>,
+    #[serde(default)]
+    pub manifest_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -86,8 +92,19 @@ pub struct TemplateManifest {
     pub connections: Vec<ConnectionRequirement>,
     #[serde(default)]
     pub configuration: Configuration,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommendation_profiles: Vec<RecommendationProfile>,
     #[serde(default)]
     pub permission_checks: Vec<PermissionCheck>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendationProfile {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

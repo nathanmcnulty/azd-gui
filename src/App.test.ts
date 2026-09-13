@@ -67,7 +67,7 @@ describe("desktop experience", () => {
     expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
   });
 
-  it("runs registered permission checks before infrastructure preview", async () => {
+  it("routes interactive templates to the terminal handoff instead of preview", async () => {
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
@@ -93,12 +93,12 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
     await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
     await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
-    await fireEvent.click(screen.getAllByRole("button", { name: /run checks and preview/i }).at(-1)!);
 
-    const results = await screen.findByRole("region", { name: /permission check results/i });
-    expect(within(results).getByText("Azure subscription access")).toBeInTheDocument();
-    expect(within(results).getByText("Microsoft Graph directory access")).toBeInTheDocument();
-    expect(within(results).getAllByText("passed")).toHaveLength(2);
+    const preflightPage = screen.getByRole("heading", { name: /prepare for interactive terminal/i }).closest("section")!;
+    expect(preflightPage).toBeInTheDocument();
+    expect(within(preflightPage).queryByRole("button", { name: /run checks and preview/i })).not.toBeInTheDocument();
+    expect(within(preflightPage).getByRole("button", { name: /prepare and open terminal/i })).toBeInTheDocument();
+    expect(within(preflightPage).queryByText("Infrastructure preview")).not.toBeInTheDocument();
   });
 
   it("navigates the command palette by keyboard and restores focus", async () => {
@@ -221,6 +221,31 @@ describe("desktop experience", () => {
     expect(screen.getByText("PowerShell")).toBeInTheDocument();
     expect(screen.queryByText("Microsoft Graph PowerShell")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+  });
+
+  it("applies a template recommendation profile without replacing other values", async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[1]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\maester-profile" }
+    });
+    for (let step = 0; step < 5; step += 1) {
+      const continueButton = screen.getByRole("button", { name: /continue/i });
+      await waitFor(() => expect(continueButton).toBeEnabled());
+      await fireEvent.click(continueButton);
+    }
+
+    expect(screen.getByRole("heading", { name: "Maester coverage" })).toBeInTheDocument();
+    expect(screen.getByText(/eight baseline managed-identity Graph application read roles/i)).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /apply minimal pilot/i }));
+    expect(screen.getByRole("checkbox", { name: /include exchange checks/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /include teams checks/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /include azure checks/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /include secured web dashboard/i })).not.toBeChecked();
   });
 
   it("shows azd credential expiration in the Connections center", async () => {

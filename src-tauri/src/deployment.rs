@@ -290,7 +290,6 @@ async fn checkout_pinned_template(
                 "--no-tags",
                 "--depth",
                 "1",
-                "--filter=blob:none",
                 "origin",
                 commit,
             ],
@@ -585,6 +584,7 @@ pub async fn prepare(
                         tags: vec![],
                         platforms: vec![],
                         manifest: None,
+                        manifest_sha256: None,
                         source: Some("external".into()),
                         trusted: false,
                     },
@@ -777,6 +777,22 @@ mod tests {
             request.source_binding.unwrap().source_path
         );
         assert_eq!(entry.commit, "local");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Git and public GitHub access; fetches an immutable reference template without executing it"]
+    async fn installed_git_fetches_a_pinned_public_template() {
+        let cache = tempfile::tempdir().unwrap();
+        let checkout = super::checkout_pinned_template(
+            cache.path(),
+            "https://github.com/nathanmcnulty/azd-reference",
+            "20a5059c53c105f8c6999f33fa0852410eac8ace",
+            "reference-transport-smoke",
+        )
+        .await
+        .unwrap();
+        assert!(checkout.path().join("skeleton/azure.yaml").is_file());
+        assert!(checkout.path().join("skeleton/azd-gui.json").is_file());
     }
 
     #[test]

@@ -2566,6 +2566,39 @@ button.compact {
   gap: 7px 14px;
 }
 
+.recommendation-profiles {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.recommendation-profile-grid {
+  display: grid;
+  gap: 9px;
+}
+
+.recommendation-profile {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+}
+
+.recommendation-profile h3,
+.recommendation-profile p {
+  margin: 0;
+}
+
+.recommendation-profile p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .validation-list {
   display: flex;
   margin-top: 15px;

@@ -153,6 +153,21 @@
       }
     ]
   },
+  "recommendationProfiles": [
+    {
+      "id": "minimalPilot",
+      "title": "Minimal pilot",
+      "description": "Disables the dashboard, Exchange, Teams, and Azure checks while keeping the Minimal profile's eight baseline managed-identity Graph application read roles. No email recipient is configured.",
+      "values": {
+        "includeWebApp": false,
+        "includeExchange": false,
+        "includeTeams": false,
+        "includeAzure": false,
+        "permissionProfile": "Minimal",
+        "mailRecipient": ""
+      }
+    }
+  ],
   "permissionChecks": [
     {
       "id": "entra-directory-access",

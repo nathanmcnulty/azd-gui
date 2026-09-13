@@ -1,0 +1,37 @@
+# Guided template metadata
+
+Keep infrastructure, hooks, and optional-component behavior in the template. An `azd-gui.json` describes inputs and required tools; it does not supply executable commands or authorize deployment. The schema is [azd-gui.schema.json](../schemas/azd-gui.schema.json).
+
+## Recommendation profiles
+
+Profiles are optional starting points that an administrator explicitly applies. Keep existing template defaults unchanged. Explain permission, resource, and operational consequences in each profile description; do not claim that a smaller deployment needs no administrative permissions.
+
+```json
+"recommendationProfiles": [{
+  "id": "minimal-pilot",
+  "title": "Minimal pilot",
+  "description": "Disable optional service integrations. Baseline identity permissions still apply.",
+  "values": {
+    "includeExchange": false,
+    "permissionProfile": "Minimal"
+  }
+}]
+```
+
+Keys in `values` are declared configuration **field IDs**, not environment variable names. Values must match field types and allowed options. Profiles cannot set secrets, sensitive fields, or standard target/source controls. Applying a profile preserves unrelated values and invalidates previous wizard review. Administrators can adjust the resulting choices before preparation.
+
+## External catalog sidecars
+
+Each external catalog entry with a `manifest` sidecar must also declare `manifestSha256`. Calculate it from the exact UTF-8 file bytes that will be served, including whitespace and line endings; publishing a reformatted file requires a new digest.
+
+```powershell
+(Get-FileHash -LiteralPath ./manifests/sample.json -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+The GUI checks the digest before parsing and retains the accepted contract for preparation. The sidecar must remain on the catalog's exact HTTPS host and port. A digest without a sidecar is invalid. Bundled manifests and manifests embedded in an inspected local or pinned GitHub template do not use this external-sidecar field.
+
+This establishes consistency with the catalog the administrator reviewed. It does not authenticate the publisher or prove that sidecar declarations agree with the repository's implementation. Review the immutable template commit and its hooks. Old external contracts without this digest require a fresh catalog review.
+
+## Interactive hooks
+
+Declare `requiresInteractiveTerminal` when lifecycle scripts require prompts. Local and direct GitHub inspection also detect interactive project, service, and infrastructure-layer hooks from parsed YAML and preserve that requirement when the project is reopened. The GUI routes these templates to approved preparation and an external terminal; it does not treat terminal launch as successful deployment.

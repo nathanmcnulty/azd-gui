@@ -682,6 +682,22 @@ fn get_project_template(
     resolve_project_template(&state.database, &project)
 }
 
+#[tauri::command]
+async fn refresh_project_template(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<ProjectTemplateSnapshot> {
+    if !state.operations.is_idle().await {
+        return Err(AppError::Invalid(
+            "Wait for active operations before replacing a project contract.".into(),
+        ));
+    }
+    let canonical = std::fs::canonicalize(project_path)?;
+    state
+        .database
+        .refresh_project_template(&canonical.display().to_string())
+}
+
 fn project_configuration_fields(
     state: &AppState,
     project_path: &str,
@@ -952,6 +968,7 @@ pub fn run() {
             bootstrap,
             list_projects,
             get_project_template,
+            refresh_project_template,
             inspect_local_template,
             inspect_github_template,
             check_tools,
@@ -1013,6 +1030,11 @@ mod catalog_review_tests {
         catalog.title = "Review test".into();
         for entry in &mut catalog.entries {
             entry.id = format!("external-review-test.{}", entry.id);
+            use sha2::{Digest, Sha256};
+            entry.manifest_sha256 = Some(format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(entry.manifest.as_ref().unwrap()).unwrap())
+            ));
             entry.source = Some("external".into());
             entry.trusted = false;
         }
