@@ -483,7 +483,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
         .unwrap_or("local-azd-project")
         .to_string();
     let embedded_path = canonical.join("azd-gui.json");
-    let (manifest, manifest_source) = if embedded_path.is_file() {
+    let (mut manifest, manifest_source) = if embedded_path.is_file() {
         (
             serde_json::from_str(&read_bounded_local_text(
                 &embedded_path,
@@ -502,9 +502,8 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
         )));
     }
     crate::manifest::validate(&manifest)?;
-    let interactive_hooks = yaml_text.to_ascii_lowercase().contains("interactive: true");
-    let windows_hooks = yaml_text.contains("windows:");
-    let posix_hooks = yaml_text.contains("posix:");
+    let (interactive_hooks, windows_hooks, posix_hooks) = hook_characteristics(&yaml);
+    manifest.requires_interactive_terminal |= interactive_hooks;
     let platforms = if windows_hooks && !posix_hooks {
         vec!["windows".into()]
     } else {
@@ -638,7 +637,7 @@ async fn inspect_github_revision(
         .send()
         .await?;
     require_response_origin(&raw_origin, &embedded_manifest)?;
-    let (manifest, manifest_source) = if embedded_manifest.status().is_success() {
+    let (mut manifest, manifest_source) = if embedded_manifest.status().is_success() {
         let manifest_bytes =
             read_bounded_response(embedded_manifest, TEMPLATE_MANIFEST_LIMIT, "azd-gui.json")
                 .await?;
@@ -665,7 +664,8 @@ async fn inspect_github_revision(
         .get("name")
         .and_then(serde_yaml::Value::as_str)
         .unwrap_or(repository_name);
-    let interactive_hooks = yaml_text.to_ascii_lowercase().contains("interactive: true");
+    let (interactive_hooks, _, _) = hook_characteristics(&yaml);
+    manifest.requires_interactive_terminal |= interactive_hooks;
     Ok(TemplateInspection {
         entry: CatalogEntry {
             id: format!("github-{}", repository_name.to_ascii_lowercase()),
@@ -691,6 +691,39 @@ async fn inspect_github_revision(
                 .into(),
         ],
     })
+}
+
+fn hook_characteristics(yaml: &serde_yaml::Value) -> (bool, bool, bool) {
+    let mut containers = vec![yaml];
+    if let Some(services) = yaml.get("services").and_then(serde_yaml::Value::as_mapping) {
+        containers.extend(services.values());
+    }
+    if let Some(layers) = yaml.get("infra").and_then(|infra| infra.get("layers")) {
+        match layers {
+            serde_yaml::Value::Sequence(layers) => containers.extend(layers),
+            serde_yaml::Value::Mapping(layers) => containers.extend(layers.values()),
+            _ => {}
+        }
+    }
+    let mut pending: Vec<_> = containers
+        .into_iter()
+        .filter_map(|item| item.get("hooks"))
+        .collect();
+    let (mut interactive, mut windows, mut posix) = (false, false, false);
+    while let Some(node) = pending.pop() {
+        match node {
+            serde_yaml::Value::Mapping(entries) => {
+                interactive |=
+                    node.get("interactive").and_then(serde_yaml::Value::as_bool) == Some(true);
+                windows |= node.get("windows").is_some();
+                posix |= node.get("posix").is_some();
+                pending.extend(entries.values());
+            }
+            serde_yaml::Value::Sequence(entries) => pending.extend(entries),
+            _ => {}
+        }
+    }
+    (interactive, windows, posix)
 }
 
 fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
@@ -791,6 +824,25 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_inspection_uses_yaml_structure_and_preserves_terminal_requirement() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("azure.yaml"), "name: hook-test\nhooks:\n  preprovision: {shell: pwsh, interactive: true, run: ./setup.ps1}\n").unwrap();
+        let inspection = super::inspect_local(source.path().to_str().unwrap()).unwrap();
+        assert!(inspection.interactive_hooks);
+        assert!(
+            inspection
+                .entry
+                .manifest
+                .unwrap()
+                .requires_interactive_terminal
+        );
+        let yaml = serde_yaml::from_str("name: sample\n# interactive: true\nmetadata: {windows: documentation}\nhooks: {preprovision: {run: 'echo interactive: true', interactive: false}}\n").unwrap();
+        assert_eq!(super::hook_characteristics(&yaml), (false, false, false));
+        let yaml = serde_yaml::from_str("services:\n  api:\n    hooks:\n      predeploy:\n        - windows: {interactive: true, shell: pwsh, run: ./setup.ps1}\ninfra:\n  layers:\n    - name: shared\n      hooks:\n        preprovision: {posix: {run: ./setup.sh}}\n").unwrap();
+        assert_eq!(super::hook_characteristics(&yaml), (true, true, true));
+    }
+
     use super::is_public_ip;
     use super::{
         bundled_catalog, inspect_local, normalize_catalog_url, require_catalog_entry_count,
