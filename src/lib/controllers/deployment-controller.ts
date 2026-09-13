@@ -5,6 +5,7 @@ import {
 } from "../bridge";
 import type {
   CatalogEntry,
+  LocalSourceBinding,
   ProjectSummary,
   WizardPlan,
   WizardValues
@@ -14,24 +15,35 @@ import { environmentValuesForPlan } from "../wizard";
 export async function materializeDeployment(
   entry: CatalogEntry,
   plan: WizardPlan,
-  values: WizardValues
+  values: WizardValues,
+  sourceBinding?: LocalSourceBinding
 ): Promise<{ project: ProjectSummary; values: WizardValues }> {
   const projectPath = String(values.projectPath || "");
   const environment = String(values.environmentName || "dev");
   const revision = entry.commit === "local" ? undefined : entry.commit;
+  const sourceMode = String(values.sourceMode ?? "catalog");
+  const localSource = sourceMode === "localTemplate" || sourceMode === "existingProject";
+  const sourcePath = localSource
+    ? sourceMode === "existingProject"
+      ? projectPath
+      : String(values.sourcePath || "") || undefined
+    : String(values.sourcePath || "") || undefined;
+  const binding = localSource ? sourceBinding : undefined;
   const approval = await requestExecutionApproval({
     action: "prepare",
     projectPath,
     environment,
     templateId: entry.id,
-    revision
+    revision,
+    sourceBinding: binding
   });
   const project = await prepareDeployment({
     templateId: entry.id,
-    sourceMode: String(values.sourceMode ?? "catalog"),
+    sourceMode,
     executionApprovalToken: approval.token,
-    sourcePath: String(values.sourcePath || "") || undefined,
+    sourcePath,
     sourceRevision: revision,
+    sourceBinding: binding,
     destination: projectPath,
     environment,
     tenant: String(values.tenantId || "") || undefined,

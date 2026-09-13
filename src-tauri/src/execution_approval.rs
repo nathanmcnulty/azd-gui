@@ -1,6 +1,7 @@
 use crate::{
     deployment::validate_environment_name,
     error::{AppError, AppResult},
+    local_source,
     models::{ExecutionApprovalGrant, ExecutionApprovalRequest},
 };
 use std::{
@@ -57,6 +58,15 @@ impl ExecutionApprovals {
                         .all(|character| character.is_ascii_hexdigit()))
         }) {
             return Err(AppError::Invalid("Invalid template revision.".into()));
+        }
+        if let Some(binding) = &request.source_binding {
+            if request.action != "prepare" {
+                return Err(AppError::Invalid(
+                    "Local source binding is valid only for template preparation.".into(),
+                ));
+            }
+            let source_path = PathBuf::from(&binding.source_path);
+            local_source::verify_for_path(binding, &source_path)?;
         }
 
         let path = PathBuf::from(&request.project_path);
@@ -134,6 +144,7 @@ mod tests {
             environment: "dev".into(),
             template_id: "sample".into(),
             revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            source_binding: None,
         }
     }
 
@@ -152,5 +163,25 @@ mod tests {
         let grant = approvals.issue(preview.clone()).unwrap();
         approvals.consume(&grant.token, preview.clone()).unwrap();
         assert!(approvals.consume(&grant.token, preview).is_err());
+    }
+
+    #[test]
+    fn local_source_changes_invalidate_a_pending_preparation_approval() {
+        let source = tempdir().unwrap();
+        std::fs::write(source.path().join("azure.yaml"), "name: sample").unwrap();
+        let binding = crate::local_source::inspect(source.path()).unwrap();
+        let approvals = ExecutionApprovals::default();
+        let request = ExecutionApprovalRequest {
+            action: "prepare".into(),
+            project_path: source.path().display().to_string(),
+            environment: "dev".into(),
+            template_id: "local-sample".into(),
+            revision: None,
+            source_binding: Some(binding),
+        };
+        let grant = approvals.issue(request.clone()).unwrap();
+        std::fs::write(source.path().join("azure.yaml"), "name: changed").unwrap();
+
+        assert!(approvals.consume(&grant.token, request).is_err());
     }
 }

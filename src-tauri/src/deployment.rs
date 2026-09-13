@@ -362,6 +362,14 @@ pub(crate) async fn resolve_entry(
     request: &PrepareDeploymentRequest,
     database: &Database,
 ) -> AppResult<CatalogEntry> {
+    resolve_entry_with_local_source(request, database, None).await
+}
+
+async fn resolve_entry_with_local_source(
+    request: &PrepareDeploymentRequest,
+    database: &Database,
+    inspected_local_source: Option<&Path>,
+) -> AppResult<CatalogEntry> {
     let entry = match request.source_mode.as_str() {
         "catalog" => entry_by_id(&request.template_id)?,
         "externalCatalog" => database
@@ -376,7 +384,6 @@ pub(crate) async fn resolve_entry(
                 .source_path
                 .as_deref()
                 .ok_or_else(|| AppError::Invalid("Local source path is required.".into()))?;
-            let inspection = crate::catalog::inspect_local(source)?;
             if request.source_mode == "existingProject"
                 && std::fs::canonicalize(source)? != std::fs::canonicalize(&request.destination)?
             {
@@ -384,7 +391,18 @@ pub(crate) async fn resolve_entry(
                     "The inspected source and existing project must match.".into(),
                 ));
             }
-            inspection.entry
+            let source = inspected_local_source
+                .unwrap_or_else(|| Path::new(source))
+                .to_str()
+                .ok_or_else(|| {
+                    AppError::Invalid("Local source path is not valid Unicode.".into())
+                })?;
+            let mut entry = crate::catalog::inspect_local(source)?.entry;
+            if let Some(binding) = &request.source_binding {
+                entry.repository = binding.source_path.clone();
+                entry.description = format!("Local project loaded from {}", binding.source_path);
+            }
+            entry
         }
         "github" => {
             crate::catalog::inspect_github_at_revision(
@@ -413,6 +431,32 @@ pub(crate) async fn resolve_entry(
     Ok(entry)
 }
 
+fn stage_local_source(
+    request: &PrepareDeploymentRequest,
+    cache_root: &Path,
+) -> AppResult<Option<tempfile::TempDir>> {
+    if !matches!(
+        request.source_mode.as_str(),
+        "localTemplate" | "existingProject"
+    ) {
+        return Ok(None);
+    }
+    let source = request
+        .source_path
+        .as_deref()
+        .ok_or_else(|| AppError::Invalid("Local source path is required.".into()))?;
+    let binding = request.source_binding.as_ref().ok_or_else(|| {
+        AppError::Invalid(
+            "Local templates require a fresh native source inspection before approval.".into(),
+        )
+    })?;
+    Ok(Some(crate::local_source::stage_for_path(
+        binding,
+        Path::new(source),
+        &cache_root.join("local-source-staging"),
+    )?))
+}
+
 pub async fn prepare(
     request: PrepareDeploymentRequest,
     cache_root: &Path,
@@ -426,7 +470,15 @@ pub async fn prepare(
     validate_resource_group(request.resource_group.as_deref())?;
     let existing_project = request.source_mode == "existingProject";
 
-    let entry = Some(resolve_entry(&request, database).await?);
+    let local_stage = stage_local_source(&request, cache_root)?;
+    let entry = Some(
+        resolve_entry_with_local_source(
+            &request,
+            database,
+            local_stage.as_ref().map(|stage| stage.path()),
+        )
+        .await?,
+    );
     if let Some(manifest) = entry.as_ref().and_then(|entry| entry.manifest.as_ref()) {
         crate::tools::ensure_manifest_requirements(manifest).await?;
     }
@@ -479,14 +531,14 @@ pub async fn prepare(
                 source
             }
             "localTemplate" => {
-                let source = request
-                    .source_path
-                    .as_deref()
-                    .ok_or_else(|| AppError::Invalid("Local template path is required.".into()))?;
-                let source = std::fs::canonicalize(source)?;
+                let source = local_stage
+                    .as_ref()
+                    .ok_or_else(|| AppError::Invalid("Approved local source is unavailable.".into()))?
+                    .path()
+                    .to_path_buf();
                 if !source.join("azure.yaml").is_file() {
                     return Err(AppError::Invalid(
-                        "Local template does not contain azure.yaml.".into(),
+                        "Approved local source does not contain azure.yaml.".into(),
                     ));
                 }
                 source
@@ -655,6 +707,7 @@ mod tests {
             execution_approval_token: "test-approval".into(),
             source_path: None,
             source_revision: None,
+            source_binding: None,
             destination: "/tmp/myworkid".into(),
             environment: "dev".into(),
             tenant: Some("11111111-1111-1111-1111-111111111111".into()),

@@ -464,7 +464,8 @@ pub(crate) fn normalize_catalog_url(input: &str) -> AppResult<Url> {
 }
 
 pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
-    let canonical = std::fs::canonicalize(path)?;
+    let source_binding = crate::local_source::inspect(Path::new(path))?;
+    let canonical = PathBuf::from(&source_binding.source_path);
     if !canonical.is_dir() {
         return Err(AppError::Invalid("Selected path is not a folder.".into()));
     }
@@ -517,6 +518,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
                 .into(),
         );
     }
+    crate::local_source::verify_for_path(&source_binding, &canonical)?;
     Ok(TemplateInspection {
         entry: CatalogEntry {
             id: format!("local-{}", name.to_ascii_lowercase().replace(' ', "-")),
@@ -533,6 +535,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
             trusted: false,
         },
         source_path: Some(canonical.display().to_string()),
+        source_binding: Some(source_binding),
         azure_yaml_found: true,
         manifest_source,
         interactive_hooks,
@@ -679,6 +682,7 @@ async fn inspect_github_revision(
             trusted: false,
         },
         source_path: None,
+        source_binding: None,
         azure_yaml_found: true,
         manifest_source: manifest_source.into(),
         interactive_hooks,
@@ -885,6 +889,13 @@ mod tests {
         let inspection = inspect_local(directory.path().to_str().unwrap()).unwrap();
         assert_eq!(inspection.manifest_source, "inferred");
         assert!(!inspection.entry.trusted);
+        assert_eq!(
+            inspection.source_binding.unwrap().source_path,
+            std::fs::canonicalize(directory.path())
+                .unwrap()
+                .display()
+                .to_string()
+        );
     }
 
     #[test]

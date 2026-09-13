@@ -6,6 +6,7 @@ mod connections;
 mod deployment;
 mod error;
 mod execution_approval;
+mod local_source;
 mod manifest;
 mod models;
 mod permissions;
@@ -398,6 +399,7 @@ async fn start_azd_operation(
                     .and_then(|project| project.template_id.clone())
                     .unwrap_or_default(),
                 revision: project.and_then(|project| project.revision),
+                source_binding: None,
             },
         )?;
     }
@@ -471,6 +473,15 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
+    let requires_local_binding = matches!(
+        request.source_mode.as_str(),
+        "localTemplate" | "existingProject"
+    );
+    if requires_local_binding != request.source_binding.is_some() {
+        return Err(AppError::Invalid(
+            "Local sources require the exact binding returned by native inspection.".into(),
+        ));
+    }
     state.execution_approvals.consume(
         &request.execution_approval_token,
         ExecutionApprovalRequest {
@@ -479,6 +490,7 @@ async fn prepare_deployment(
             environment: request.environment.clone(),
             template_id: request.template_id.clone(),
             revision: request.source_revision.clone(),
+            source_binding: request.source_binding.clone(),
         },
     )?;
     deployment::prepare(request, &state.template_cache, &state.database).await
@@ -506,10 +518,21 @@ fn request_execution_approval(
         .as_deref()
         .map(|revision| format!("\nRevision: {revision}"))
         .unwrap_or_default();
+    let source_binding = request
+        .source_binding
+        .as_ref()
+        .map(|binding| {
+            format!(
+                "\nReviewed local source: {}\nContent digest: {}\n.git and .azure runtime state are excluded. Local templates are staged after verification; existing-project working trees remain mutable after approval.",
+                binding.source_path,
+                &binding.content_digest[..12]
+            )
+        })
+        .unwrap_or_default();
     let approved = app
         .dialog()
         .message(format!(
-            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
+            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}{source_binding}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
             request.project_path, request.environment, request.template_id
         ))
         .title(if destructive {
