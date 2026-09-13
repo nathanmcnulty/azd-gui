@@ -563,4 +563,64 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
     expect(screen.getAllByRole("button", { name: /configure deployment/i })).toHaveLength(3);
   });
+  it("selects a dashboard security group and clears it after an Azure target change", async () => {
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[1]);
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\maester-security-group" }
+    });
+
+    const continueWizard = async () => {
+      const button = screen.getByRole("button", { name: /^continue$/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      await fireEvent.click(button);
+    };
+
+    await continueWizard();
+    await continueWizard();
+    await fireEvent.click(screen.getByRole("checkbox", { name: /include secured web dashboard/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /include exchange checks/i }));
+    await continueWizard();
+    await continueWizard();
+    await continueWizard();
+    await waitFor(() => {
+      expect(screen.getByRole("combobox", { name: /subscription/i })).toHaveValue(
+        "11111111-1111-1111-1111-111111111111"
+      );
+    });
+    await continueWizard();
+
+    const groupId = "a1111111-1111-4111-8111-111111111111";
+    await fireEvent.input(screen.getByLabelText("Find a security group by name"), {
+      target: { value: "Az" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Search groups" }));
+    expect(await screen.findByText("Azure dashboard admins (preview)")).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /select Azure dashboard admins/i }));
+    expect(screen.getByRole("textbox", { name: /allowed security group/i })).toHaveValue(groupId);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    expect(screen.getByRole("heading", { name: /configure environment/i })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /security group search/i })).not.toBeInTheDocument();
+
+    const tenant = screen.getByRole("combobox", { name: /^tenant$/i });
+    const subscription = screen.getByRole("combobox", { name: /subscription/i });
+    const sandboxTenant = "00000000-0000-0000-0000-000000000002";
+    const sandboxSubscription = "22222222-2222-2222-2222-222222222222";
+    await fireEvent.change(tenant, { target: { value: sandboxTenant } });
+    await waitFor(() => expect(subscription).toHaveValue(sandboxSubscription));
+    await fireEvent.change(subscription, { target: { value: sandboxSubscription } });
+    await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled());
+
+    const originalTenant = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+    const originalSubscription = "11111111-1111-1111-1111-111111111111";
+    await fireEvent.change(tenant, { target: { value: originalTenant } });
+    await waitFor(() => expect(subscription).toHaveValue(originalSubscription));
+    await fireEvent.change(subscription, { target: { value: originalSubscription } });
+
+    await continueWizard();
+    expect(screen.getByRole("heading", { name: /web dashboard/i })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: /allowed security group/i })).toHaveValue("");
+  });
 });

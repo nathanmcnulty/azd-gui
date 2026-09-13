@@ -314,7 +314,7 @@ impl CommandSpec {
         self
     }
 
-    fn validate(&self) -> AppResult<()> {
+    pub(crate) fn validate(&self) -> AppResult<()> {
         if self.args.len() > 128 {
             return Err(AppError::Invalid("Too many process arguments".into()));
         }

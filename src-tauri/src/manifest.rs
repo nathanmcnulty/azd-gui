@@ -707,19 +707,19 @@ mod tests {
             .unwrap()
             .manifest
             .unwrap();
-        let field = &mut manifest.configuration.groups[0].fields[0];
-        field.field_type = "entraObject".into();
-        field.sensitive = false;
-        field.lookup = Some("securityGroup".into());
+
+        manifest.configuration.groups[0].fields[0].field_type = "entraObject".into();
+        manifest.configuration.groups[0].fields[0].sensitive = false;
+        manifest.configuration.groups[0].fields[0].lookup = Some("securityGroup".into());
         validate(&manifest).unwrap();
 
-        field.lookup = Some("unknownDirectoryObject".into());
+        manifest.configuration.groups[0].fields[0].lookup = Some("unknownDirectoryObject".into());
         assert!(validate(&manifest).is_err());
-        field.lookup = Some("securityGroup".into());
-        field.sensitive = true;
+        manifest.configuration.groups[0].fields[0].lookup = Some("securityGroup".into());
+        manifest.configuration.groups[0].fields[0].sensitive = true;
         assert!(validate(&manifest).is_err());
 
-        field.lookup = None;
+        manifest.configuration.groups[0].fields[0].lookup = None;
         assert!(!serde_json::to_string(&manifest)
             .unwrap()
             .contains("\"lookup\":null"));

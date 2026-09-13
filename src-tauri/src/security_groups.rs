@@ -5,7 +5,7 @@ use crate::{
     models::{SecurityGroup, SecurityGroupSearch},
 };
 use serde::Deserialize;
-use std::time::Duration;
+use std::{io::Write, path::Path, time::Duration};
 
 const GRAPH_TIMEOUT: Duration = Duration::from_secs(20);
 const QUERY_PAGE_SIZE: usize = 26;
@@ -95,10 +95,17 @@ fn graph_organization_spec(subscription_id: &str) -> CommandSpec {
     )
 }
 
-fn graph_groups_spec(subscription_id: &str, query: &str) -> CommandSpec {
+fn group_parameters(query: &str) -> serde_json::Value {
     let escaped_query = query.replace('\'', "''");
-    let filter =
-        format!("$filter=securityEnabled eq true and startswith(displayName,'{escaped_query}')");
+    serde_json::json!({
+        "$filter": format!("securityEnabled eq true and startswith(displayName,'{escaped_query}')"),
+        "$select": "id,displayName,securityEnabled",
+        "$top": QUERY_PAGE_SIZE.to_string(),
+        "$count": "true"
+    })
+}
+
+fn graph_groups_spec(subscription_id: &str, parameters: &Path) -> CommandSpec {
     CommandSpec::new(
         Executable::AzureCli,
         [
@@ -108,10 +115,7 @@ fn graph_groups_spec(subscription_id: &str, query: &str) -> CommandSpec {
             "--url".into(),
             "https://graph.microsoft.com/v1.0/groups".into(),
             "--uri-parameters".into(),
-            filter,
-            "$select=id,displayName,securityEnabled".into(),
-            format!("$top={QUERY_PAGE_SIZE}"),
-            "$count=true".into(),
+            format!("@{}", parameters.display()),
             "--headers".into(),
             "ConsistencyLevel=eventual".into(),
             "--subscription".into(),
@@ -205,7 +209,12 @@ pub async fn search(
     // Each Azure CLI command pins --subscription, so the Graph token is
     // acquired for the same selected subscription as the two sequential proofs.
     prove_target(tenant_id, subscription_id).await?;
-    let envelope: GroupsEnvelope = read_json(graph_groups_spec(subscription_id, query)).await?;
+    // Keep query syntax and user input out of the Windows az.cmd command line.
+    let mut parameters = tempfile::NamedTempFile::new()?;
+    serde_json::to_writer(parameters.as_file_mut(), &group_parameters(query))?;
+    parameters.flush()?;
+    let envelope: GroupsEnvelope =
+        read_json(graph_groups_spec(subscription_id, parameters.path())).await?;
     let (groups, has_more) = normalize_groups(envelope)?;
     Ok(SecurityGroupSearch {
         tenant_id: tenant_id.into(),
@@ -218,12 +227,26 @@ pub async fn search(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires an explicitly selected cached Azure CLI tenant/subscription; performs read-only Graph queries"]
+    async fn installed_cli_searches_the_selected_directory() {
+        let tenant = std::env::var("AZD_GUI_TEST_TENANT").expect("Set AZD_GUI_TEST_TENANT");
+        let subscription =
+            std::env::var("AZD_GUI_TEST_SUBSCRIPTION").expect("Set AZD_GUI_TEST_SUBSCRIPTION");
+        let result = search(&tenant, &subscription, "az").await.unwrap();
+        assert_eq!(result.tenant_id, tenant);
+        assert_eq!(result.subscription_id, subscription);
+        assert!(result.groups.len() <= RETURNED_GROUP_LIMIT);
+    }
     use serde_json::json;
 
     #[test]
     fn graph_query_is_fixed_encoded_and_subscription_bound() {
         let subscription = "22222222-2222-2222-2222-222222222222";
-        let spec = graph_groups_spec(subscription, "O'Brien");
+        let parameters = tempfile::NamedTempFile::new().unwrap();
+        let spec = graph_groups_spec(subscription, parameters.path());
+        spec.validate().unwrap();
 
         assert!(spec
             .args
@@ -237,16 +260,13 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| pair == ["--headers", "ConsistencyLevel=eventual"]));
-        assert!(spec.args.iter().any(|arg| arg == "$count=true"));
-        assert!(spec.args.iter().any(|arg| arg == "$top=26"));
-        let filter = spec
-            .args
-            .iter()
-            .find(|arg| arg.starts_with("$filter="))
-            .unwrap();
+        let payload = group_parameters("O'Brien & %USERPROFILE% !");
+        assert_eq!(payload["$count"], "true");
+        assert_eq!(payload["$top"], "26");
+        let filter = payload["$filter"].as_str().unwrap();
         assert!(filter.contains("securityEnabled eq true"));
-        assert!(filter.contains("startswith(displayName,'O''Brien')"));
-        assert!(!filter.contains('&'));
+        assert!(filter.contains("startswith(displayName,'O''Brien & %USERPROFILE% !')"));
+        assert!(!spec.args.iter().any(|arg| arg.contains("startswith")));
     }
 
     #[test]

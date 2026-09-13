@@ -16,6 +16,14 @@ The GUI recalculates tools, connections, and read-only checks after edits or pro
 
 Keep requirements needed by baseline setup unconditional. The Maester contract gates its host `ExchangeOnlineManagement` module on Exchange coverage and a dashboard-specific Graph reachability check on the dashboard option. ARM and Graph baseline access remain required even for the Minimal pilot profile. Read-only checks do not prove write, role-assignment, or consent authority. Templates must implement the same feature choices themselves.
 
+## Security group input
+
+Set `"lookup": "securityGroup"` on a non-sensitive `entraObject` field to offer a name-prefix search alongside manual GUID entry. Maester's optional dashboard uses this for its allowed security group. Unknown lookup names and lookups on other field types are rejected.
+
+The deployment wizard searches only after an explicit administrator action and after a tenant/subscription is selected. It verifies the cached Azure CLI account and Graph organization against that target, queries public-cloud Microsoft Graph for security-enabled groups, and shows at most 25 names and IDs. Names are not unique: the administrator must explicitly select a result. Refine the prefix when more matches exist. Changing the Azure target clears these fields, including manually entered IDs; changing a search discards stale results.
+
+Search uses existing Azure CLI authentication and directory read access. It never signs in, grants permissions, changes membership, or proves deployment authority. Failures preserve manual ID entry. The existing-project configuration editor currently offers manual entry only. Search results are not saved; the selected ID becomes ordinary template configuration.
+
 ## Recommendation profiles
 
 Profiles are optional starting points that an administrator explicitly applies. Keep existing template defaults unchanged. Explain permission, resource, and operational consequences in each profile description; do not claim that a smaller deployment needs no administrative permissions.
