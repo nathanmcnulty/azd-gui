@@ -1013,6 +1013,11 @@ mod catalog_review_tests {
         catalog.title = "Review test".into();
         for entry in &mut catalog.entries {
             entry.id = format!("external-review-test.{}", entry.id);
+            use sha2::{Digest, Sha256};
+            entry.manifest_sha256 = Some(format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(entry.manifest.as_ref().unwrap()).unwrap())
+            ));
             entry.source = Some("external".into());
             entry.trusted = false;
         }

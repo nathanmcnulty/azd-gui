@@ -24,17 +24,13 @@
       "else": {
         "properties": {
           "entries": {
+            "type": "array",
             "items": {
-              "allOf": [
-                {
-                  "if": { "required": ["manifest"] },
-                  "then": { "required": ["manifestSha256"] }
-                },
-                {
-                  "if": { "required": ["manifestSha256"] },
-                  "then": { "required": ["manifest"] }
-                }
-              ]
+              "type": "object",
+              "dependentRequired": {
+                "manifest": ["manifestSha256"],
+                "manifestSha256": ["manifest"]
+              }
             }
           }
         }

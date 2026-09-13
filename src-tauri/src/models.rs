@@ -41,7 +41,7 @@ pub struct CatalogEntry {
     #[serde(default)]
     pub manifest: Option<TemplateManifest>,
     /// SHA-256 declared by an external catalog for its fetched manifest sidecar.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_sha256: Option<String>,
     #[serde(default)]
     pub source: Option<String>,

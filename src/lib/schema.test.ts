@@ -12,9 +12,10 @@ describe("catalog contracts", () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true });
   addFormats(ajv);
   const validateManifest = ajv.compile(json("schemas/azd-gui.schema.json"));
+  const validateCatalog = ajv.compile(json("schemas/azd-gui.catalog.schema.json"));
 
   it("validates the bundled catalog and immutable revisions", () => {
-    const validate = ajv.compile(json("schemas/azd-gui.catalog.schema.json"));
+    const validate = validateCatalog;
     const catalog = json("catalog/azd-gui.catalog.json");
 
     expect(validate(catalog), JSON.stringify(validate.errors, null, 2)).toBe(true);
@@ -31,6 +32,17 @@ describe("catalog contracts", () => {
 
   it("marks Maester's interactive azd hooks as terminal-required", () => {
     expect(json("catalog/manifests/maester-automation.json").requiresInteractiveTerminal).toBe(true);
+  });
+
+  it("requires paired manifest digests for external catalogs", () => {
+    const validate = validateCatalog;
+    const catalog = json("catalog/azd-gui.catalog.json");
+    catalog.id = "external-test";
+    expect(validate(catalog)).toBe(false);
+    for (const entry of catalog.entries) entry.manifestSha256 = "a".repeat(64);
+    expect(validate(catalog), JSON.stringify(validate.errors)).toBe(true);
+    delete catalog.entries[0].manifest;
+    expect(validate(catalog)).toBe(false);
   });
 
   it("rejects manifests that attempt to define executable commands", () => {
