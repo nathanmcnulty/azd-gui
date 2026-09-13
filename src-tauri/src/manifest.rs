@@ -396,4 +396,33 @@ mod tests {
         manifest.configuration.groups[2].fields[0].sensitive = true;
         assert!(validate(&manifest).is_err());
     }
+
+    #[test]
+    fn profiles_preserve_snapshot_digests_across_reopen_and_legacy_absence() {
+        let entry = crate::catalog::entry_by_id("maester-automation").unwrap();
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        for _ in 0..8 {
+            let reopened: ProjectTemplateSnapshot =
+                serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+            reopened
+                .validate_binding(Some(&snapshot.entry.id), Some(&snapshot.entry.commit))
+                .unwrap();
+        }
+        let mut legacy = snapshot.entry;
+        legacy
+            .manifest
+            .as_mut()
+            .unwrap()
+            .recommendation_profiles
+            .clear();
+        assert!(!serde_json::to_string(&legacy)
+            .unwrap()
+            .contains("recommendationProfiles"));
+        let legacy = ProjectTemplateSnapshot::new(legacy).unwrap();
+        let reopened: ProjectTemplateSnapshot =
+            serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        reopened
+            .validate_binding(Some(&legacy.entry.id), Some(&legacy.entry.commit))
+            .unwrap();
+    }
 }

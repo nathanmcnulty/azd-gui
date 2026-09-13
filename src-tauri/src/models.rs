@@ -86,7 +86,7 @@ pub struct TemplateManifest {
     pub connections: Vec<ConnectionRequirement>,
     #[serde(default)]
     pub configuration: Configuration,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recommendation_profiles: Vec<RecommendationProfile>,
     #[serde(default)]
     pub permission_checks: Vec<PermissionCheck>,
@@ -98,7 +98,7 @@ pub struct RecommendationProfile {
     pub id: String,
     pub title: String,
     pub description: String,
-    pub values: std::collections::HashMap<String, serde_json::Value>,
+    pub values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
