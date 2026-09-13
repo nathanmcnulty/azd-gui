@@ -241,6 +241,14 @@ impl Database {
             )
         })?;
         snapshot.validate_binding(template_id.as_deref(), revision.as_deref())?;
+        if snapshot.entry.id.starts_with("external-") {
+            catalog::validate_external_entry_snapshot(&snapshot.entry).map_err(|_| {
+                AppError::Invalid(
+                    "Saved external template contract lacks verified sidecar provenance. Review the catalog again."
+                        .into(),
+                )
+            })?;
+        }
         Ok(Some(snapshot))
     }
 
@@ -728,6 +736,35 @@ mod tests {
             .unwrap();
         assert!(database.project_template(&project.path).is_err());
         assert_eq!(database.projects().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rejects_a_legacy_external_project_snapshot_without_sidecar_provenance() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let mut entry = crate::catalog::entry_by_id("myworkid").unwrap();
+        entry.id = "external-legacy-review.myworkid".into();
+        entry.source = Some("external".into());
+        entry.trusted = true;
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some(entry.id.clone()),
+            revision: Some(entry.commit.clone()),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        let snapshot = crate::models::ProjectTemplateSnapshot::new(entry).unwrap();
+        database.save_project_template(&project, &snapshot).unwrap();
+
+        let error = database
+            .project_template(&project.path)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Review the catalog again"));
     }
 
     #[test]

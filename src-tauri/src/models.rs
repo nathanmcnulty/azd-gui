@@ -40,6 +40,9 @@ pub struct CatalogEntry {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub manifest: Option<TemplateManifest>,
+    /// SHA-256 declared by an external catalog for its fetched manifest sidecar.
+    #[serde(default)]
+    pub manifest_sha256: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(default)]
@@ -70,6 +73,8 @@ pub struct CatalogFileEntry {
     pub platforms: Vec<String>,
     #[serde(default)]
     pub manifest: Option<String>,
+    #[serde(default)]
+    pub manifest_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

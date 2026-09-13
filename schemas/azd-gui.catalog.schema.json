@@ -15,6 +15,32 @@
       "items": { "$ref": "#/$defs/entry" }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "id": { "const": "bundled" } },
+        "required": ["id"]
+      },
+      "else": {
+        "properties": {
+          "entries": {
+            "items": {
+              "allOf": [
+                {
+                  "if": { "required": ["manifest"] },
+                  "then": { "required": ["manifestSha256"] }
+                },
+                {
+                  "if": { "required": ["manifestSha256"] },
+                  "then": { "required": ["manifest"] }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "entry": {
       "type": "object",
@@ -35,7 +61,8 @@
           "minItems": 1,
           "uniqueItems": true
         },
-        "manifest": { "type": "string", "pattern": "^(?![\\\\/]|.*\\.\\.).+\\.json$" }
+        "manifest": { "type": "string", "pattern": "^(?![\\\\/]|.*\\.\\.).+\\.json$" },
+        "manifestSha256": { "type": "string", "pattern": "^[a-fA-F0-9]{64}$" }
       }
     }
   }

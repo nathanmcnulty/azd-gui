@@ -32,6 +32,7 @@ export interface CatalogEntry {
   tags: string[];
   platforms: Platform[];
   manifest?: TemplateManifest;
+  manifestSha256?: string;
   source?: "bundled" | "external" | "local";
   trusted?: boolean;
 }

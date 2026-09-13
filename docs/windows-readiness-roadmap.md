@@ -30,7 +30,7 @@ An unsigned development executable was built with a separate review application 
 
 | Order | Deliverable | Acceptance evidence |
 | --- | --- | --- |
-| 1 | Complete external-template provenance | Bind remote sidecar manifests to immutable template content and define publisher trust. Test public Git hosting compatibility with the restricted transport. Specify approval semantics for intentionally mutable existing-project working trees. |
+| 1 | Complete external-template provenance | Bind remote sidecar manifests to immutable template content and define publisher trust. External sidecar bytes now bind to the accepted catalog SHA-256 digest, but not yet to repository content. Test public Git hosting compatibility with the restricted transport. Specify approval semantics for intentionally mutable existing-project working trees. |
 | 2 | One real Windows template pilot | Select a simple ARM template or make Maester's interactive route explicit. On a disposable authorized target: configure, prepare, preview where supported, deploy, reopen, verify, and clean up. Record remaining manual steps. |
 | 3 | Effective optional features | Selected features determine required tools, connections, scopes, checks, and acknowledgements. Changing a feature invalidates stale approval and preview. Template scripts enforce the same choices. |
 | 4 | Better admin inputs | Add one registered Entra picker and template-authored recommendation profiles with explanations of permission, cost, and component consequences. Keep unsupported lookups explicit. |
@@ -41,7 +41,7 @@ The GUI remains an orchestrator over public CLI contracts. Templates own infrast
 
 ## Limits to preserve in product claims
 
-A saved snapshot's SHA-256 digest checks local consistency; it is not publisher authentication. New local-template preparation uses a reviewed, staged source tree, while an existing-project working tree remains intentionally mutable after approval. Remote sidecar provenance and signed Windows acceptance remain open. Git address pinning uses the documented [http.curloptResolve setting](https://git-scm.com/docs/git-config); private hosts, redirecting clone URLs, inherited proxies, and implicit credential helpers are intentionally unsupported by this public-template download path.
+A saved snapshot's SHA-256 digest checks local consistency; it is not publisher authentication. External sidecar bytes are checked against a digest in the accepted catalog and are not fetched again during execution, but the sidecar is not yet bound to repository content. New local-template preparation uses a reviewed, staged source tree, while an existing-project working tree remains intentionally mutable after approval. Signed Windows acceptance remains open. Git address pinning uses the documented [http.curloptResolve setting](https://git-scm.com/docs/git-config); private hosts, redirecting clone URLs, inherited proxies, and implicit credential helpers are intentionally unsupported by this public-template download path.
 
 Browser preview is simulated. Passing offline tests or opening a development executable does not demonstrate signed installation, real broker authentication, Azure provisioning, recipient-visible notification delivery, or cleanup. Layered provisioning and other unsupported preview capabilities need explicit classification before claiming a fully guided deployment experience.
 

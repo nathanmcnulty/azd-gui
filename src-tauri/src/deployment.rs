@@ -584,6 +584,7 @@ pub async fn prepare(
                         tags: vec![],
                         platforms: vec![],
                         manifest: None,
+                        manifest_sha256: None,
                         source: Some("external".into()),
                         trusted: false,
                     },
