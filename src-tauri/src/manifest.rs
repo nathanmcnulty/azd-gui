@@ -100,6 +100,15 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
             ) {
                 return Err(AppError::Invalid("Unsupported template field type.".into()));
             }
+            if let Some(lookup) = &field.lookup {
+                if lookup != "securityGroup" || field.sensitive || field.field_type != "entraObject"
+                {
+                    return Err(AppError::Invalid(
+                        "Only non-sensitive entraObject fields may use the securityGroup lookup."
+                            .into(),
+                    ));
+                }
+            }
             let mut options = HashSet::new();
             if field
                 .options
@@ -690,6 +699,30 @@ mod tests {
         let duplicate = manifest.configuration.groups[0].fields[0].clone();
         manifest.configuration.groups[0].fields.push(duplicate);
         assert!(validate(&manifest).is_err());
+    }
+
+    #[test]
+    fn security_group_lookup_is_limited_to_non_sensitive_entra_object_fields() {
+        let mut manifest = crate::catalog::entry_by_id("myworkid")
+            .unwrap()
+            .manifest
+            .unwrap();
+        let field = &mut manifest.configuration.groups[0].fields[0];
+        field.field_type = "entraObject".into();
+        field.sensitive = false;
+        field.lookup = Some("securityGroup".into());
+        validate(&manifest).unwrap();
+
+        field.lookup = Some("unknownDirectoryObject".into());
+        assert!(validate(&manifest).is_err());
+        field.lookup = Some("securityGroup".into());
+        field.sensitive = true;
+        assert!(validate(&manifest).is_err());
+
+        field.lookup = None;
+        assert!(!serde_json::to_string(&manifest)
+            .unwrap()
+            .contains("\"lookup\":null"));
     }
 
     #[test]

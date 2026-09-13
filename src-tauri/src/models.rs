@@ -332,6 +332,24 @@ pub struct ConfigurationField {
     pub pattern: Option<String>,
     #[serde(default)]
     pub condition: Option<FieldCondition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookup: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityGroup {
+    pub id: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecurityGroupSearch {
+    pub tenant_id: String,
+    pub subscription_id: String,
+    pub groups: Vec<SecurityGroup>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
