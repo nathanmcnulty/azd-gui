@@ -2148,7 +2148,7 @@
             {:else}
               <div class="callout info">
                 <Icon name="check" size={18} />
-                <div><strong>Source integrity</strong><p>The deployment will use this exact commit. Future repository changes do not alter this project.</p></div>
+                <div><strong>Source integrity</strong><p>Preparation starts from this exact commit. You can edit the prepared project afterward.</p>{#if wizardValues.sourceMode === "externalCatalog"}<p>Before preparation, the gallery's deployment settings must match those embedded in this template revision.</p>{/if}</div>
               </div>
             {/if}
             {#if requiresInteractiveTerminal}

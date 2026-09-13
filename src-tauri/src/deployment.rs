@@ -527,6 +527,19 @@ pub async fn prepare(
             requirement_environment_values(manifest, &request.environment_values)?;
         crate::tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
     }
+    // Verify external content before creating a destination or recording a project.
+    // Retain this exact checkout through azd init; do not fetch it a second time.
+    let external_checkout = if request.source_mode == "externalCatalog" {
+        let entry = entry.as_ref().expect("resolved template");
+        let checkout =
+            checkout_pinned_template(cache_root, &entry.repository, &entry.commit, &entry.id)
+                .await?;
+        let source = template_path(checkout.path(), entry)?;
+        crate::catalog::validate_external_checkout(entry, &source)?;
+        Some(checkout)
+    } else {
+        None
+    };
     let snapshot =
         ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;
     let environment_assignments = environment_assignments(&request, entry.as_ref())?;
@@ -560,7 +573,13 @@ pub async fn prepare(
     if !existing_project {
         let mut temporary_checkout = None;
         let source = match request.source_mode.as_str() {
-            "catalog" | "externalCatalog" => {
+            "externalCatalog" => {
+                template_path(
+                    external_checkout.as_ref().expect("verified external checkout").path(),
+                    entry.as_ref().expect("resolved template"),
+                )?
+            }
+            "catalog" => {
                 let entry = entry
                     .as_ref()
                     .ok_or_else(|| AppError::Invalid("Missing catalog entry.".into()))?;
@@ -875,6 +894,15 @@ mod tests {
         .unwrap();
         assert!(checkout.path().join("skeleton/azure.yaml").is_file());
         assert!(checkout.path().join("skeleton/azd-gui.json").is_file());
+        let source = checkout.path().join("skeleton");
+        let mut entry = entry_by_id("myworkid").unwrap();
+        entry.manifest = Some(
+            serde_json::from_slice(&std::fs::read(source.join("azd-gui.json")).unwrap()).unwrap(),
+        );
+        // Reviewed reference sidecar bytes, unchanged at this immutable revision.
+        entry.manifest_sha256 =
+            Some("68db596141d29fc75d4fa9d118ad27b5a54822511aba8daaa11d13f03da8748e".into());
+        crate::catalog::validate_external_checkout(&entry, &source).unwrap();
     }
 
     #[test]
