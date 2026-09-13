@@ -217,6 +217,14 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
 
+    expect(screen.getByRole("heading", { name: "Maester coverage" })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText("ExchangeOnlineManagement")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled());
+    await fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /include exchange checks/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(screen.queryByText("ExchangeOnlineManagement")).not.toBeInTheDocument());
     expect(screen.getByText("Azure CLI")).toBeInTheDocument();
     expect(screen.getByText("PowerShell")).toBeInTheDocument();
     expect(screen.queryByText("Microsoft Graph PowerShell")).not.toBeInTheDocument();
@@ -233,7 +241,7 @@ describe("desktop experience", () => {
     await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
       target: { value: "C:\\Deployments\\maester-profile" }
     });
-    for (let step = 0; step < 5; step += 1) {
+    for (let step = 0; step < 2; step += 1) {
       const continueButton = screen.getByRole("button", { name: /^continue$/i });
       await waitFor(() => expect(continueButton).toBeEnabled());
       await fireEvent.click(continueButton);
@@ -309,6 +317,9 @@ describe("desktop experience", () => {
     expect(continueButton).toBeDisabled();
     await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
     expect(continueButton).toBeEnabled();
+    await fireEvent.click(continueButton);
+    await fireEvent.click(screen.getByRole("button", { name: /apply minimal pilot/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
     await fireEvent.click(screen.getByRole("button", { name: /open external terminal/i }));
 
     expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
@@ -328,6 +339,8 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
 
     for (let attempt = 0; attempt < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); attempt += 1) {
+      const minimalProfile = screen.queryByRole("button", { name: /apply minimal pilot/i });
+      if (minimalProfile) await fireEvent.click(minimalProfile);
       const continueButton = screen.getByRole("button", { name: /^continue$/i });
       await waitFor(() => expect(continueButton).toBeEnabled());
       await fireEvent.click(continueButton);

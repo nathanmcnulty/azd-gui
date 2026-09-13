@@ -6,6 +6,7 @@ import type {
   WizardPlan,
   WizardValues
 } from "./types";
+import { effectiveRequirements, requirementControllerIds } from "./requirements";
 
 export function conditionMatches(condition: FieldCondition | undefined, values: WizardValues): boolean {
   if (!condition) return true;
@@ -80,7 +81,25 @@ export function calculateWizardPlan(
     standardPage("overview", "overview", "Review template", "Understand the source, revision, and compatibility.")
   ];
 
-  if ((manifest?.prerequisites.length ?? 0) > 0 || manifest?.minimumAzdVersion) {
+  const configurationPages: WizardPage[] = [];
+  for (const group of manifest?.configuration.groups ?? []) {
+    if (!conditionMatches(group.condition, values)) continue;
+    const fields = visibleFields(group.fields, values);
+    if (fields.length === 0) continue;
+    const blockingIssues = fields.map((field) => validateField(field, values[field.id]))
+      .filter((issue): issue is string => issue !== null);
+    configurationPages.push({
+      id: `configuration:${group.id}`, kind: "configuration", title: group.title,
+      description: group.description ?? "Configure template options.", group: { ...group, fields },
+      complete: blockingIssues.length === 0, blockingIssues
+    });
+  }
+  const controllers = manifest ? requirementControllerIds(manifest) : new Set<string>();
+  const isFeaturePage = (page: WizardPage) => page.group!.fields.some((field) => controllers.has(field.id));
+  // Feature choices come before the readiness gates they control.
+  pages.push(...configurationPages.filter(isFeaturePage));
+
+  if ((manifest && effectiveRequirements(manifest.prerequisites, manifest, values).length > 0) || manifest?.minimumAzdVersion) {
     pages.push(
       standardPage(
         "prerequisites",
@@ -91,7 +110,7 @@ export function calculateWizardPlan(
     );
   }
 
-  if ((manifest?.connections.length ?? 0) > 0) {
+  if (manifest && effectiveRequirements(manifest.connections, manifest, values).length > 0) {
     pages.push(
       standardPage(
         "connections",
@@ -111,23 +130,7 @@ export function calculateWizardPlan(
     )
   );
 
-  for (const group of manifest?.configuration.groups ?? []) {
-    if (!conditionMatches(group.condition, values)) continue;
-    const fields = visibleFields(group.fields, values);
-    if (fields.length === 0) continue;
-    const blockingIssues = fields
-      .map((field) => validateField(field, values[field.id]))
-      .filter((issue): issue is string => issue !== null);
-    pages.push({
-      id: `configuration:${group.id}`,
-      kind: "configuration",
-      title: group.title,
-      description: group.description ?? "Configure template options.",
-      group: { ...group, fields },
-      complete: blockingIssues.length === 0,
-      blockingIssues
-    });
-  }
+  pages.push(...configurationPages.filter((page) => !isFeaturePage(page)));
 
   pages.push(
     standardPage("review", "review", "Review deployment", "Confirm values and approve pinned template code execution."),
