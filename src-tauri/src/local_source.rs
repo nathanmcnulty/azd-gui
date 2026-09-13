@@ -11,6 +11,7 @@ use std::{
 use tempfile::TempDir;
 
 const MAX_ENTRIES: usize = 4_000;
+const MAX_DEPTH: usize = 64;
 const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const EXCLUDED_DIRECTORIES: &[&str] = &[".git", ".azure"];
@@ -91,11 +92,17 @@ impl<'a> TreeWriter<'a> {
         }
     }
 
-    fn visit_directory(&mut self, directory: &Path) -> AppResult<()> {
-        let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
+    fn visit_directory(&mut self, directory: &Path, depth: usize) -> AppResult<()> {
+        if depth > MAX_DEPTH {
+            return Err(rejected("source tree exceeds the 64-directory depth limit"));
+        }
+
+        let remaining_entries = MAX_ENTRIES
+            .checked_sub(self.entries)
+            .ok_or_else(|| rejected("source tree contains too many entries"))?;
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
             let name = entry.file_name();
             if directory == self.root
                 && name
@@ -104,12 +111,20 @@ impl<'a> TreeWriter<'a> {
             {
                 continue;
             }
-            self.visit_entry(&path)?;
+            if entries.len() >= remaining_entries {
+                return Err(rejected("source tree contains too many entries"));
+            }
+            entries.push(entry);
+        }
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            self.visit_entry(&path, depth)?;
         }
         Ok(())
     }
 
-    fn visit_entry(&mut self, source: &Path) -> AppResult<()> {
+    fn visit_entry(&mut self, source: &Path, parent_depth: usize) -> AppResult<()> {
         self.entries += 1;
         if self.entries > MAX_ENTRIES {
             return Err(rejected("source tree contains too many entries"));
@@ -126,21 +141,18 @@ impl<'a> TreeWriter<'a> {
             if let Some(destination) = self.destination {
                 fs::create_dir_all(destination.join(&name))?;
             }
-            return self.visit_directory(source);
+            return self.visit_directory(source, parent_depth + 1);
         }
         if !metadata.is_file() {
             return Err(rejected(
                 "source tree can contain only regular files and folders",
             ));
         }
-        self.bytes = self
-            .bytes
-            .checked_add(metadata.len())
-            .ok_or_else(|| rejected("source tree is too large"))?;
-        if self.bytes > MAX_TOTAL_BYTES {
+        let expected_size = metadata.len();
+        if expected_size > MAX_TOTAL_BYTES.saturating_sub(self.bytes) {
             return Err(rejected("source tree exceeds the 64 MiB staging limit"));
         }
-        hash_record(&mut self.hasher, b'F', &name, metadata.len());
+        hash_record(&mut self.hasher, b'F', &name, expected_size);
         let mut input = fs::File::open(source)?;
         let destination_path = self.destination.map(|destination| destination.join(&name));
         let mut output = destination_path
@@ -148,16 +160,30 @@ impl<'a> TreeWriter<'a> {
             .map(fs::File::create)
             .transpose()?;
         let mut buffer = [0u8; COPY_BUFFER_BYTES];
+        let mut actual_size = 0u64;
         loop {
             let count = input.read(&mut buffer)?;
             if count == 0 {
                 break;
+            }
+            actual_size = actual_size
+                .checked_add(count as u64)
+                .ok_or_else(|| rejected("source tree is too large"))?;
+            if actual_size > MAX_TOTAL_BYTES.saturating_sub(self.bytes) {
+                return Err(rejected("source tree exceeds the 64 MiB staging limit"));
             }
             self.hasher.update(&buffer[..count]);
             if let Some(output) = &mut output {
                 output.write_all(&buffer[..count])?;
             }
         }
+        if actual_size != expected_size {
+            return Err(rejected("source file changed while it was being read"));
+        }
+        self.bytes = self
+            .bytes
+            .checked_add(actual_size)
+            .ok_or_else(|| rejected("source tree is too large"))?;
         drop(output);
         if let Some(destination_path) = destination_path {
             fs::set_permissions(destination_path, metadata.permissions())?;
@@ -172,7 +198,7 @@ impl<'a> TreeWriter<'a> {
 
 fn digest_source(root: &Path, destination: Option<&Path>) -> AppResult<String> {
     let mut writer = TreeWriter::new(root, destination);
-    writer.visit_directory(root)?;
+    writer.visit_directory(root, 0)?;
     Ok(writer.finish())
 }
 
@@ -231,12 +257,15 @@ pub fn stage_for_path(
             "source content or manifest changed since inspection",
         ));
     }
+    if inspect(staging.path())?.content_digest != binding.content_digest {
+        return Err(rejected("staged source did not match the reviewed content"));
+    }
     Ok(staging)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{inspect, stage_for_path, verify_for_path};
+    use super::{inspect, stage_for_path, verify_for_path, MAX_DEPTH, MAX_ENTRIES};
     use std::fs;
     use tempfile::tempdir;
 
@@ -268,5 +297,28 @@ mod tests {
         assert!(verify_for_path(&binding, source.path()).is_err());
         let cache = tempdir().unwrap();
         assert!(stage_for_path(&binding, source.path(), cache.path()).is_err());
+    }
+
+    #[test]
+    fn rejects_a_directory_with_more_entries_than_the_bound() {
+        let source = tempdir().unwrap();
+        for index in 0..=MAX_ENTRIES {
+            fs::write(source.path().join(format!("entry-{index}")), "x").unwrap();
+        }
+
+        assert!(inspect(source.path()).is_err());
+    }
+
+    #[test]
+    fn rejects_a_directory_tree_that_exceeds_the_depth_bound() {
+        let source = tempdir().unwrap();
+        let mut nested = source.path().to_path_buf();
+        for _ in 0..=MAX_DEPTH {
+            nested.push("nested");
+            fs::create_dir(&nested).unwrap();
+        }
+        fs::write(nested.join("azure.yaml"), "name: sample").unwrap();
+
+        assert!(inspect(source.path()).is_err());
     }
 }
