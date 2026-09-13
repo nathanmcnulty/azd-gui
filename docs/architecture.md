@@ -80,7 +80,7 @@ The Settings page can clear all app-owned persisted state and cached template ma
 Pinned remote templates are fetched into a fresh temporary checkout for each materialization. The commit is verified after checkout, the checkout remains alive only through `azd init`, and it is then deleted. Executable template working trees are never reused across deployments.
 
 Project workspaces refresh their current environment through the public `azd show --output json` contract. The renderer projects that untrusted JSON into typed service summaries, accepts only HTTPS endpoints, and creates Azure portal links only for validated ARM resource IDs. Raw state remains available as an advanced diagnostic view.
-# Project validation reports
+## Project validation reports
 
 The Overview panel reads only `reports/deployment-validation.json` beneath a registered project. This read invokes no CLI, hooks, authentication, or cloud operation and does not update deployment state. The native reader accepts the reference `azdDeploymentValidation` version `1.0` envelope, enforces a 1 MiB read bound and 500-check limit, and rejects links/reparse points along the fixed report path. It checks reported totals against check statuses and outcome precedence against the reference producer.
 
