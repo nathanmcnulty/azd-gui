@@ -220,7 +220,7 @@ async fn powershell_module_version(name: &str) -> ToolProbe {
 }
 
 pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
-    let (azd, az, pwsh, az_module, graph_module, azd_inventory, azd_updates) = tokio::join!(
+    let (azd, az, pwsh, az_module, graph_module, exchange_module, azd_inventory, azd_updates) = tokio::join!(
         version(Executable::Azd, ["version", "--output", "json"]),
         version(Executable::AzureCli, ["version", "--output", "json"]),
         version(
@@ -234,6 +234,7 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
         ),
         powershell_module_version("Az.Accounts"),
         powershell_module_version("Microsoft.Graph.Authentication"),
+        powershell_module_version("ExchangeOnlineManagement"),
         async {
             if include_azd_updates {
                 azd_tool_inventory().await
@@ -259,7 +260,7 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
         "az-cli",
         "Azure CLI",
         "tool",
-        "2.60.0",
+        Some("2.60.0"),
         ToolProbe {
             version: inventory_azure_cli.or(az.version),
             executable_path: az.executable_path,
@@ -284,18 +285,26 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
             "azd",
             "Azure Developer CLI",
             "tool",
-            "1.23.0",
+            Some("1.23.0"),
             azd,
             "manual",
             None,
         ),
         azure_cli,
-        tool("pwsh", "PowerShell", "tool", "7.4.0", pwsh, "manual", None),
+        tool(
+            "pwsh",
+            "PowerShell",
+            "tool",
+            Some("7.4.0"),
+            pwsh,
+            "manual",
+            None,
+        ),
         tool(
             "Az.Accounts",
             "Azure PowerShell",
             "powershellModule",
-            "3.0.0",
+            Some("3.0.0"),
             az_module,
             "psResource",
             Some("Az.Accounts"),
@@ -304,10 +313,19 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
             "Microsoft.Graph",
             "Microsoft Graph PowerShell",
             "powershellModule",
-            "2.0.0",
+            Some("2.0.0"),
             graph_module,
             "psResource",
             Some("Microsoft.Graph"),
+        ),
+        tool(
+            "exchange-online-management",
+            "ExchangeOnlineManagement",
+            "powershellModule",
+            None,
+            exchange_module,
+            "manual",
+            Some("ExchangeOnlineManagement"),
         ),
     ]
 }
@@ -326,10 +344,13 @@ fn minimum_requirement(value: &str) -> String {
     }
 }
 
-pub fn manifest_prerequisites(manifest: &TemplateManifest) -> Vec<Prerequisite> {
-    let mut prerequisites = manifest.prerequisites.clone();
+pub fn manifest_prerequisites(
+    manifest: &TemplateManifest,
+    environment_values: &std::collections::HashMap<String, String>,
+) -> AppResult<Vec<Prerequisite>> {
+    let mut prerequisites = crate::manifest::effective_prerequisites(manifest, environment_values)?;
     let Some(minimum_azd_version) = manifest.minimum_azd_version.as_deref() else {
-        return prerequisites;
+        return Ok(prerequisites);
     };
     let azd_requirement = minimum_requirement(minimum_azd_version);
     if let Some(azd) = prerequisites
@@ -354,9 +375,10 @@ pub fn manifest_prerequisites(manifest: &TemplateManifest) -> Vec<Prerequisite> 
                 "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
                     .into(),
             ),
+            condition: None,
         });
     }
-    prerequisites
+    Ok(prerequisites)
 }
 
 fn evaluate_requirement(requirement: &Prerequisite, detected: &[ToolStatus]) -> ToolStatus {
@@ -433,8 +455,11 @@ pub async fn evaluate_prerequisites(requirements: &[Prerequisite]) -> Vec<ToolSt
         .collect()
 }
 
-pub async fn evaluate_manifest_prerequisites(manifest: &TemplateManifest) -> Vec<ToolStatus> {
-    evaluate_prerequisites(&manifest_prerequisites(manifest)).await
+pub async fn evaluate_manifest_prerequisites(
+    manifest: &TemplateManifest,
+    environment_values: &std::collections::HashMap<String, String>,
+) -> AppResult<Vec<ToolStatus>> {
+    Ok(evaluate_prerequisites(&manifest_prerequisites(manifest, environment_values)?).await)
 }
 
 pub async fn ensure_requirements(requirements: &[Prerequisite]) -> AppResult<()> {
@@ -454,15 +479,18 @@ pub async fn ensure_requirements(requirements: &[Prerequisite]) -> AppResult<()>
     }
 }
 
-pub async fn ensure_manifest_requirements(manifest: &TemplateManifest) -> AppResult<()> {
-    ensure_requirements(&manifest_prerequisites(manifest)).await
+pub async fn ensure_manifest_requirements(
+    manifest: &TemplateManifest,
+    environment_values: &std::collections::HashMap<String, String>,
+) -> AppResult<()> {
+    ensure_requirements(&manifest_prerequisites(manifest, environment_values)?).await
 }
 
 fn tool(
     id: &str,
     name: &str,
     kind: &str,
-    minimum: &str,
+    minimum: Option<&str>,
     probe: ToolProbe,
     provider: &str,
     install_id: Option<&str>,
@@ -471,7 +499,7 @@ fn tool(
         .version
         .as_deref()
         .and_then(|value| semver::Version::parse(value.trim_start_matches('v')).ok());
-    let required_version = semver::Version::parse(minimum).ok();
+    let required_version = minimum.and_then(|minimum| semver::Version::parse(minimum).ok());
     let state = installed_version
         .zip(required_version)
         .map(|(installed, required)| {
@@ -500,7 +528,7 @@ fn tool(
         id: id.into(),
         name: name.into(),
         kind: kind.into(),
-        minimum_version: Some(minimum.into()),
+        minimum_version: minimum.map(Into::into),
         required: id == "azd",
         state: state.into(),
         installed_version: probe.version.filter(|value| !value.is_empty()),
@@ -643,6 +671,8 @@ mod tests {
         parse_azd_tool_inventory, parse_azd_tool_updates, tool, ToolInstallApprovals, ToolProbe,
     };
     use crate::models::{Prerequisite, TemplateManifest};
+    use serde_json::json;
+    use std::collections::HashMap;
 
     #[test]
     fn parses_public_azd_tool_inventory_and_update_contracts() {
@@ -686,7 +716,13 @@ mod tests {
 
     #[test]
     fn unapproved_installers_do_not_produce_plans_or_commands() {
-        for id in ["azd", "az-cli", "pwsh", "manifest-supplied"] {
+        for id in [
+            "azd",
+            "az-cli",
+            "pwsh",
+            "exchange-online-management",
+            "manifest-supplied",
+        ] {
             assert!(approved_install(id).is_none());
             assert!(install_spec(id, "1.0.0").is_err());
         }
@@ -719,7 +755,7 @@ mod tests {
             "az-cli",
             "Azure CLI",
             "tool",
-            "2.60.0",
+            Some("2.60.0"),
             ToolProbe::default(),
             "azdTool",
             Some("az-cli"),
@@ -738,12 +774,29 @@ mod tests {
     }
 
     #[test]
+    fn exchange_module_inventory_is_manual_and_has_no_invented_minimum() {
+        let status = tool(
+            "exchange-online-management",
+            "ExchangeOnlineManagement",
+            "powershellModule",
+            None,
+            ToolProbe::default(),
+            "manual",
+            Some("ExchangeOnlineManagement"),
+        );
+
+        assert_eq!(status.minimum_version, None);
+        assert!(!status.can_install);
+        assert_eq!(status.install_provider.as_deref(), Some("manual"));
+    }
+
+    #[test]
     fn template_requirement_uses_its_own_semver_range() {
         let detected = tool(
             "azd",
             "Azure Developer CLI",
             "tool",
-            "1.23.0",
+            Some("1.23.0"),
             ToolProbe {
                 version: Some("1.23.1".into()),
                 executable_path: None,
@@ -760,6 +813,7 @@ mod tests {
             install_provider: Some("manual".into()),
             install_id: None,
             documentation_url: None,
+            condition: None,
         };
 
         let status = evaluate_requirement(&requirement, &[detected]);
@@ -778,6 +832,7 @@ mod tests {
             install_provider: None,
             install_id: None,
             documentation_url: None,
+            condition: None,
         };
 
         let status = evaluate_requirement(&requirement, &[]);
@@ -799,11 +854,12 @@ mod tests {
                 install_provider: Some("manual".into()),
                 install_id: None,
                 documentation_url: None,
+                condition: None,
             }],
             ..Default::default()
         };
 
-        let prerequisites = manifest_prerequisites(&manifest);
+        let prerequisites = manifest_prerequisites(&manifest, &HashMap::new()).unwrap();
         assert_eq!(prerequisites.len(), 1);
         assert!(prerequisites[0].required);
         assert_eq!(
@@ -820,7 +876,7 @@ mod tests {
             ..Default::default()
         };
 
-        let prerequisites = manifest_prerequisites(&manifest);
+        let prerequisites = manifest_prerequisites(&manifest, &HashMap::new()).unwrap();
         assert_eq!(prerequisites.len(), 1);
         assert_eq!(prerequisites[0].id, "azd");
         assert!(prerequisites[0].required);
@@ -828,5 +884,41 @@ mod tests {
             prerequisites[0].minimum_version.as_deref(),
             Some(">=1.23.7")
         );
+    }
+
+    #[test]
+    fn minimum_azd_version_remains_unconditional_when_manifest_azd_is_disabled() {
+        let manifest: TemplateManifest = serde_json::from_value(json!({
+            "schemaVersion": "1.0",
+            "minimumAzdVersion": "1.23.7",
+            "configuration": {"groups": [{
+                "id": "options",
+                "title": "Options",
+                "fields": [{
+                    "id": "enableAzdCheck",
+                    "environmentVariable": "ENABLE_AZD_CHECK",
+                    "label": "Enable azd check",
+                    "type": "boolean",
+                    "default": false
+                }]
+            }]},
+            "prerequisites": [{
+                "id": "azd",
+                "name": "Azure Developer CLI",
+                "kind": "tool",
+                "required": true,
+                "condition": {"field": "enableAzdCheck", "equals": true}
+            }]
+        }))
+        .unwrap();
+
+        let prerequisites = manifest_prerequisites(&manifest, &HashMap::new()).unwrap();
+        assert_eq!(prerequisites.len(), 1);
+        assert_eq!(prerequisites[0].id, "azd");
+        assert_eq!(
+            prerequisites[0].minimum_version.as_deref(),
+            Some(">=1.23.7")
+        );
+        assert!(prerequisites[0].condition.is_none());
     }
 }

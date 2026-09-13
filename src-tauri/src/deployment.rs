@@ -11,7 +11,7 @@ use crate::{
 };
 use chrono::Utc;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -194,6 +194,33 @@ fn environment_assignments(
         }
     }
     Ok(assignments.into_iter().collect())
+}
+
+fn requirement_environment_values(
+    manifest: &crate::models::TemplateManifest,
+    environment_values: &HashMap<String, serde_json::Value>,
+) -> AppResult<HashMap<String, String>> {
+    let mut resolved = HashMap::new();
+    for environment_variable in crate::manifest::requirement_controller_variables(manifest)? {
+        let Some(value) = environment_values.get(&environment_variable) else {
+            continue;
+        };
+        match value {
+            serde_json::Value::Null => {}
+            serde_json::Value::Bool(value) => {
+                resolved.insert(environment_variable, value.to_string());
+            }
+            serde_json::Value::String(value) => {
+                resolved.insert(environment_variable, value.clone());
+            }
+            _ => {
+                return Err(AppError::Invalid(
+                    "Requirement controller values must be booleans or boolean strings.".into(),
+                ))
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppResult<String> {
@@ -472,7 +499,9 @@ pub async fn prepare(
         .await?,
     );
     if let Some(manifest) = entry.as_ref().and_then(|entry| entry.manifest.as_ref()) {
-        crate::tools::ensure_manifest_requirements(manifest).await?;
+        let requirement_values =
+            requirement_environment_values(manifest, &request.environment_values)?;
+        crate::tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
     }
     let snapshot =
         ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;

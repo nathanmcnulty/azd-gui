@@ -386,6 +386,7 @@ mod tests {
             provider: provider.into(),
             required: true,
             description: String::new(),
+            condition: None,
         }
     }
 
