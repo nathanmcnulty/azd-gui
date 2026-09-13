@@ -202,6 +202,13 @@
   let localDataClearing = false;
   let localDataClearError = "";
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
+  let wizardSession = 0;
+  let azureDiscoveryRequest = 0;
+  let azureTargetGeneration = 0;
+  let wizardEditGeneration = 0;
+  let draftNotice: { kind: "restored" | "loadError" | "saveError"; message: string } | null = null;
+  let pendingDraft: { templateId: string; values: WizardValues; session: number } | null = null;
+  let draftSaveQueue = Promise.resolve();
   let azureDiscovery: AzureDiscovery | null = null;
   let azureDiscoveryLoading = false;
   let azureDiscoveryError = "";
@@ -435,7 +442,8 @@
       document.removeEventListener("keydown", handleGlobalKeydown);
       window.removeEventListener("resize", constrainOutputHeight);
       stopOutputResize?.();
-      if (draftTimer) clearTimeout(draftTimer);
+      flushDraftSave();
+      wizardSession += 1;
       unlisten();
     };
   });
@@ -449,7 +457,7 @@
 
   function navigate(id: NavId) {
     activeNav = id;
-    selectedEntry = null;
+    closeWizard();
     if (id !== "projects") selectedProject = null;
   }
 
@@ -547,6 +555,10 @@
   }
 
   function startWizard(entry: CatalogEntry) {
+    flushDraftSave();
+    const session = ++wizardSession;
+    wizardEditGeneration = 0;
+    draftNotice = null;
     selectedEntry = entry;
     selectedInspection = null;
     sourceTrustAccepted = Boolean(entry.trusted);
@@ -570,14 +582,29 @@
     azureDiscoveryLoading = false;
     azureDiscoveryError = "";
     manualAzureScope = false;
-    void loadWizardDraft(entry.id).then((draft) => {
-      if (!draft || selectedEntry?.id !== entry.id) return;
+    void draftSaveQueue.then(() => loadWizardDraft(entry.id)).then((draft) => {
+      if (session !== wizardSession || selectedEntry?.id !== entry.id || wizardEditGeneration !== 0 || activeStep !== 0) return;
+      if (!draft || Object.keys(draft).length === 0) return;
       wizardValues = { ...wizardValues, ...draft };
       wizardPlan = calculateWizardPlan(entry, wizardValues, wizardPlan ?? undefined);
+      draftNotice = { kind: "restored", message: "Saved choices restored. Review them before preparation and enter any secrets again." };
+    }).catch(() => {
+      if (session === wizardSession && selectedEntry?.id === entry.id) {
+        draftNotice = { kind: "loadError", message: "Saved choices could not be loaded. You can continue with the choices in this window." };
+      }
     });
   }
 
+  function closeWizard() {
+    flushDraftSave();
+    wizardSession += 1;
+    selectedEntry = null;
+    draftNotice = null;
+  }
+
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    wizardEditGeneration += 1;
+    if (["tenantId", "subscriptionId", "location"].includes(id)) azureTargetGeneration += 1;
     hookExecutionAccepted = false;
     if ((id === "tenantId" || id === "subscriptionId") && wizardValues[id] !== value) {
       const groupFields = selectedEntry?.manifest?.configuration.groups.flatMap((group) => group.fields)
@@ -611,8 +638,7 @@
     wizardPlan = nextPlan;
     const nextIndex = wizardPlan.pages.findIndex((page) => page.id === pageId);
     activeStep = nextIndex >= 0 ? nextIndex : Math.min(activeStep, wizardPlan.pages.length - 1);
-    if (draftTimer) clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => void saveCurrentDraft(), 500);
+    scheduleDraftSave();
   }
 
   function applyRecommendationProfile(profile: RecommendationProfile) {
@@ -628,19 +654,43 @@
     return value ?? "";
   }
 
-  async function saveCurrentDraft() {
+  function scheduleDraftSave() {
     if (!selectedEntry) return;
     const values = Object.fromEntries(
       Object.entries(wizardValues).filter(
         ([key, value]) => !sensitiveWizardFields.has(key) && value !== undefined
       )
     );
-    await saveWizardDraft(selectedEntry.id, values);
+    pendingDraft = { templateId: selectedEntry.id, values: structuredClone(values), session: wizardSession };
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = setTimeout(flushDraftSave, 500);
+  }
+
+  function flushDraftSave() {
+    if (draftTimer) clearTimeout(draftTimer);
+    draftTimer = null;
+    const draft = pendingDraft;
+    pendingDraft = null;
+    if (!draft) return;
+    draftSaveQueue = draftSaveQueue.then(async () => {
+      try {
+        await saveWizardDraft(draft.templateId, draft.values);
+        if (draft.session === wizardSession && draftNotice?.kind === "saveError") draftNotice = null;
+      } catch {
+        addSystemLog("Wizard choices could not be saved locally. Recent changes may need to be entered again when reopening the template.", "warning");
+        if (draft.session !== wizardSession) outputOpen = true;
+        if (draft.session === wizardSession && selectedEntry?.id === draft.templateId) {
+          draftNotice = { kind: "saveError", message: "Your latest choices could not be saved locally. They are still available in this window." };
+        }
+      }
+    });
   }
 
   async function nextStep() {
     if (!wizardPlan) return;
-    if (activePage?.kind === "source" && wizardValues.sourceMode !== "catalog") {
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
+    if (activePage?.kind === "source" && ["github", "localTemplate", "existingProject"].includes(String(wizardValues.sourceMode))) {
       try {
         const sourcePath = String(
           wizardValues.sourceMode === "existingProject"
@@ -657,6 +707,7 @@
           (wizardValues.sourceMode === "github"
             ? await inspectGitHubTemplate(sourcePath)
             : await inspectLocalTemplate(sourcePath));
+        if (session !== wizardSession || generation !== wizardEditGeneration) return;
         selectedEntry = inspection.entry;
         selectedInspection = inspection;
         sourceTrustAccepted = false;
@@ -678,6 +729,7 @@
         );
         return;
       } catch (error) {
+        if (session !== wizardSession || generation !== wizardEditGeneration) return;
         addSystemLog(`Source inspection failed: ${String(error)}`, "error");
         outputOpen = true;
         return;
@@ -698,27 +750,32 @@
   }
 
   async function loadAzureDiscovery(subscriptionId?: string, refresh = false) {
-    if (azureDiscoveryLoading) return;
+    const session = wizardSession;
+    const request = ++azureDiscoveryRequest;
+    const targetGeneration = azureTargetGeneration;
+    const isCurrent = () => session === wizardSession && request === azureDiscoveryRequest && targetGeneration === azureTargetGeneration;
     azureDiscoveryLoading = true;
     azureDiscoveryError = "";
     try {
       let result = await discoverAzureScope(subscriptionId, refresh);
+      if (!isCurrent()) return;
+      let preferredSubscriptionId = subscriptionId;
       if (!subscriptionId) {
         const current = result.subscriptions.find(
           (subscription) => subscription.id.toLowerCase() === String(wizardValues.subscriptionId).toLowerCase()
         );
         const preferred = current ?? result.subscriptions.find((subscription) => subscription.isDefault) ?? result.subscriptions[0];
         if (preferred) {
-          setWizardValue("subscriptionId", preferred.id);
-          setWizardValue("tenantId", preferred.tenantId);
+          preferredSubscriptionId = preferred.id;
           result = await discoverAzureScope(preferred.id);
+          if (!isCurrent()) return;
         }
       }
       azureDiscovery = result;
       const selected = result.subscriptions.find(
         (subscription) =>
           subscription.id.toLowerCase() ===
-          String(result.selectedSubscriptionId ?? wizardValues.subscriptionId).toLowerCase()
+          String(result.selectedSubscriptionId ?? preferredSubscriptionId ?? wizardValues.subscriptionId).toLowerCase()
       );
       if (selected) {
         setWizardValue("subscriptionId", selected.id);
@@ -732,10 +789,11 @@
       }
       result.warnings.forEach((warning) => addSystemLog(warning, "warning"));
     } catch (error) {
+      if (!isCurrent()) return;
       azureDiscoveryError = String(error);
       if (!azureDiscovery) manualAzureScope = true;
     } finally {
-      azureDiscoveryLoading = false;
+      if (session === wizardSession && request === azureDiscoveryRequest) azureDiscoveryLoading = false;
     }
   }
 
@@ -763,6 +821,8 @@
   }
 
   function toggleManualAzureScope() {
+    azureDiscoveryRequest += 1;
+    azureDiscoveryLoading = false;
     manualAzureScope = !manualAzureScope;
     if (!manualAzureScope && !azureDiscovery) void loadAzureDiscovery();
   }
@@ -772,21 +832,30 @@
   }
 
   async function selectLocalFolder() {
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
     const selected = await chooseFolder();
+    if (session !== wizardSession || generation !== wizardEditGeneration) return;
     if (selected) setWizardValue("projectPath", selected);
   }
 
   async function selectSourceFolder() {
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
     const selected = await chooseFolder();
+    if (session !== wizardSession || generation !== wizardEditGeneration) return;
     if (selected) setWizardValue("sourcePath", selected);
   }
 
   async function openLocalProject(copyAsTemplate = false) {
+    const session = wizardSession;
     const selected = await chooseFolder();
-    if (!selected) return;
+    if (!selected || session !== wizardSession) return;
     try {
       const inspection = await inspectLocalTemplate(selected);
+      if (session !== wizardSession) return;
       startWizard(inspection.entry);
+      wizardEditGeneration += 1;
       selectedInspection = inspection;
       wizardValues = {
         ...wizardValues,
@@ -800,6 +869,7 @@
         outputOpen = true;
       }
     } catch (error) {
+      if (session !== wizardSession) return;
       addSystemLog(`Could not inspect local project: ${String(error)}`, "error");
       outputOpen = true;
     }
@@ -1631,7 +1701,7 @@
     preserveView = false
   ) {
     if (!preserveView) {
-      selectedEntry = null;
+      closeWizard();
       selectedInspection = null;
       projectPreview = null;
       projectDeploymentResult = null;
@@ -1918,6 +1988,8 @@
     localDataClearing = true;
     localDataClearError = "";
     try {
+      flushDraftSave();
+      await draftSaveQueue;
       const cleared = await clearLocalAppData();
       if (cleared) window.location.reload();
       else pendingLocalDataClear = false;
@@ -1990,7 +2062,7 @@
     azdVersion={data.tools.find((tool) => tool.id === "azd")?.installedVersion ?? "not found"}
     appVersion={data.appVersion}
     onNavigate={navigate}
-    onCloseDeployment={() => (selectedEntry = null)}
+    onCloseDeployment={closeWizard}
     onToggle={toggleNavigation}
   />
 
@@ -2021,6 +2093,13 @@
         </div>
 
         <div class="wizard-content">
+          {#if draftNotice}
+            <div class="callout" class:warning={draftNotice.kind !== "restored"} class:info={draftNotice.kind === "restored"} role="status" aria-label="Saved wizard choices">
+              <div><strong>Saved choices</strong><p>{draftNotice.message}</p></div>
+              {#if draftNotice.kind === "saveError"}<button class="secondary" on:click={() => { scheduleDraftSave(); flushDraftSave(); }}>Retry saving</button>{/if}
+              <button class="text-button" on:click={() => (draftNotice = null)}>Dismiss</button>
+            </div>
+          {/if}
           {#if removedValueWarning.length}
             <div class="callout warning">
               <Icon name="warning" size={18} />
