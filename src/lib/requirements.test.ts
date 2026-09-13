@@ -23,6 +23,18 @@ describe("optional requirements", () => {
     expect(effectiveRequirements(manifest.connections, manifest, { includeExchange: false, includeAzure: false })).toEqual(manifest.connections);
   });
 
+  it("removes inactive connection scopes and their page without removing baseline tools", () => {
+    const sample = structuredClone(entry);
+    sample.manifest!.connections = [{
+      id: "graphPowerShell", name: "Optional Graph", required: true, reason: "Optional feature",
+      scopes: ["Directory.Read.All"], condition: { field: "includeExchange", equals: true }
+    }];
+    expect(effectiveRequirements(sample.manifest!.connections, sample.manifest!, { includeExchange: false })).toEqual([]);
+    expect(calculateWizardPlan(sample, { includeExchange: false }).pages.some((page) => page.kind === "connections")).toBe(false);
+    expect(calculateWizardPlan(sample, { includeExchange: true }).pages.some((page) => page.kind === "connections")).toBe(true);
+    expect(calculateWizardPlan(sample, { includeExchange: false }).pages.some((page) => page.kind === "prerequisites")).toBe(true);
+  });
+
   it("puts controlling feature choices before the gates and keeps unrelated configuration after environment", () => {
     const pages = calculateWizardPlan(entry, {}).pages.map((page) => page.id);
     expect(pages.indexOf("configuration:features")).toBeLessThan(pages.indexOf("prerequisites"));

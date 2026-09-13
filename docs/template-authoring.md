@@ -2,8 +2,6 @@
 
 Keep infrastructure, hooks, and optional-component behavior in the template. An `azd-gui.json` describes inputs and required tools; it does not supply executable commands or authorize deployment. The schema is [azd-gui.schema.json](../schemas/azd-gui.schema.json).
 
-## Recommendation profiles
-
 ## Optional feature requirements
 
 Prerequisites, connections, and registered permission checks can declare a boolean condition:
