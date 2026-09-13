@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as bridge from "./lib/bridge";
 import App from "./App.svelte";
@@ -43,6 +43,277 @@ describe("desktop experience", () => {
     expect(continueButton).toBeEnabled();
     expect(continueButton).not.toHaveAttribute("aria-describedby");
     expect(screen.getByRole("status").textContent).toBe("");
+  });
+
+  it("does not let a deferred draft restore overwrite an early destination edit", async () => {
+    let resolveDraft!: (draft: Record<string, string | boolean | string[]> | null) => void;
+    const loadDraft = vi.spyOn(bridge, "loadWizardDraft").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveDraft = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await waitFor(() => expect(loadDraft).toHaveBeenCalledWith("entra-health-monitoring"));
+
+    const destination = screen.getByPlaceholderText(/empty destination folder/i);
+    await fireEvent.input(destination, {
+      target: { value: "C:\\Deployments\\early-edit" }
+    });
+    await act(() => {
+      resolveDraft({ projectPath: "C:\\Deployments\\restored-overwrite" });
+    });
+    expect(destination).toHaveValue("C:\\Deployments\\early-edit");
+    expect(screen.queryByRole("status", { name: /saved wizard choices/i })).not.toBeInTheDocument();
+  });
+
+  it("ignores an old load when the same template is reopened", async () => {
+    const resolvers: Array<(draft: Record<string, string | boolean | string[]> | null) => void> = [];
+    const loadDraft = vi.spyOn(bridge, "loadWizardDraft").mockImplementation(
+      () => new Promise((resolve) => {
+        resolvers.push(resolve);
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await waitFor(() => expect(loadDraft).toHaveBeenCalledTimes(1));
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await waitFor(() => expect(loadDraft).toHaveBeenCalledTimes(2));
+
+    await act(() => {
+      resolvers[0]({ projectPath: "C:\\Deployments\\old-load" });
+    });
+    expect(screen.getByPlaceholderText(/empty destination folder/i)).toHaveValue("");
+    expect(screen.queryByRole("status", { name: /saved wizard choices/i })).not.toBeInTheDocument();
+    await act(() => {
+      resolvers[1](null);
+    });
+  });
+
+  it("shows a generic notice when saved choices are restored", async () => {
+    vi.spyOn(bridge, "loadWizardDraft").mockResolvedValue({
+      projectPath: "C:\\Deployments\\restored"
+    });
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/empty destination folder/i)).toHaveValue(
+        "C:\\Deployments\\restored"
+      );
+    });
+    expect(screen.getByRole("status", { name: /saved wizard choices/i })).toHaveTextContent(
+      /saved choices restored/i
+    );
+  });
+
+  it("reports draft load failures without exposing the raw error", async () => {
+    vi.spyOn(bridge, "loadWizardDraft").mockRejectedValue(
+      new Error("raw provider secret")
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    const notice = await screen.findByRole("status", { name: /saved wizard choices/i });
+    expect(notice).toHaveTextContent(/could not be loaded/i);
+    expect(notice).not.toHaveTextContent("raw provider secret");
+  });
+
+  it("retries a failed draft save with the latest values", async () => {
+    const saveDraft = vi.spyOn(bridge, "saveWizardDraft");
+    saveDraft.mockRejectedValueOnce(new Error("raw save failure"));
+    saveDraft.mockResolvedValue(undefined);
+    vi.spyOn(bridge, "loadWizardDraft").mockResolvedValue(null);
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    const destination = screen.getByPlaceholderText(/empty destination folder/i);
+    await fireEvent.input(destination, {
+      target: { value: "C:\\Deployments\\latest-draft" }
+    });
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(1), { timeout: 1500 });
+
+    const notice = screen.getByRole("status", { name: /saved wizard choices/i });
+    expect(notice).toHaveTextContent(/could not be saved locally/i);
+    expect(notice).not.toHaveTextContent("raw save failure");
+    await fireEvent.click(within(notice).getByRole("button", { name: /retry saving/i }));
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("status", { name: /saved wizard choices/i })).not.toBeInTheDocument());
+    expect(saveDraft).toHaveBeenLastCalledWith(
+      "entra-health-monitoring",
+      expect.objectContaining({ projectPath: "C:\\Deployments\\latest-draft" })
+    );
+  });
+
+  it("flushes the original draft before another wizard starts", async () => {
+    const saveDraft = vi.spyOn(bridge, "saveWizardDraft").mockResolvedValue(undefined);
+    vi.spyOn(bridge, "loadWizardDraft").mockResolvedValue(null);
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\original-draft" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[1]
+    );
+
+    await waitFor(() => expect(saveDraft).toHaveBeenCalledWith(
+      "entra-health-monitoring",
+      expect.objectContaining({ projectPath: "C:\\Deployments\\original-draft" })
+    ));
+  });
+
+  it("ignores source inspection results after the wizard is closed and replaced", async () => {
+    const staleInspection = await bridge.inspectGitHubTemplate("https://github.com/example/stale-template");
+    let resolveInspection!: (inspection: Awaited<ReturnType<typeof bridge.inspectGitHubTemplate>>) => void;
+    const inspectGitHub = vi.spyOn(bridge, "inspectGitHubTemplate").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveInspection = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await fireEvent.click(screen.getByRole("button", { name: /github repository/i }));
+    await fireEvent.input(screen.getByPlaceholderText(/github.com\/owner/i), {
+      target: { value: "https://github.com/example/stale-template" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(inspectGitHub).toHaveBeenCalledWith("https://github.com/example/stale-template"));
+
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[1]
+    );
+    await act(() => {
+      resolveInspection(staleInspection);
+    });
+
+    expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /vetted catalog/i })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.queryByText("GitHub template")).not.toBeInTheDocument();
+  });
+
+  it("does not apply discovery results after the Azure target changes", async () => {
+    const staleDiscovery = await bridge.discoverAzureScope();
+    let resolveDiscovery!: (discovery: Awaited<ReturnType<typeof bridge.discoverAzureScope>>) => void;
+    const discover = vi.spyOn(bridge, "discoverAzureScope").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveDiscovery = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[2]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\discovery-race" }
+    });
+    for (let step = 0; step < 4; step += 1) {
+      await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    }
+    await waitFor(() => expect(discover).toHaveBeenCalledTimes(1));
+
+    const tenant = screen.getByPlaceholderText("Tenant ID");
+    const subscription = screen.getByPlaceholderText("Subscription ID");
+    await fireEvent.input(tenant, { target: { value: "current-tenant" } });
+    await fireEvent.input(subscription, { target: { value: "current-subscription" } });
+    await act(() => {
+      resolveDiscovery(staleDiscovery);
+    });
+
+    expect(screen.getByPlaceholderText("Tenant ID")).toHaveValue("current-tenant");
+    expect(screen.getByPlaceholderText("Subscription ID")).toHaveValue("current-subscription");
+  });
+
+  it("does not restore a draft over an explicitly opened local project", async () => {
+    let resolveDraft!: (draft: Record<string, string | boolean | string[]> | null) => void;
+    const loadDraft = vi.spyOn(bridge, "loadWizardDraft").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveDraft = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
+    await waitFor(() => expect(loadDraft).toHaveBeenCalledWith("maester-automation"));
+    const folder = screen.getByPlaceholderText("Choose a folder");
+    expect(folder).toHaveValue("C:\\GitHub\\sample-azd-project");
+    await act(() => {
+      resolveDraft({
+        sourceMode: "catalog",
+        projectPath: "C:\\Deployments\\restored-draft"
+      });
+    });
+
+    expect(folder).toHaveValue("C:\\GitHub\\sample-azd-project");
+    expect(screen.getByRole("button", { name: /open existing project/i })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+  });
+
+  it("advances an external catalog template without source inspection", async () => {
+    const inspectGitHub = vi.spyOn(bridge, "inspectGitHubTemplate");
+    const inspectLocal = vi.spyOn(bridge, "inspectLocalTemplate");
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /add HTTPS or GitHub source/i }));
+    const dialog = screen.getByRole("dialog", { name: /add catalog source/i });
+    await fireEvent.input(within(dialog).getByPlaceholderText(/github.com\/owner/i), {
+      target: { value: "https://example.com/async-race.catalog.json" }
+    });
+    await fireEvent.click(within(dialog).getByRole("button", { name: /preview source/i }));
+    await fireEvent.click(await within(dialog).findByRole("button", { name: /trust and add/i }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument());
+
+    await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
+    await fireEvent.click(
+      screen.getAllByRole("button", { name: /configure deployment/i })[3]
+    );
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\external-race" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+    expect(await screen.findByRole("heading", { name: "MyWorkID" })).toBeInTheDocument();
+    expect(screen.getByText("Source integrity")).toBeInTheDocument();
+    expect(inspectGitHub).not.toHaveBeenCalled();
+    expect(inspectLocal).not.toHaveBeenCalled();
   });
 
   it("discovers Azure scope when the wizard reaches environment configuration", async () => {
