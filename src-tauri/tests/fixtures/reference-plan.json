@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "1.0",
+  "reportType": "azdDeploymentValidation",
+  "startedAt": "2026-09-13T02:44:41.6477310Z",
+  "completedAt": "2026-09-13T02:44:41.7772447Z",
+  "durationMs": 130,
+  "template": {
+    "name": "replace-with-solution-name",
+    "version": "0.1.0"
+  },
+  "environment": {
+    "subscriptionId": "",
+    "tenantId": "",
+    "resourceGroup": "",
+    "name": "gui-plan-fixture"
+  },
+  "mode": "plan",
+  "requirements": {
+    "modules": [],
+    "tools": [
+      "az",
+      "azd"
+    ],
+    "permissions": [
+      "Azure Resource Group read access"
+    ]
+  },
+  "outcome": "planned",
+  "summary": {
+    "pass": 0,
+    "fail": 0,
+    "warning": 0,
+    "info": 0,
+    "skipped": 1,
+    "planned": 3
+  },
+  "checks": [
+    {
+      "id": "context.azure-cli-session",
+      "phase": "context",
+      "title": "Azure CLI context is available",
+      "status": "planned",
+      "summary": "An existing Azure CLI session is available for read-only validation.",
+      "sideEffect": "readOnly",
+      "durationMs": 0,
+      "expected": null,
+      "actual": null,
+      "evidence": {},
+      "remediation": "Run az login using the normal broker or browser flow, then rerun validation.",
+      "metadata": {}
+    },
+    {
+      "id": "context.template-root",
+      "phase": "context",
+      "title": "Template root is complete",
+      "status": "planned",
+      "summary": "azure.yaml exists at the repository root.",
+      "sideEffect": "none",
+      "durationMs": 2,
+      "expected": null,
+      "actual": null,
+      "evidence": {},
+      "remediation": "",
+      "metadata": {}
+    },
+    {
+      "id": "infrastructure.resource-group",
+      "phase": "infrastructure",
+      "title": "Resource group exists",
+      "status": "planned",
+      "summary": "The deployed resource group is readable in the selected subscription.",
+      "sideEffect": "readOnly",
+      "durationMs": 0,
+      "expected": null,
+      "actual": null,
+      "evidence": {},
+      "remediation": "Confirm AZURE_RESOURCE_GROUP and the selected Azure subscription, then rerun validation.",
+      "metadata": {}
+    },
+    {
+      "id": "delivery.not-configured",
+      "phase": "delivery",
+      "title": "Synthetic delivery test",
+      "status": "skipped",
+      "summary": "No solution-specific delivery test has been configured in this skeleton.",
+      "sideEffect": "syntheticDelivery",
+      "durationMs": 0,
+      "expected": null,
+      "actual": null,
+      "evidence": {},
+      "remediation": "",
+      "metadata": {}
+    }
+  ],
+  "nextSteps": [
+    "Add solution-specific security and delivery validation before publishing the template."
+  ]
+}

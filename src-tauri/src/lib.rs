@@ -14,6 +14,7 @@ mod persistence;
 mod redaction;
 mod terminal;
 mod tools;
+mod validation_report;
 
 use crate::{
     command_runner::{spawn_operation, OperationManager, OperationPersistence},
@@ -564,6 +565,23 @@ async fn get_project_state(
 }
 
 #[tauri::command]
+fn get_project_validation_report(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<validation_report::ValidationReportRead> {
+    let root = PathBuf::from(project_path);
+    let canonical = std::fs::canonicalize(&root)?.display().to_string();
+    let project = state
+        .database
+        .project_by_path(&canonical)?
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
+    Ok(validation_report::read(
+        &root,
+        project.environment.as_deref(),
+    ))
+}
+
+#[tauri::command]
 async fn list_project_environments(project_path: String) -> AppResult<Vec<ProjectEnvironment>> {
     let canonical = std::fs::canonicalize(project_path)?;
     azd::environment_list(&canonical).await
@@ -989,6 +1007,7 @@ pub fn run() {
             prepare_deployment,
             request_execution_approval,
             get_project_state,
+            get_project_validation_report,
             list_project_environments,
             create_project_environment,
             select_project_environment,

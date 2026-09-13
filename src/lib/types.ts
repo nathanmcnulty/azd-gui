@@ -302,6 +302,47 @@ export interface ProjectTemplateSnapshot {
   digest: string;
 }
 
+export type ValidationReportState = "available" | "notFound" | "invalid" | "unsafePath" | "tooLarge";
+export type ValidationMode = "plan" | "verify" | "delivery";
+export type ValidationOutcome = "planned" | "passed" | "passedWithWarnings" | "failed";
+export type ValidationPhase = "context" | "infrastructure" | "identity" | "configuration" | "security" | "runtime" | "delivery";
+export type ValidationStatus = "pass" | "fail" | "warning" | "info" | "skipped" | "planned";
+export type ValidationSideEffect = "none" | "readOnly" | "negativeProbe" | "syntheticDelivery";
+export type ValidationEnvironmentBinding = "environmentMatch" | "environmentMismatch" | "environmentUnbound";
+
+export interface ValidationSummary {
+  pass: number;
+  fail: number;
+  warning: number;
+  info: number;
+  skipped: number;
+  planned: number;
+}
+
+export interface ValidationCheck {
+  id: string;
+  phase: ValidationPhase;
+  status: ValidationStatus;
+  sideEffect: ValidationSideEffect;
+  durationMs: number;
+}
+
+export interface ValidationReport {
+  startedAt: string;
+  completedAt: string;
+  durationMs: number;
+  mode: ValidationMode;
+  outcome: ValidationOutcome;
+  summary: ValidationSummary;
+  environmentBinding: ValidationEnvironmentBinding;
+  checks: ValidationCheck[];
+}
+
+export interface ValidationReportRead {
+  state: ValidationReportState;
+  report?: ValidationReport;
+}
+
 export interface ProjectEnvironment {
   name: string;
   dotEnvPath: string;
