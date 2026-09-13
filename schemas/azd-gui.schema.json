@@ -56,6 +56,15 @@
         { "required": ["includes"], "properties": { "includes": {} } }
       ]
     },
+    "requirementCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "equals"],
+      "properties": {
+        "field": { "type": "string", "minLength": 1 },
+        "equals": { "type": "boolean" }
+      }
+    },
     "prerequisite": {
       "type": "object",
       "additionalProperties": false,
@@ -65,6 +74,7 @@
         "name": { "type": "string" },
         "kind": { "enum": ["tool", "powershellModule"] },
         "minimumVersion": { "type": "string" },
+        "condition": { "$ref": "#/$defs/requirementCondition" },
         "required": { "type": "boolean" },
         "installProvider": { "enum": ["azdTool", "psResource", "manual"] },
         "installId": { "type": "string" },
@@ -78,6 +88,7 @@
       "properties": {
         "id": { "enum": ["azd", "azureCli", "azPowerShell", "graphPowerShell"] },
         "name": { "type": "string" },
+        "condition": { "$ref": "#/$defs/requirementCondition" },
         "required": { "type": "boolean" },
         "reason": { "type": "string" },
         "scopes": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
@@ -169,6 +180,7 @@
         },
         "name": { "type": "string" },
         "provider": { "enum": ["azure", "graph"] },
+        "condition": { "$ref": "#/$defs/requirementCondition" },
         "required": { "type": "boolean" },
         "description": { "type": "string" }
       },

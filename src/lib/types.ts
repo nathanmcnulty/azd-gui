@@ -59,6 +59,7 @@ export interface RecommendationProfile {
 }
 
 export interface Prerequisite {
+  condition?: RequirementCondition;
   id: string;
   name: string;
   kind: "tool" | "powershellModule";
@@ -67,6 +68,11 @@ export interface Prerequisite {
   installProvider?: "azdTool" | "psResource" | "manual";
   installId?: string;
   documentationUrl?: string;
+}
+
+export interface RequirementCondition {
+  field: string;
+  equals: boolean;
 }
 
 export interface ToolStatus extends Prerequisite {
@@ -98,6 +104,7 @@ export interface ToolInstallApprovalGrant {
 }
 
 export interface ConnectionRequirement {
+  condition?: RequirementCondition;
   id: "azd" | "azureCli" | "azPowerShell" | "graphPowerShell";
   name: string;
   required: boolean;
@@ -206,6 +213,7 @@ export interface ConfigurationField {
 }
 
 export interface PermissionCheck {
+  condition?: RequirementCondition;
   id:
     | "azure-subscription-access"
     | "graph-directory-read"

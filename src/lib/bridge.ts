@@ -202,17 +202,23 @@ export async function refreshTools(): Promise<ToolStatus[]> {
 }
 
 export async function checkTemplatePrerequisites(
-  manifest: TemplateManifest
+  manifest: TemplateManifest,
+  environmentValues: Record<string, string> = {}
 ): Promise<ToolStatus[]> {
   if (!isTauri()) {
-    return manifest.prerequisites.map((prerequisite) => {
+    return manifest.prerequisites.filter((prerequisite) => {
+      if (!prerequisite.condition) return true;
+      const field = manifest.configuration.groups.flatMap((group) => group.fields).find((field) => field.id === prerequisite.condition!.field);
+      const value = field ? environmentValues[field.environmentVariable] ?? String(field.default) : "invalid";
+      return !["true", "false"].includes(value) || value === String(prerequisite.condition.equals);
+    }).map((prerequisite) => {
       const tool = mockBootstrap.tools.find((candidate) => candidate.id === prerequisite.id);
       return tool
         ? { ...tool, ...prerequisite }
         : ({ ...prerequisite, state: "unknown", canInstall: false } as ToolStatus);
     });
   }
-  return invoke<ToolStatus[]>("check_template_prerequisites", { manifest });
+  return invoke<ToolStatus[]>("check_template_prerequisites", { manifest, environmentValues });
 }
 
 export async function listProjects(): Promise<ProjectSummary[]> {

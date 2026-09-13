@@ -242,8 +242,12 @@ async fn check_tools() -> AppResult<Vec<ToolStatus>> {
 }
 
 #[tauri::command]
-async fn check_template_prerequisites(manifest: TemplateManifest) -> AppResult<Vec<ToolStatus>> {
-    Ok(tools::evaluate_manifest_prerequisites(&manifest).await)
+async fn check_template_prerequisites(
+    manifest: TemplateManifest,
+    environment_values: Option<HashMap<String, String>>,
+) -> AppResult<Vec<ToolStatus>> {
+    manifest::validate(&manifest)?;
+    tools::evaluate_manifest_prerequisites(&manifest, &environment_values.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -385,7 +389,13 @@ async fn start_azd_operation(
         if let Some(project) = &project {
             if let Some(snapshot) = resolve_project_template(&state.database, project)? {
                 if let Some(manifest) = &snapshot.entry.manifest {
-                    tools::ensure_manifest_requirements(manifest).await?;
+                    let requirement_values = registered_requirement_environment_values(
+                        manifest,
+                        &canonical,
+                        environment,
+                    )
+                    .await?;
+                    tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
                 }
             }
         }
@@ -735,6 +745,29 @@ fn project_configuration_fields(
                 .collect()
         })
         .unwrap_or_default())
+}
+
+async fn registered_requirement_environment_values(
+    manifest: &TemplateManifest,
+    project_path: &Path,
+    environment: &str,
+) -> AppResult<HashMap<String, String>> {
+    let controllers = manifest::requirement_controller_variables(manifest)?;
+    if controllers.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Read once immediately before spawning. This preserves the distinction
+    // between a missing key (manifest default) and an explicitly empty value
+    // (invalid), without returning other environment values to the renderer.
+    let persisted = azd::environment_get_values(project_path, environment).await?;
+    Ok(controllers
+        .into_iter()
+        .filter_map(|environment_variable| {
+            persisted
+                .get(&environment_variable)
+                .map(|value| (environment_variable, value.clone()))
+        })
+        .collect())
 }
 
 #[tauri::command]

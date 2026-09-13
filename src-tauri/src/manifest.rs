@@ -1,7 +1,8 @@
 use crate::{
     error::{AppError, AppResult},
     models::{
-        CatalogEntry, ConfigurationField, FieldCondition, ProjectTemplateSnapshot, TemplateManifest,
+        CatalogEntry, ConfigurationField, FieldCondition, Prerequisite, ProjectTemplateSnapshot,
+        TemplateManifest,
     },
     permissions,
 };
@@ -126,6 +127,15 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
         for field in &group.fields {
             validate_condition(field.condition.as_ref(), &fields)?;
         }
+    }
+    for prerequisite in &manifest.prerequisites {
+        validate_requirement_condition(prerequisite.condition.as_ref(), manifest)?;
+    }
+    for connection in &manifest.connections {
+        validate_requirement_condition(connection.condition.as_ref(), manifest)?;
+    }
+    for check in &manifest.permission_checks {
+        validate_requirement_condition(check.condition.as_ref(), manifest)?;
     }
     let mut profiles = HashSet::new();
     for profile in &manifest.recommendation_profiles {
@@ -262,6 +272,199 @@ fn validate_condition(
     Ok(())
 }
 
+fn requirement_controller<'a>(
+    manifest: &'a TemplateManifest,
+    condition: &FieldCondition,
+) -> AppResult<&'a ConfigurationField> {
+    for group in &manifest.configuration.groups {
+        if let Some(field) = group
+            .fields
+            .iter()
+            .find(|field| field.id == condition.field)
+        {
+            if group.condition.is_some() || field.condition.is_some() {
+                return Err(AppError::Invalid(
+                    "Requirement conditions cannot depend on conditional controller fields.".into(),
+                ));
+            }
+            return Ok(field);
+        }
+    }
+    Err(AppError::Invalid(
+        "A requirement condition references an undeclared field.".into(),
+    ))
+}
+
+fn validate_requirement_condition(
+    condition: Option<&FieldCondition>,
+    manifest: &TemplateManifest,
+) -> AppResult<()> {
+    let Some(condition) = condition else {
+        return Ok(());
+    };
+    if condition.not_equals.is_some() || condition.includes.is_some() {
+        return Err(AppError::Invalid(
+            "Requirement conditions support only equals comparisons.".into(),
+        ));
+    }
+    condition
+        .equals
+        .as_ref()
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            AppError::Invalid("Requirement conditions must compare a boolean equals value.".into())
+        })?;
+    let field = requirement_controller(manifest, condition)?;
+    if field.sensitive || field.field_type == "secret" || field.field_type != "boolean" {
+        return Err(AppError::Invalid(
+            "Requirement conditions must depend on non-sensitive boolean fields.".into(),
+        ));
+    }
+    if !matches!(field.default, Some(serde_json::Value::Bool(_))) {
+        return Err(AppError::Invalid(
+            "Requirement controller fields must declare a boolean default.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn requirement_condition_matches(
+    manifest: &TemplateManifest,
+    condition: Option<&FieldCondition>,
+    environment_values: &HashMap<String, String>,
+) -> AppResult<bool> {
+    let Some(condition) = condition else {
+        return Ok(true);
+    };
+    let field = requirement_controller(manifest, condition)?;
+    let default = field
+        .default
+        .as_ref()
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            AppError::Invalid(
+                "Requirement controller fields must declare a boolean default.".into(),
+            )
+        })?;
+    let value = match environment_values.get(&field.environment_variable) {
+        Some(value) => match value.as_str() {
+            "true" => true,
+            "false" => false,
+            _ => {
+                return Err(AppError::Invalid(format!(
+                    "Requirement controller value must be true or false: {}",
+                    field.environment_variable
+                )))
+            }
+        },
+        None => default,
+    };
+    let expected = condition
+        .equals
+        .as_ref()
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| {
+            AppError::Invalid("Requirement conditions must compare a boolean equals value.".into())
+        })?;
+    Ok(value == expected)
+}
+
+fn validate_requirement_value_keys(
+    manifest: &TemplateManifest,
+    environment_values: &HashMap<String, String>,
+) -> AppResult<()> {
+    validate(manifest)?;
+    let mut controllers = HashSet::new();
+    for condition in manifest
+        .prerequisites
+        .iter()
+        .filter_map(|requirement| requirement.condition.as_ref())
+        .chain(
+            manifest
+                .connections
+                .iter()
+                .filter_map(|requirement| requirement.condition.as_ref()),
+        )
+        .chain(
+            manifest
+                .permission_checks
+                .iter()
+                .filter_map(|requirement| requirement.condition.as_ref()),
+        )
+    {
+        validate_requirement_condition(Some(condition), manifest)?;
+        // Resolve every controller here, including controllers used only by a
+        // connection or permission check. Tool evaluation must not make a
+        // malformed value appear harmless just because no prerequisite uses it.
+        requirement_condition_matches(manifest, Some(condition), environment_values)?;
+        controllers.insert(
+            requirement_controller(manifest, condition)?
+                .environment_variable
+                .as_str(),
+        );
+    }
+    if environment_values
+        .keys()
+        .any(|key| !controllers.contains(key.as_str()))
+    {
+        return Err(AppError::Invalid(
+            "Only declared requirement-controller environment values may be evaluated.".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn effective_prerequisites(
+    manifest: &TemplateManifest,
+    environment_values: &HashMap<String, String>,
+) -> AppResult<Vec<Prerequisite>> {
+    validate_requirement_value_keys(manifest, environment_values)?;
+    let mut effective = Vec::new();
+    for requirement in &manifest.prerequisites {
+        if requirement_condition_matches(
+            manifest,
+            requirement.condition.as_ref(),
+            environment_values,
+        )? {
+            effective.push(requirement.clone());
+        }
+    }
+    Ok(effective)
+}
+
+pub(crate) fn requirement_controller_variables(
+    manifest: &TemplateManifest,
+) -> AppResult<Vec<String>> {
+    let mut variables = HashSet::new();
+    for condition in manifest
+        .prerequisites
+        .iter()
+        .filter_map(|requirement| requirement.condition.as_ref())
+        .chain(
+            manifest
+                .connections
+                .iter()
+                .filter_map(|requirement| requirement.condition.as_ref()),
+        )
+        .chain(
+            manifest
+                .permission_checks
+                .iter()
+                .filter_map(|requirement| requirement.condition.as_ref()),
+        )
+    {
+        validate_requirement_condition(Some(condition), manifest)?;
+        variables.insert(
+            requirement_controller(manifest, condition)?
+                .environment_variable
+                .clone(),
+        );
+    }
+    let mut variables = variables.into_iter().collect::<Vec<_>>();
+    variables.sort();
+    Ok(variables)
+}
+
 fn digest(entry: &CatalogEntry) -> AppResult<String> {
     let bytes = serde_json::to_vec(entry)?;
     if bytes.len() > MAX_SNAPSHOT_BYTES {
@@ -319,11 +522,153 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn conditional_manifest() -> TemplateManifest {
+        serde_json::from_value(json!({
+            "schemaVersion": "1.0",
+            "configuration": {
+                "groups": [{
+                    "id": "options",
+                    "title": "Options",
+                    "fields": [{
+                        "id": "includeExchange",
+                        "environmentVariable": "INCLUDE_EXCHANGE",
+                        "label": "Include Exchange",
+                        "type": "boolean",
+                        "default": true
+                    }]
+                }]
+            },
+            "prerequisites": [{
+                "id": "exchange-online-management",
+                "name": "ExchangeOnlineManagement",
+                "kind": "powershellModule",
+                "required": true,
+                "installProvider": "manual",
+                "installId": "ExchangeOnlineManagement",
+                "condition": {"field": "includeExchange", "equals": true}
+            }],
+            "connections": [{
+                "id": "exchange-connection",
+                "name": "Exchange connection",
+                "required": true,
+                "reason": "Runs Exchange checks.",
+                "condition": {"field": "includeExchange", "equals": true}
+            }],
+            "permissionChecks": [{
+                "id": "graph-directory-read",
+                "name": "Directory read",
+                "provider": "graph",
+                "required": true,
+                "description": "Reads directory objects.",
+                "condition": {"field": "includeExchange", "equals": true}
+            }]
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn condition_roundtrip_preserves_only_the_declared_comparison() {
         let value = json!({"field":"components", "includes":"worker"});
         let condition: FieldCondition = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(condition).unwrap(), value);
+    }
+
+    #[test]
+    fn prerequisite_conditions_use_defaults_and_explicit_values() {
+        let manifest = conditional_manifest();
+        validate(&manifest).unwrap();
+        assert_eq!(
+            effective_prerequisites(&manifest, &HashMap::new())
+                .unwrap()
+                .len(),
+            1
+        );
+        let disabled = HashMap::from([("INCLUDE_EXCHANGE".into(), "false".into())]);
+        assert!(effective_prerequisites(&manifest, &disabled)
+            .unwrap()
+            .is_empty());
+    }
+    #[test]
+    fn requirement_controller_values_fail_closed_even_without_a_prerequisite() {
+        let mut manifest = conditional_manifest();
+        manifest.prerequisites.clear();
+        let invalid = HashMap::from([("INCLUDE_EXCHANGE".into(), "TRUE".into())]);
+
+        let error = effective_prerequisites(&manifest, &invalid)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("true or false"));
+        assert!(effective_prerequisites(
+            &manifest,
+            &HashMap::from([("UNDECLARED".into(), "true".into())])
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_or_ambiguous_requirement_conditions() {
+        let mut manifest = conditional_manifest();
+        manifest.prerequisites[0]
+            .condition
+            .as_mut()
+            .unwrap()
+            .not_equals = Some(json!(false));
+        assert!(validate(&manifest).is_err());
+
+        let mut manifest = conditional_manifest();
+        manifest.configuration.groups[0].condition = Some(FieldCondition {
+            field: "includeExchange".into(),
+            equals: Some(json!(true)),
+            not_equals: None,
+            includes: None,
+        });
+        assert!(validate(&manifest).is_err());
+
+        let mut manifest = conditional_manifest();
+        manifest.configuration.groups[0].fields[0].condition = Some(FieldCondition {
+            field: "includeExchange".into(),
+            equals: Some(json!(true)),
+            not_equals: None,
+            includes: None,
+        });
+        assert!(validate(&manifest).is_err());
+
+        let mut manifest = conditional_manifest();
+        manifest.configuration.groups[0].fields[0].default = None;
+        assert!(validate(&manifest).is_err());
+
+        let mut manifest = conditional_manifest();
+        manifest.configuration.groups[0].fields[0].sensitive = true;
+        assert!(validate(&manifest).is_err());
+    }
+
+    #[test]
+    fn absent_requirement_conditions_preserve_legacy_snapshot_contracts() {
+        let entry = crate::catalog::entry_by_id("myworkid").unwrap();
+        let serialized = serde_json::to_value(&entry).unwrap();
+        assert!(serialized
+            .pointer("/manifest/prerequisites/0/condition")
+            .is_none());
+        assert!(serialized
+            .pointer("/manifest/connections/0/condition")
+            .is_none());
+        assert!(serialized
+            .pointer("/manifest/permissionChecks/0/condition")
+            .is_none());
+
+        let legacy: CatalogEntry = serde_json::from_value(serialized).unwrap();
+        assert_eq!(digest(&entry).unwrap(), digest(&legacy).unwrap());
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        let value = serde_json::to_value(&snapshot).unwrap();
+        for requirements in ["prerequisites", "connections", "permissionChecks"] {
+            for requirement in value["entry"]["manifest"][requirements].as_array().unwrap() {
+                assert!(requirement.get("condition").is_none());
+            }
+        }
+        let reopened: ProjectTemplateSnapshot = serde_json::from_value(value).unwrap();
+        reopened
+            .validate_binding(Some(&snapshot.entry.id), Some(&snapshot.entry.commit))
+            .unwrap();
     }
 
     #[test]

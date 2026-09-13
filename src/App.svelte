@@ -43,6 +43,7 @@
     setProjectEnvironmentValues
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
+  import { effectiveRequirements, requirementEnvironmentValues } from "./lib/requirements";
   import type {
     AzureDiscovery,
     AzdProjectState,
@@ -283,10 +284,12 @@
   $: selectedManifest = selectedEntry?.manifest;
   $: recommendationProfiles = selectedManifest?.recommendationProfiles ?? [];
   $: firstConfigurationPageId = wizardPlan?.pages.find((page) => page.kind === "configuration")?.id;
-  $: selectedPrerequisites = selectedManifest?.prerequisites ?? [];
+  $: selectedPrerequisites = selectedManifest ? effectiveRequirements(selectedManifest.prerequisites, selectedManifest, wizardValues) : [];
+  $: requirementValues = selectedManifest ? requirementEnvironmentValues(selectedManifest, wizardValues) : {};
   $: selectedPrerequisiteKey = JSON.stringify({
     prerequisites: selectedPrerequisites,
-    minimumAzdVersion: selectedManifest?.minimumAzdVersion
+    minimumAzdVersion: selectedManifest?.minimumAzdVersion,
+    requirementValues
   });
   $: pendingRequiredTools = [
     ...selectedPrerequisites,
@@ -311,7 +314,7 @@
     evaluatedRequiredTools = pendingRequiredTools.length ? null : [];
     const requestedKey = selectedPrerequisiteKey;
     if (selectedManifest) {
-      void checkTemplatePrerequisites(selectedManifest).then(
+      void checkTemplatePrerequisites(selectedManifest, requirementValues).then(
         (statuses) => {
           if (prerequisiteEvaluationKey === requestedKey) evaluatedRequiredTools = statuses;
         },
@@ -327,7 +330,7 @@
   }
   $: requiredTools = evaluatedRequiredTools ?? pendingRequiredTools;
   $: requiredConnections =
-    selectedEntry?.manifest?.connections.map((required) => {
+    (selectedManifest ? effectiveRequirements(selectedManifest.connections, selectedManifest, wizardValues) : []).map((required) => {
       const status = data.connections.find((connection) => connection.id === required.id);
       return status
         ? { ...status, ...required }
@@ -901,11 +904,13 @@
 
   async function connectRequired() {
     const target = connectionTarget ?? undefined;
+    const requestedConfiguration = JSON.stringify([selectedEntry, wizardValues]);
     for (const connection of requiredConnections.filter(
       (item) =>
-        !connectionMeetsRequirements(item) ||
-        Boolean(target && !connectionMeetsTarget(item, target))
+        item.required && (!connectionMeetsRequirements(item) ||
+        Boolean(target && !connectionMeetsTarget(item, target)))
     )) {
+      if (requestedConfiguration !== JSON.stringify([selectedEntry, wizardValues])) break;
       await connect(connection, target);
     }
   }
@@ -1070,7 +1075,9 @@
   async function runRegisteredPermissionChecks(): Promise<boolean> {
     if (!selectedEntry) return false;
     if (permissionChecksRunning) return false;
-    const checks = selectedEntry.manifest?.permissionChecks ?? [];
+    const manifest = selectedEntry.manifest;
+    const checks = manifest ? effectiveRequirements(manifest.permissionChecks ?? [], manifest, wizardValues) : [];
+    const requestedConfiguration = JSON.stringify([selectedEntry, wizardValues]);
     permissionCheckResults = [];
     if (checks.length === 0) return true;
     permissionChecksRunning = true;
@@ -1088,17 +1095,22 @@
       }
       const requiredGraphScopes = Array.from(
         new Set(
-          (selectedEntry.manifest?.connections ?? [])
+          requiredConnections
             .filter((connection) => connection.id === "graphPowerShell")
             .flatMap((connection) => connection.scopes ?? [])
         )
       );
-      permissionCheckResults = await runPermissionChecks({
+      const results = await runPermissionChecks({
         checks,
         tenantId: permissionTenantId,
         subscriptionId: permissionSubscriptionId,
         requiredGraphScopes
       });
+      if (requestedConfiguration !== JSON.stringify([selectedEntry, wizardValues])) {
+        addSystemLog("Configuration changed during permission checks. Run checks again for the current choices.", "warning");
+        return false;
+      }
+      permissionCheckResults = results;
       for (const result of permissionCheckResults) {
         addSystemLog(
           `${result.name}: ${result.detail}`,

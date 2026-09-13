@@ -2,6 +2,20 @@
 
 Keep infrastructure, hooks, and optional-component behavior in the template. An `azd-gui.json` describes inputs and required tools; it does not supply executable commands or authorize deployment. The schema is [azd-gui.schema.json](../schemas/azd-gui.schema.json).
 
+## Optional feature requirements
+
+Prerequisites, connections, and registered permission checks can declare a boolean condition:
+
+```json
+"condition": { "field": "includeExchange", "equals": true }
+```
+
+The controller must be a non-sensitive boolean configuration field with a boolean default, outside conditional fields/groups. Only boolean equality is supported for requirements. Feature groups containing these controllers appear before tools and connections so administrators can make the choices that determine readiness. Other configuration groups retain their normal placement after environment selection.
+
+The GUI recalculates tools, connections, and read-only checks after edits or profile application, invalidates review/preview, and ignores stale check results. Native preparation uses the submitted environment values; existing-project lifecycle commands re-read the selected environment before checking required tools. Values must be literal `true` or `false`; absent values use the declared default. This does not freeze a mutable project environment against external edits between checking and execution.
+
+Keep requirements needed by baseline setup unconditional. The Maester contract gates its host `ExchangeOnlineManagement` module on Exchange coverage and a dashboard-specific Graph reachability check on the dashboard option. ARM and Graph baseline access remain required even for the Minimal pilot profile. Read-only checks do not prove write, role-assignment, or consent authority. Templates must implement the same feature choices themselves.
+
 ## Recommendation profiles
 
 Profiles are optional starting points that an administrator explicitly applies. Keep existing template defaults unchanged. Explain permission, resource, and operational consequences in each profile description; do not claim that a smaller deployment needs no administrative permissions.

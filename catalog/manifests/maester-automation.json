@@ -30,6 +30,15 @@
       "required": true,
       "installProvider": "manual",
       "documentationUrl": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
+    },
+    {
+      "id": "exchange-online-management",
+      "name": "ExchangeOnlineManagement",
+      "kind": "powershellModule",
+      "required": true,
+      "condition": { "field": "includeExchange", "equals": true },
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/powershell/exchange/exchange-online-powershell-v2"
     }
   ],
   "connections": [
@@ -185,10 +194,11 @@
     },
     {
       "id": "graph-directory-read",
-      "name": "Microsoft Graph directory access",
+      "name": "Dashboard directory access",
       "provider": "graph",
       "required": true,
-      "description": "Azure CLI can query Microsoft Graph for the selected tenant before setup hooks run."
+      "condition": { "field": "includeWebApp", "equals": true },
+      "description": "Check Graph directory reachability for dashboard setup. This read does not prove application creation or delegated consent authority."
     }
   ]
 }

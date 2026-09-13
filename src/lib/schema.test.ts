@@ -52,6 +52,16 @@ describe("catalog contracts", () => {
     expect(validateManifest(manifest)).toBe(false);
   });
 
+  it("restricts requirement conditions to explicit boolean equality", () => {
+    const manifest = json("catalog/manifests/maester-automation.json");
+    manifest.prerequisites[0].condition = { field: "includeExchange", equals: false };
+    expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    manifest.prerequisites[0].condition.equals = "false";
+    expect(validateManifest(manifest)).toBe(false);
+    manifest.prerequisites[0].condition = { field: "includeExchange", notEquals: true };
+    expect(validateManifest(manifest)).toBe(false);
+  });
+
   it("rejects unregistered and provider-mismatched permission checks", () => {
     const manifest = json("catalog/manifests/entra-health-monitoring.json");
     manifest.permissionChecks[0].id = "run-manifest-command";

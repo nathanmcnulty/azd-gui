@@ -122,6 +122,8 @@ pub struct Prerequisite {
     pub install_id: Option<String>,
     #[serde(default)]
     pub documentation_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<FieldCondition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +187,8 @@ pub struct ConnectionRequirement {
     #[serde(default)]
     pub scopes: Vec<String>,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<FieldCondition>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -347,6 +351,8 @@ pub struct PermissionCheck {
     pub provider: String,
     pub required: bool,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<FieldCondition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

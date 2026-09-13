@@ -6,7 +6,7 @@ use crate::{
 };
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use std::{io::Write, path::Path, time::Duration};
+use std::{collections::HashMap, io::Write, path::Path, time::Duration};
 
 async fn command_stdout(spec: CommandSpec) -> AppResult<String> {
     let output = capture(spec, Duration::from_secs(20)).await?;
@@ -89,6 +89,23 @@ fn environment_get_value_command(
     .cwd(project))
 }
 
+fn environment_get_values_command(project: &Path, environment: &str) -> AppResult<CommandSpec> {
+    validate_environment_name(environment)?;
+    Ok(CommandSpec::new(
+        Executable::Azd,
+        [
+            "env",
+            "get-values",
+            "--environment",
+            environment,
+            "--output",
+            "json",
+            "--no-prompt",
+        ],
+    )
+    .cwd(project))
+}
+
 fn environment_set_file_command(
     project: &Path,
     environment: &str,
@@ -161,6 +178,24 @@ pub async fn environment_get_value(
             .trim_end()
             .to_string(),
     )
+}
+
+pub async fn environment_get_values(
+    project: &Path,
+    environment: &str,
+) -> AppResult<HashMap<String, String>> {
+    let output = capture(
+        environment_get_values_command(project, environment)?,
+        Duration::from_secs(20),
+    )
+    .await?;
+    if !output.success {
+        return Err(AppError::Command(
+            "azd could not read environment values.".into(),
+        ));
+    }
+    serde_json::from_str(&output.stdout)
+        .map_err(|_| AppError::Invalid("azd returned invalid environment values.".into()))
 }
 
 pub async fn environment_set_values(
@@ -248,8 +283,8 @@ pub fn lifecycle_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        environment_get_value_command, environment_new_command, environment_select_command,
-        environment_set_file_command, json_command, lifecycle_command,
+        environment_get_value_command, environment_get_values_command, environment_new_command,
+        environment_select_command, environment_set_file_command, json_command, lifecycle_command,
     };
     use crate::command_runner::{CommandSpec, Executable};
     use crate::models::ProjectEnvironment;
@@ -328,6 +363,20 @@ mod tests {
                 "MAESTER_SCHEDULE",
                 "--environment",
                 "staging",
+                "--no-prompt"
+            ]
+        );
+        assert_eq!(
+            environment_get_values_command(&project, "staging")
+                .unwrap()
+                .args,
+            [
+                "env",
+                "get-values",
+                "--environment",
+                "staging",
+                "--output",
+                "json",
                 "--no-prompt"
             ]
         );

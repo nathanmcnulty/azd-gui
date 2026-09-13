@@ -11,7 +11,7 @@ use crate::{
 };
 use chrono::Utc;
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -193,7 +193,58 @@ fn environment_assignments(
             assignments.insert(environment_variable.clone(), value);
         }
     }
+    if let Some(manifest) = entry.and_then(|entry| entry.manifest.as_ref()) {
+        let controllers = crate::manifest::requirement_controller_variables(manifest)?;
+        for field in manifest
+            .configuration
+            .groups
+            .iter()
+            .flat_map(|group| &group.fields)
+        {
+            if controllers.contains(&field.environment_variable) {
+                // Persist the same default used by readiness even when the renderer omits it.
+                // In an existing project, omission must not retain an older, different choice.
+                let default = field
+                    .default
+                    .as_ref()
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        AppError::Invalid("Requirement controllers need boolean defaults.".into())
+                    })?;
+                assignments
+                    .entry(field.environment_variable.clone())
+                    .or_insert_with(|| default.to_string());
+            }
+        }
+    }
     Ok(assignments.into_iter().collect())
+}
+
+fn requirement_environment_values(
+    manifest: &crate::models::TemplateManifest,
+    environment_values: &HashMap<String, serde_json::Value>,
+) -> AppResult<HashMap<String, String>> {
+    let mut resolved = HashMap::new();
+    for environment_variable in crate::manifest::requirement_controller_variables(manifest)? {
+        let Some(value) = environment_values.get(&environment_variable) else {
+            continue;
+        };
+        match value {
+            serde_json::Value::Null => {}
+            serde_json::Value::Bool(value) => {
+                resolved.insert(environment_variable, value.to_string());
+            }
+            serde_json::Value::String(value) => {
+                resolved.insert(environment_variable, value.clone());
+            }
+            _ => {
+                return Err(AppError::Invalid(
+                    "Requirement controller values must be booleans or boolean strings.".into(),
+                ))
+            }
+        }
+    }
+    Ok(resolved)
 }
 
 async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppResult<String> {
@@ -472,7 +523,9 @@ pub async fn prepare(
         .await?,
     );
     if let Some(manifest) = entry.as_ref().and_then(|entry| entry.manifest.as_ref()) {
-        crate::tools::ensure_manifest_requirements(manifest).await?;
+        let requirement_values =
+            requirement_environment_values(manifest, &request.environment_values)?;
+        crate::tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
     }
     let snapshot =
         ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;
@@ -716,6 +769,35 @@ mod tests {
                 ),
             ]),
         }
+    }
+
+    #[test]
+    fn preparation_persists_the_controller_defaults_used_by_readiness() {
+        let mut request = myworkid_request();
+        request.environment_values.clear();
+        let entry = entry_by_id("maester-automation").unwrap();
+        let values: HashMap<_, _> = environment_assignments(&request, Some(&entry))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(values["INCLUDE_EXCHANGE"], "true");
+        assert_eq!(values["INCLUDE_WEB_APP"], "false");
+        request
+            .environment_values
+            .insert("INCLUDE_EXCHANGE".into(), json!(false));
+        let values: HashMap<_, _> = environment_assignments(&request, Some(&entry))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(values["INCLUDE_EXCHANGE"], "false");
+        request
+            .environment_values
+            .insert("INCLUDE_EXCHANGE".into(), json!(null));
+        let values: HashMap<_, _> = environment_assignments(&request, Some(&entry))
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(values["INCLUDE_EXCHANGE"], "true");
     }
 
     #[tokio::test]

@@ -799,6 +799,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
                 "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
                     .into(),
             ),
+            condition: None,
         }],
         connections: vec![ConnectionRequirement {
             id: "azd".into(),
@@ -806,6 +807,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
             required: true,
             scopes: vec![],
             reason: "Deploy the local azd project.".into(),
+            condition: None,
         }],
         configuration: Configuration::default(),
         recommendation_profiles: vec![],
