@@ -659,9 +659,16 @@ mod tests {
         let legacy: CatalogEntry = serde_json::from_value(serialized).unwrap();
         assert_eq!(digest(&entry).unwrap(), digest(&legacy).unwrap());
         let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
-        assert!(!serde_json::to_string(&snapshot)
-            .unwrap()
-            .contains("\"condition\":null"));
+        let value = serde_json::to_value(&snapshot).unwrap();
+        for requirements in ["prerequisites", "connections", "permissionChecks"] {
+            for requirement in value["entry"]["manifest"][requirements].as_array().unwrap() {
+                assert!(requirement.get("condition").is_none());
+            }
+        }
+        let reopened: ProjectTemplateSnapshot = serde_json::from_value(value).unwrap();
+        reopened
+            .validate_binding(Some(&snapshot.entry.id), Some(&snapshot.entry.commit))
+            .unwrap();
     }
 
     #[test]
