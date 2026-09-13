@@ -44,7 +44,7 @@
       "name": "Azure CLI",
       "required": true,
       "scopes": ["https://management.azure.com/.default", "https://graph.microsoft.com/.default"],
-      "reason": "Run the template's ARM, Microsoft Graph, role assignment, and cleanup hooks."
+      "reason": "Run interactive ARM, Graph, Exchange, Entra role, Azure RBAC, and cleanup hooks. Redeployment can remove an existing Automation Account delete lock and replace all its job schedules. Read checks do not prove authority to make these changes."
     }
   ],
   "configuration": {
@@ -58,6 +58,7 @@
             "id": "includeWebApp",
             "environmentVariable": "INCLUDE_WEB_APP",
             "label": "Include secured web dashboard",
+            "help": "Creates or updates an Entra application and service principal, including tenant-wide delegated Graph consent. Access is restricted to your selected security group.",
             "type": "boolean",
             "default": false
           },
@@ -65,6 +66,7 @@
             "id": "includeExchange",
             "environmentVariable": "INCLUDE_EXCHANGE",
             "label": "Include Exchange checks",
+            "help": "Grants Exchange.ManageAsApp and attempts to assign the Exchange View-Only Configuration role.",
             "type": "boolean",
             "default": true
           },
@@ -72,6 +74,7 @@
             "id": "includeTeams",
             "environmentVariable": "INCLUDE_TEAMS",
             "label": "Include Teams checks",
+            "help": "Assigns the Entra Teams Reader role to the automation identity.",
             "type": "boolean",
             "default": true
           },
@@ -79,6 +82,7 @@
             "id": "includeAzure",
             "environmentVariable": "INCLUDE_AZURE",
             "label": "Include Azure checks",
+            "help": "Assigns Azure Reader to the automation identity at each configured scope, or the selected subscription when scopes are blank.",
             "type": "boolean",
             "default": true
           }
@@ -116,7 +120,7 @@
             "environmentVariable": "MAIL_RECIPIENT",
             "label": "Mail recipient",
             "type": "text",
-            "help": "Optional recipient for Maester email notifications."
+            "help": "Optional recipient for Maester email notifications. Providing a recipient also grants Microsoft Graph Mail.Send to the automation identity."
           }
         ]
       },
@@ -128,6 +132,7 @@
             "id": "permissionProfile",
             "environmentVariable": "PERMISSION_PROFILE",
             "label": "Permission profile",
+            "help": "Minimal grants eight baseline Graph application read roles. Extended adds eleven application roles for device, security, SharePoint, and hunting coverage. Review these identity permissions before deployment.",
             "type": "select",
             "required": true,
             "default": "Extended",
@@ -149,6 +154,13 @@
     ]
   },
   "permissionChecks": [
+    {
+      "id": "entra-directory-access",
+      "name": "Directory write authority requires operator review",
+      "provider": "graph",
+      "required": true,
+      "description": "Directory read access cannot prove authority to assign application permissions, Entra roles, or delegated consent. Review the privileges required by your selected features before running the interactive hooks."
+    },
     {
       "id": "azure-subscription-access",
       "name": "Azure subscription access",

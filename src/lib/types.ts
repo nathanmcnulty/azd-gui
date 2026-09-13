@@ -287,6 +287,11 @@ export interface ProjectSummary {
   state: "ready" | "attention" | "deploying";
 }
 
+export interface ProjectTemplateSnapshot {
+  entry: CatalogEntry;
+  digest: string;
+}
+
 export interface ProjectEnvironment {
   name: string;
   dotEnvPath: string;
@@ -338,6 +343,7 @@ export interface PrepareDeploymentRequest {
   executionApprovalToken: string;
   sourcePath?: string;
   sourceRevision?: string;
+  sourceBinding?: LocalSourceBinding;
   destination: string;
   environment: string;
   tenant?: string;
@@ -353,6 +359,7 @@ export interface ExecutionApprovalRequest {
   environment: string;
   templateId: string;
   revision?: string;
+  sourceBinding?: LocalSourceBinding;
 }
 
 export interface ExecutionApprovalGrant {
@@ -363,10 +370,16 @@ export interface ExecutionApprovalGrant {
 export interface TemplateInspection {
   entry: CatalogEntry;
   sourcePath?: string;
+  sourceBinding?: LocalSourceBinding;
   azureYamlFound: boolean;
   manifestSource: "catalog" | "embedded" | "inferred";
   interactiveHooks: boolean;
   warnings: string[];
+}
+
+export interface LocalSourceBinding {
+  sourcePath: string;
+  contentDigest: string;
 }
 
 export interface ExternalTerminalLaunch {

@@ -215,6 +215,15 @@ pub fn lifecycle_command(
     project: &Path,
     environment: Option<&str>,
 ) -> AppResult<CommandSpec> {
+    let requires_environment = matches!(action, "up" | "provision" | "preview" | "deploy" | "down");
+    if requires_environment {
+        let environment = environment.ok_or_else(|| {
+            AppError::Invalid("A lifecycle action requires an explicit environment.".into())
+        })?;
+        validate_environment_name(environment)?;
+    } else if let Some(environment) = environment {
+        validate_environment_name(environment)?;
+    }
     let mut args: Vec<String> = match action {
         "up" => vec!["up".into()],
         "provision" => vec!["provision".into()],
@@ -264,6 +273,18 @@ mod tests {
         );
 
         assert!(lifecycle_command("arbitrary-shell", Path::new("C:\\"), None).is_err());
+    }
+
+    #[test]
+    fn mutating_lifecycle_commands_require_a_valid_explicit_environment() {
+        for action in ["preview", "up", "provision", "deploy", "down"] {
+            assert!(lifecycle_command(action, Path::new("C:\\"), None).is_err());
+            assert!(
+                lifecycle_command(action, Path::new("C:\\"), Some("unsafe environment")).is_err()
+            );
+        }
+
+        assert!(lifecycle_command("refresh", Path::new("C:\\"), None).is_ok());
     }
 
     #[test]

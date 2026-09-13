@@ -1,13 +1,16 @@
 use crate::{
     catalog,
     error::{AppError, AppResult},
-    models::{AppSettings, CatalogSource, CatalogSourceSummary, OperationEvent, ProjectSummary},
+    models::{
+        AppSettings, CatalogSource, CatalogSourceSummary, OperationEvent, ProjectSummary,
+        ProjectTemplateSnapshot,
+    },
     redaction::redact,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> AppResult<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -52,6 +55,10 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
             trusted INTEGER NOT NULL DEFAULT 0,
             pinned_revision TEXT,
             accepted_catalog_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS project_templates (
+            project_path TEXT PRIMARY KEY REFERENCES projects(path) ON DELETE CASCADE,
+            snapshot_json TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS operation_history (
             id TEXT PRIMARY KEY,
@@ -136,6 +143,31 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
     }
 
+    pub fn project_by_path(&self, path: &str) -> AppResult<Option<ProjectSummary>> {
+        let canonical = std::fs::canonicalize(path).ok();
+        let matches = self
+            .projects()?
+            .into_iter()
+            .filter(|project| {
+                project.path == path
+                    || canonical.as_ref().is_some_and(|canonical| {
+                        std::fs::canonicalize(&project.path).ok().as_ref() == Some(canonical)
+                    })
+            })
+            .collect::<Vec<_>>();
+        if matches.len() > 1 {
+            return Err(AppError::Invalid("Multiple registered projects resolve to this folder. Resolve duplicate registrations before continuing.".into()));
+        }
+        Ok(matches.into_iter().next())
+    }
+
+    fn stored_project_path(&self, path: &str) -> AppResult<String> {
+        Ok(self
+            .project_by_path(path)?
+            .map(|project| project.path)
+            .unwrap_or_else(|| path.into()))
+    }
+
     pub fn upsert_project(&self, project: &ProjectSummary) -> AppResult<()> {
         self.lock()?.execute(
             "INSERT INTO projects (id, name, path, environment, template_id, revision, last_operation, state)
@@ -159,11 +191,57 @@ impl Database {
     }
 
     pub fn set_project_environment(&self, project_path: &str, environment: &str) -> AppResult<()> {
+        let project_path = self.stored_project_path(project_path)?;
         self.lock()?.execute(
             "UPDATE projects SET environment = ?1 WHERE path = ?2",
             params![environment, project_path],
         )?;
         Ok(())
+    }
+
+    pub fn save_project_template(
+        &self,
+        project: &ProjectSummary,
+        snapshot: &ProjectTemplateSnapshot,
+    ) -> AppResult<()> {
+        snapshot.validate_binding(project.template_id.as_deref(), project.revision.as_deref())?;
+        self.lock()?.execute(
+            "INSERT INTO project_templates (project_path, snapshot_json) VALUES (?1, ?2)
+             ON CONFLICT(project_path) DO UPDATE SET snapshot_json=excluded.snapshot_json",
+            params![project.path, serde_json::to_string(snapshot)?],
+        )?;
+        Ok(())
+    }
+
+    pub fn project_template(
+        &self,
+        project_path: &str,
+    ) -> AppResult<Option<ProjectTemplateSnapshot>> {
+        let project_path = self.stored_project_path(project_path)?;
+        let row: Option<(Option<String>, Option<String>, String)> = self
+            .lock()?
+            .query_row(
+                "SELECT p.template_id, p.revision, t.snapshot_json FROM project_templates t
+             JOIN projects p ON p.path=t.project_path WHERE p.path=?1",
+                [project_path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((template_id, revision, json)) = row else {
+            return Ok(None);
+        };
+        if json.len() > 650_000 {
+            return Err(AppError::Invalid(
+                "Saved template contract exceeds its size limit.".into(),
+            ));
+        }
+        let snapshot: ProjectTemplateSnapshot = serde_json::from_str(&json).map_err(|_| {
+            AppError::Invalid(
+                "Saved template contract is invalid. Inspect the source again.".into(),
+            )
+        })?;
+        snapshot.validate_binding(template_id.as_deref(), revision.as_deref())?;
+        Ok(Some(snapshot))
     }
 
     pub fn save_catalog_source(&self, source: &CatalogSource) -> AppResult<()> {
@@ -370,6 +448,7 @@ impl Database {
     }
 
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
+        let project_path = self.stored_project_path(project_path)?;
         if ![
             "up",
             "provision",
@@ -433,6 +512,7 @@ impl Database {
     }
 
     pub fn operation_history(&self, project_path: &str) -> AppResult<Vec<OperationEvent>> {
+        let project_path = self.stored_project_path(project_path)?;
         let connection = self.lock()?;
         let mut statement = connection.prepare(
             "SELECT id, kind, state, COALESCE(completed_at, started_at), summary, outcome_json
@@ -549,6 +629,105 @@ mod tests {
                 navigation_expanded: false,
             }
         );
+    }
+
+    #[test]
+    fn migrates_version_one_and_preserves_local_project_contract_across_reopen() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite");
+        let mut entry = crate::catalog::entry_by_id("myworkid").unwrap();
+        entry.id = "local-sample".into();
+        entry.commit = "local".into();
+        entry.source = Some("local".into());
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: format!("{}/./", directory.path().display()),
+            environment: Some("dev".into()),
+            template_id: Some(entry.id.clone()),
+            revision: None,
+            last_operation: None,
+            state: "ready".into(),
+        };
+        {
+            let database = Database::open(&path).unwrap();
+            database.upsert_project(&project).unwrap();
+            database
+                .lock()
+                .unwrap()
+                .execute_batch("DROP TABLE project_templates; PRAGMA user_version=1;")
+                .unwrap();
+        }
+        {
+            let database = Database::open(&path).unwrap();
+            assert!(database.project_template(&project.path).unwrap().is_none());
+            let snapshot = crate::models::ProjectTemplateSnapshot::new(entry).unwrap();
+            database.save_project_template(&project, &snapshot).unwrap();
+            database
+                .set_project_environment(
+                    &std::fs::canonicalize(directory.path())
+                        .unwrap()
+                        .display()
+                        .to_string(),
+                    "prod",
+                )
+                .unwrap();
+        }
+        let database = Database::open(&path).unwrap();
+        let canonical = std::fs::canonicalize(directory.path())
+            .unwrap()
+            .display()
+            .to_string();
+        let saved = database.project_template(&canonical).unwrap().unwrap();
+        assert_eq!(
+            database.project_by_path(&canonical).unwrap().unwrap().path,
+            project.path
+        );
+        assert_eq!(saved.entry.id, "local-sample");
+        assert!(!saved
+            .entry
+            .manifest
+            .unwrap()
+            .configuration
+            .groups
+            .is_empty());
+        assert_eq!(
+            database.projects().unwrap()[0].environment.as_deref(),
+            Some("prod")
+        );
+        database.clear_local_data().unwrap();
+        assert!(database.project_template(&project.path).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_a_snapshot_copied_to_a_different_revision_without_breaking_project_listing() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let mut entry = crate::catalog::entry_by_id("myworkid").unwrap();
+        entry.id = "github-custom".into();
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some(entry.id.clone()),
+            revision: Some(entry.commit.clone()),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        let snapshot = crate::models::ProjectTemplateSnapshot::new(entry).unwrap();
+        database.save_project_template(&project, &snapshot).unwrap();
+        database
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE projects SET revision='another-revision' WHERE path=?1",
+                [&project.path],
+            )
+            .unwrap();
+        assert!(database.project_template(&project.path).is_err());
+        assert_eq!(database.projects().unwrap().len(), 1);
     }
 
     #[test]

@@ -1,7 +1,9 @@
 use crate::{
     command_runner::{capture, CommandSpec, Executable},
     error::{AppError, AppResult},
-    models::{ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus},
+    models::{
+        Prerequisite, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus,
+    },
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -310,6 +312,152 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
     ]
 }
 
+fn version_requirement(value: &str) -> Result<semver::VersionReq, semver::Error> {
+    match semver::Version::parse(value.trim_start_matches('v')) {
+        Ok(version) => semver::VersionReq::parse(&format!(">={version}")),
+        Err(_) => semver::VersionReq::parse(value),
+    }
+}
+
+fn minimum_requirement(value: &str) -> String {
+    match semver::Version::parse(value.trim_start_matches('v')) {
+        Ok(version) => format!(">={version}"),
+        Err(_) => value.to_string(),
+    }
+}
+
+pub fn manifest_prerequisites(manifest: &TemplateManifest) -> Vec<Prerequisite> {
+    let mut prerequisites = manifest.prerequisites.clone();
+    let Some(minimum_azd_version) = manifest.minimum_azd_version.as_deref() else {
+        return prerequisites;
+    };
+    let azd_requirement = minimum_requirement(minimum_azd_version);
+    if let Some(azd) = prerequisites
+        .iter_mut()
+        .find(|requirement| requirement.id == "azd")
+    {
+        azd.required = true;
+        azd.minimum_version = Some(match azd.minimum_version.take() {
+            Some(existing) => format!("{}, {azd_requirement}", minimum_requirement(&existing)),
+            None => azd_requirement,
+        });
+    } else {
+        prerequisites.push(Prerequisite {
+            id: "azd".into(),
+            name: "Azure Developer CLI".into(),
+            kind: "tool".into(),
+            minimum_version: Some(azd_requirement),
+            required: true,
+            install_provider: Some("manual".into()),
+            install_id: None,
+            documentation_url: Some(
+                "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
+                    .into(),
+            ),
+        });
+    }
+    prerequisites
+}
+
+fn evaluate_requirement(requirement: &Prerequisite, detected: &[ToolStatus]) -> ToolStatus {
+    let Some(mut status) = detected
+        .iter()
+        .find(|status| status.id == requirement.id)
+        .cloned()
+    else {
+        return ToolStatus {
+            id: requirement.id.clone(),
+            name: requirement.name.clone(),
+            kind: requirement.kind.clone(),
+            minimum_version: requirement.minimum_version.clone(),
+            required: requirement.required,
+            state: "unknown".into(),
+            installed_version: None,
+            executable_path: None,
+            latest_version: None,
+            update_available: false,
+            detail: Some(
+                "This prerequisite is not registered by the native tool inventory.".into(),
+            ),
+            install_provider: requirement.install_provider.clone(),
+            install_id: requirement.install_id.clone(),
+            documentation_url: requirement.documentation_url.clone(),
+            install_command: None,
+            can_install: false,
+        };
+    };
+
+    status.name = requirement.name.clone();
+    status.kind = requirement.kind.clone();
+    status.required = requirement.required;
+    status.minimum_version = requirement.minimum_version.clone();
+    status.install_provider = requirement
+        .install_provider
+        .clone()
+        .or(status.install_provider);
+    status.install_id = requirement.install_id.clone().or(status.install_id);
+    status.documentation_url = requirement
+        .documentation_url
+        .clone()
+        .or(status.documentation_url);
+
+    let Some(required_version) = requirement.minimum_version.as_deref() else {
+        return status;
+    };
+    let required = match version_requirement(required_version) {
+        Ok(required) => required,
+        Err(_) => {
+            status.state = "unknown".into();
+            status.detail =
+                Some("The manifest declares an invalid prerequisite version requirement.".into());
+            return status;
+        }
+    };
+    let installed = status
+        .installed_version
+        .as_deref()
+        .and_then(|version| semver::Version::parse(version.trim_start_matches('v')).ok());
+    status.state = match installed {
+        Some(installed) if required.matches(&installed) => "ready".into(),
+        Some(_) => "outdated".into(),
+        None => "missing".into(),
+    };
+    status
+}
+
+pub async fn evaluate_prerequisites(requirements: &[Prerequisite]) -> Vec<ToolStatus> {
+    let detected = check_all(false).await;
+    requirements
+        .iter()
+        .map(|requirement| evaluate_requirement(requirement, &detected))
+        .collect()
+}
+
+pub async fn evaluate_manifest_prerequisites(manifest: &TemplateManifest) -> Vec<ToolStatus> {
+    evaluate_prerequisites(&manifest_prerequisites(manifest)).await
+}
+
+pub async fn ensure_requirements(requirements: &[Prerequisite]) -> AppResult<()> {
+    let blocking = evaluate_prerequisites(requirements)
+        .await
+        .into_iter()
+        .filter(|status| status.required && status.state != "ready")
+        .map(|status| format!("{} ({})", status.name, status.state))
+        .collect::<Vec<_>>();
+    if blocking.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(format!(
+            "Required template prerequisites are not ready: {}.",
+            blocking.join(", ")
+        )))
+    }
+}
+
+pub async fn ensure_manifest_requirements(manifest: &TemplateManifest) -> AppResult<()> {
+    ensure_requirements(&manifest_prerequisites(manifest)).await
+}
+
 fn tool(
     id: &str,
     name: &str,
@@ -491,9 +639,10 @@ pub fn install_spec(id: &str, exact_version: &str) -> AppResult<CommandSpec> {
 #[cfg(test)]
 mod tests {
     use super::{
-        approved_install, install_spec, parse_azd_tool_inventory, parse_azd_tool_updates, tool,
-        ToolInstallApprovals, ToolProbe,
+        approved_install, evaluate_requirement, install_spec, manifest_prerequisites,
+        parse_azd_tool_inventory, parse_azd_tool_updates, tool, ToolInstallApprovals, ToolProbe,
     };
+    use crate::models::{Prerequisite, TemplateManifest};
 
     #[test]
     fn parses_public_azd_tool_inventory_and_update_contracts() {
@@ -586,5 +735,98 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("development-tools"));
+    }
+
+    #[test]
+    fn template_requirement_uses_its_own_semver_range() {
+        let detected = tool(
+            "azd",
+            "Azure Developer CLI",
+            "tool",
+            "1.23.0",
+            ToolProbe {
+                version: Some("1.23.1".into()),
+                executable_path: None,
+            },
+            "manual",
+            None,
+        );
+        let requirement = Prerequisite {
+            id: "azd".into(),
+            name: "Azure Developer CLI".into(),
+            kind: "tool".into(),
+            minimum_version: Some(">=1.23.7, <2.0.0".into()),
+            required: true,
+            install_provider: Some("manual".into()),
+            install_id: None,
+            documentation_url: None,
+        };
+
+        let status = evaluate_requirement(&requirement, &[detected]);
+        assert_eq!(status.state, "outdated");
+        assert_eq!(status.minimum_version.as_deref(), Some(">=1.23.7, <2.0.0"));
+    }
+
+    #[test]
+    fn unknown_template_prerequisites_fail_closed() {
+        let requirement = Prerequisite {
+            id: "unregistered-tool".into(),
+            name: "Unregistered tool".into(),
+            kind: "tool".into(),
+            minimum_version: Some(">=1.0.0".into()),
+            required: true,
+            install_provider: None,
+            install_id: None,
+            documentation_url: None,
+        };
+
+        let status = evaluate_requirement(&requirement, &[]);
+        assert_eq!(status.state, "unknown");
+        assert!(!status.can_install);
+    }
+
+    #[test]
+    fn minimum_azd_version_strengthens_the_manifest_azd_prerequisite() {
+        let manifest = TemplateManifest {
+            schema_version: "1.0".into(),
+            minimum_azd_version: Some("1.23.7".into()),
+            prerequisites: vec![Prerequisite {
+                id: "azd".into(),
+                name: "Azure Developer CLI".into(),
+                kind: "tool".into(),
+                minimum_version: Some("1.23.0".into()),
+                required: false,
+                install_provider: Some("manual".into()),
+                install_id: None,
+                documentation_url: None,
+            }],
+            ..Default::default()
+        };
+
+        let prerequisites = manifest_prerequisites(&manifest);
+        assert_eq!(prerequisites.len(), 1);
+        assert!(prerequisites[0].required);
+        assert_eq!(
+            prerequisites[0].minimum_version.as_deref(),
+            Some(">=1.23.0, >=1.23.7")
+        );
+    }
+
+    #[test]
+    fn minimum_azd_version_adds_a_required_azd_prerequisite_when_absent() {
+        let manifest = TemplateManifest {
+            schema_version: "1.0".into(),
+            minimum_azd_version: Some("1.23.7".into()),
+            ..Default::default()
+        };
+
+        let prerequisites = manifest_prerequisites(&manifest);
+        assert_eq!(prerequisites.len(), 1);
+        assert_eq!(prerequisites[0].id, "azd");
+        assert!(prerequisites[0].required);
+        assert_eq!(
+            prerequisites[0].minimum_version.as_deref(),
+            Some(">=1.23.7")
+        );
     }
 }

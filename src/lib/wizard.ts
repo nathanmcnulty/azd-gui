@@ -10,9 +10,9 @@ import type {
 export function conditionMatches(condition: FieldCondition | undefined, values: WizardValues): boolean {
   if (!condition) return true;
   const actual = values[condition.field];
-  if (condition.equals !== undefined && actual !== condition.equals) return false;
-  if (condition.notEquals !== undefined && actual === condition.notEquals) return false;
-  if (condition.includes !== undefined) {
+  if (condition.equals != null && actual !== condition.equals) return false;
+  if (condition.notEquals != null && actual === condition.notEquals) return false;
+  if (condition.includes != null) {
     if (!Array.isArray(actual) || !actual.includes(condition.includes)) return false;
   }
   return true;
@@ -26,8 +26,36 @@ export function validateField(field: ConfigurationField, value: WizardValues[str
   if (field.required && (value === undefined || value === "" || (Array.isArray(value) && value.length === 0))) {
     return `${field.label} is required.`;
   }
-  if (field.pattern && typeof value === "string" && value && !new RegExp(field.pattern).test(value)) {
-    return `${field.label} is not in the expected format.`;
+  if (value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) return null;
+  if (field.type === "multiselect") {
+    if (!Array.isArray(value)) return `${field.label} requires one or more choices.`;
+    const allowed = new Set((field.options ?? []).map((option) => option.value));
+    if (value.some((item) => !allowed.has(item))) return `${field.label} contains an unsupported choice.`;
+  }
+  if (field.type === "select" && typeof value === "string" && field.options?.length) {
+    if (!field.options.some((option) => option.value === value)) return `${field.label} contains an unsupported choice.`;
+  }
+  if (["tenant", "subscription", "entraObject"].includes(field.type) && typeof value === "string") {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) || /^0{8}-0{4}-0{4}-0{4}-0{12}$/i.test(value)) {
+      return `${field.label} must be a valid object ID.`;
+    }
+  }
+  if (field.type === "location" && typeof value === "string" && !/^[A-Za-z0-9]{1,64}$/.test(value)) {
+    return `${field.label} is not a valid Azure region name.`;
+  }
+  if (
+    field.type === "resourceGroup" &&
+    typeof value === "string" &&
+    (!/^[A-Za-z0-9._()\-]{1,90}$/.test(value) || value.endsWith("."))
+  ) {
+    return `${field.label} is not a valid resource group name.`;
+  }
+  if (field.pattern && typeof value === "string" && value) {
+    try {
+      if (!new RegExp(field.pattern).test(value)) return `${field.label} is not in the expected format.`;
+    } catch {
+      return `${field.label} has an invalid validation rule.`;
+    }
   }
   return null;
 }
@@ -52,7 +80,7 @@ export function calculateWizardPlan(
     standardPage("overview", "overview", "Review template", "Understand the source, revision, and compatibility.")
   ];
 
-  if ((manifest?.prerequisites.length ?? 0) > 0) {
+  if ((manifest?.prerequisites.length ?? 0) > 0 || manifest?.minimumAzdVersion) {
     pages.push(
       standardPage(
         "prerequisites",
@@ -130,12 +158,12 @@ export function sensitiveFieldIds(entry: CatalogEntry | null): Set<string> {
   );
 }
 
-export function environmentValuesForPlan(plan: WizardPlan, values: WizardValues) {
+export function environmentValuesForPlan(plan: WizardPlan, values: WizardValues, includeEmpty = false) {
   return Object.fromEntries(
     plan.pages
       .filter((page) => page.kind === "configuration")
       .flatMap((page) => page.group?.fields ?? [])
-      .filter((field) => values[field.id] !== undefined && values[field.id] !== "")
+      .filter((field) => values[field.id] !== undefined && (includeEmpty || values[field.id] !== ""))
       .map((field) => [field.environmentVariable, values[field.id]])
   );
 }

@@ -1,11 +1,10 @@
 use crate::{
-    command_runner::{capture, CommandSpec, Executable},
+    command_runner::{capture, git_command},
     error::{AppError, AppResult},
     models::{
         Catalog, CatalogEntry, CatalogFile, Configuration, ConnectionRequirement, Prerequisite,
         TemplateInspection, TemplateManifest,
     },
-    permissions,
 };
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -112,15 +111,34 @@ async fn public_origin_addresses(origin: &Url) -> AppResult<Vec<SocketAddr>> {
     Ok(addresses)
 }
 
-pub async fn require_public_network_url(url: &str) -> AppResult<()> {
-    let parsed = Url::parse(url).map_err(|error| AppError::Url(error.to_string()))?;
-    if parsed.scheme() != "https" {
+pub(crate) async fn pinned_git_options(url: &str) -> AppResult<Vec<String>> {
+    let origin = Url::parse(url).map_err(|error| AppError::Url(error.to_string()))?;
+    if origin.scheme() != "https" {
         return Err(AppError::Url(
             "Template repositories must use HTTPS.".into(),
         ));
     }
-    reject_private_url_components(&parsed, "Template repository URL")?;
-    public_origin_addresses(&parsed).await.map(|_| ())
+    reject_private_url_components(&origin, "Template repository URL")?;
+    let addresses = public_origin_addresses(&origin).await?;
+    let addresses = addresses
+        .iter()
+        .take(64)
+        .map(|address| match address.ip() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(vec![
+        "-c".into(),
+        "http.curloptResolve=".into(),
+        "-c".into(),
+        format!(
+            "http.curloptResolve={}:{}:{addresses}",
+            origin.host_str().unwrap(),
+            origin.port_or_known_default().unwrap()
+        ),
+    ])
 }
 
 async fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
@@ -131,6 +149,7 @@ async fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
         .to_string();
     let addresses = public_origin_addresses(&origin).await?;
     reqwest::Client::builder()
+        .no_proxy()
         .resolve_to_addrs(&host, &addresses)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 5 {
@@ -276,7 +295,7 @@ pub fn bundled_catalog() -> AppResult<Catalog> {
             .map(serde_json::from_str)
             .transpose()?;
         if let Some(manifest) = &manifest {
-            permissions::validate(&manifest.permission_checks)?;
+            crate::manifest::validate(manifest)?;
         }
         entries.push(CatalogEntry {
             id: entry.id,
@@ -383,7 +402,7 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
                     manifest.schema_version
                 )));
             }
-            permissions::validate(&manifest.permission_checks)?;
+            crate::manifest::validate(&manifest)?;
             Some(manifest)
         } else {
             None
@@ -445,7 +464,8 @@ pub(crate) fn normalize_catalog_url(input: &str) -> AppResult<Url> {
 }
 
 pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
-    let canonical = std::fs::canonicalize(path)?;
+    let source_binding = crate::local_source::inspect(Path::new(path))?;
+    let canonical = PathBuf::from(&source_binding.source_path);
     if !canonical.is_dir() {
         return Err(AppError::Invalid("Selected path is not a folder.".into()));
     }
@@ -481,7 +501,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
             manifest.schema_version
         )));
     }
-    permissions::validate(&manifest.permission_checks)?;
+    crate::manifest::validate(&manifest)?;
     let interactive_hooks = yaml_text.to_ascii_lowercase().contains("interactive: true");
     let windows_hooks = yaml_text.contains("windows:");
     let posix_hooks = yaml_text.contains("posix:");
@@ -498,6 +518,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
                 .into(),
         );
     }
+    crate::local_source::verify_for_path(&source_binding, &canonical)?;
     Ok(TemplateInspection {
         entry: CatalogEntry {
             id: format!("local-{}", name.to_ascii_lowercase().replace(' ', "-")),
@@ -514,6 +535,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
             trusted: false,
         },
         source_path: Some(canonical.display().to_string()),
+        source_binding: Some(source_binding),
         azure_yaml_found: true,
         manifest_source,
         interactive_hooks,
@@ -522,6 +544,25 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
 }
 
 pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
+    inspect_github_revision(url, None).await
+}
+
+pub(crate) async fn inspect_github_at_revision(
+    url: &str,
+    revision: &str,
+) -> AppResult<TemplateInspection> {
+    if !COMMIT_REVISION.is_match(revision) {
+        return Err(AppError::Invalid(
+            "A full pinned GitHub revision is required.".into(),
+        ));
+    }
+    inspect_github_revision(url, Some(revision)).await
+}
+
+async fn inspect_github_revision(
+    url: &str,
+    revision: Option<&str>,
+) -> AppResult<TemplateInspection> {
     let parsed = Url::parse(url).map_err(|error| AppError::Url(error.to_string()))?;
     if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") {
         return Err(AppError::Url(
@@ -542,26 +583,31 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
             "Use a repository URL in the form https://github.com/owner/repository.".into(),
         ));
     }
-    let output = capture(
-        CommandSpec::new(Executable::Git, ["ls-remote", url, "HEAD"]),
-        Duration::from_secs(30),
-    )
-    .await?;
-    if !output.success {
-        return Err(AppError::Command(format!(
-            "Could not resolve repository HEAD: {}",
-            output.stderr
-        )));
-    }
-    let commit = output
-        .stdout
-        .split_whitespace()
-        .next()
-        .filter(|value| {
-            value.len() == 40 && value.chars().all(|character| character.is_ascii_hexdigit())
-        })
-        .ok_or_else(|| AppError::Invalid("GitHub did not return a valid commit revision.".into()))?
-        .to_string();
+    let commit = if let Some(revision) = revision {
+        revision.to_string()
+    } else {
+        let directory = tempfile::tempdir()?;
+        let mut args = pinned_git_options(url).await?;
+        args.extend(["ls-remote".into(), url.into(), "HEAD".into()]);
+        let output = capture(git_command(directory.path(), args), Duration::from_secs(30)).await?;
+        if !output.success {
+            return Err(AppError::Command(format!(
+                "Could not resolve repository HEAD: {}",
+                output.stderr
+            )));
+        }
+        output
+            .stdout
+            .split_whitespace()
+            .next()
+            .filter(|value| {
+                value.len() == 40 && value.chars().all(|character| character.is_ascii_hexdigit())
+            })
+            .ok_or_else(|| {
+                AppError::Invalid("GitHub did not return a valid commit revision.".into())
+            })?
+            .to_string()
+    };
     let repository_name = segments[1].trim_end_matches(".git");
     let raw_base = format!(
         "https://raw.githubusercontent.com/{}/{}/{}",
@@ -600,8 +646,13 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
             serde_json::from_slice::<TemplateManifest>(&manifest_bytes)?,
             "embedded",
         )
-    } else {
+    } else if embedded_manifest.status() == reqwest::StatusCode::NOT_FOUND {
         (inferred_manifest(&yaml), "inferred")
+    } else {
+        return Err(AppError::Invalid(format!(
+            "Could not read the pinned template manifest (HTTP {}).",
+            embedded_manifest.status()
+        )));
     };
     if manifest.schema_version != "1.0" {
         return Err(AppError::Invalid(format!(
@@ -609,7 +660,7 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
             manifest.schema_version
         )));
     }
-    permissions::validate(&manifest.permission_checks)?;
+    crate::manifest::validate(&manifest)?;
     let name = yaml
         .get("name")
         .and_then(serde_yaml::Value::as_str)
@@ -631,6 +682,7 @@ pub async fn inspect_github(url: &str) -> AppResult<TemplateInspection> {
             trusted: false,
         },
         source_path: None,
+        source_binding: None,
         azure_yaml_found: true,
         manifest_source: manifest_source.into(),
         interactive_hooks,
@@ -716,7 +768,7 @@ pub fn validate_external_snapshot(catalog: &Catalog) -> AppResult<()> {
             )));
         }
         if let Some(manifest) = &entry.manifest {
-            permissions::validate(&manifest.permission_checks)?;
+            crate::manifest::validate(manifest)?;
         }
     }
     Ok(())
@@ -837,6 +889,13 @@ mod tests {
         let inspection = inspect_local(directory.path().to_str().unwrap()).unwrap();
         assert_eq!(inspection.manifest_source, "inferred");
         assert!(!inspection.entry.trusted);
+        assert_eq!(
+            inspection.source_binding.unwrap().source_path,
+            std::fs::canonicalize(directory.path())
+                .unwrap()
+                .display()
+                .to_string()
+        );
     }
 
     #[test]

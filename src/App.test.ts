@@ -1,8 +1,10 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as bridge from "./lib/bridge";
 import App from "./App.svelte";
 
 afterEach(() => {
+  vi.restoreAllMocks();
   cleanup();
   window.localStorage.clear();
   document.documentElement.dataset.theme = "";
@@ -288,6 +290,60 @@ describe("desktop experience", () => {
     expect(screen.getByText("C:\\GitHub\\sample-azd-project")).toBeInTheDocument();
     expect(screen.getByText("azd up --environment dev")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /copy command/i })).toBeEnabled();
+  });
+
+  it("prepares an interactive template before opening its terminal", async () => {
+    const prepares = vi.spyOn(bridge, "prepareDeployment");
+    const writes = vi.spyOn(bridge, "setProjectEnvironmentValues");
+    const starts = vi.spyOn(bridge, "startAzdOperation");
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
+
+    for (let attempt = 0; attempt < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); attempt += 1) {
+      const continueButton = screen.getByRole("button", { name: /continue/i });
+      await waitFor(() => expect(continueButton).toBeEnabled());
+      await fireEvent.click(continueButton);
+    }
+
+    expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /Notifications$/i }));
+    await fireEvent.input(screen.getByLabelText(/mail recipient/i), { target: { value: "review@example.invalid" } });
+    await fireEvent.click(screen.getByRole("button", { name: /Review deployment$/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /prepare and open terminal/i }));
+
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    expect(screen.getByText("azd up --environment dev")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
+    expect(prepares).toHaveBeenCalledTimes(1);
+    expect(starts).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: /dismiss terminal notice/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /Notifications$/i }));
+    await fireEvent.input(screen.getByLabelText(/mail recipient/i), { target: { value: "" } });
+    await fireEvent.click(screen.getByRole("button", { name: /Review deployment$/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /prepare and open terminal/i }));
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    expect(prepares).toHaveBeenCalledTimes(1);
+    expect(writes).toHaveBeenCalledWith(expect.any(String), "dev", expect.arrayContaining([{ name: "MAIL_RECIPIENT", value: "" }]));
+    expect(starts).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: /dismiss terminal notice/i }));
+    const creates = vi.spyOn(bridge, "createProjectEnvironment");
+    await fireEvent.click(screen.getByRole("button", { name: /Configure environment$/i }));
+    await fireEvent.input(screen.getByLabelText(/environment name/i), { target: { value: "staging" } });
+    await fireEvent.click(screen.getByRole("button", { name: /Review deployment$/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /prepare and open terminal/i }));
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    expect(prepares).toHaveBeenCalledTimes(1);
+    expect(creates).toHaveBeenCalledWith(expect.any(String), "staging", expect.any(String), expect.any(String));
+    expect(writes).toHaveBeenCalledWith(expect.any(String), "staging", expect.any(Array));
+    expect(starts).not.toHaveBeenCalled();
   });
 
   it("opens the post-deployment project workspace", async () => {

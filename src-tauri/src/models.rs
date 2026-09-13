@@ -279,11 +279,11 @@ pub struct ConfigurationGroup {
 #[serde(rename_all = "camelCase")]
 pub struct FieldCondition {
     pub field: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub equals: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_equals: Option<serde_json::Value>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub includes: Option<String>,
 }
 
@@ -372,6 +372,14 @@ pub struct ProjectSummary {
     pub state: String,
 }
 
+/// The reviewed template contract, never the entered environment values.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectTemplateSnapshot {
+    pub entry: CatalogEntry,
+    pub digest: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectEnvironment {
@@ -449,10 +457,19 @@ pub struct BootstrapData {
 pub struct TemplateInspection {
     pub entry: CatalogEntry,
     pub source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_binding: Option<LocalSourceBinding>,
     pub azure_yaml_found: bool,
     pub manifest_source: String,
     pub interactive_hooks: bool,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSourceBinding {
+    pub source_path: String,
+    pub content_digest: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -502,6 +519,8 @@ pub struct ExecutionApprovalRequest {
     pub template_id: String,
     #[serde(default)]
     pub revision: Option<String>,
+    #[serde(default)]
+    pub source_binding: Option<LocalSourceBinding>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -521,6 +540,8 @@ pub struct PrepareDeploymentRequest {
     pub source_path: Option<String>,
     #[serde(default)]
     pub source_revision: Option<String>,
+    #[serde(default)]
+    pub source_binding: Option<LocalSourceBinding>,
     pub destination: String,
     pub environment: String,
     #[serde(default)]

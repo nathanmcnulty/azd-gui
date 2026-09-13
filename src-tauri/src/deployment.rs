@@ -3,7 +3,10 @@ use crate::{
     catalog::{entry_by_id, template_path},
     command_runner::{capture, CommandSpec, Executable},
     error::{AppError, AppResult},
-    models::{PrepareDeploymentRequest, ProjectEnvironment, ProjectSummary},
+    models::{
+        CatalogEntry, PrepareDeploymentRequest, ProjectEnvironment, ProjectSummary,
+        ProjectTemplateSnapshot,
+    },
     persistence::Database,
 };
 use chrono::Utc;
@@ -173,7 +176,7 @@ fn environment_assignments(
                 "Invalid environment variable name: {environment_variable}"
             )));
         }
-        if environment_variable.starts_with("AZURE_") {
+        if crate::manifest::is_standard_environment_variable(environment_variable) {
             return Err(AppError::Invalid(format!(
                 "Standard azd environment values must use their dedicated fields: {environment_variable}"
             )));
@@ -205,16 +208,6 @@ async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppRe
         return Err(AppError::Command(format!("{label} failed: {detail}")));
     }
     Ok(output.stdout)
-}
-
-fn git_command(checkout: &Path, args: impl IntoIterator<Item = impl Into<String>>) -> CommandSpec {
-    CommandSpec::new(Executable::Git, args)
-        .cwd(checkout)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            if cfg!(windows) { "NUL" } else { "/dev/null" },
-        )
 }
 
 fn validate_template_tree(output: &str) -> AppResult<()> {
@@ -266,19 +259,24 @@ async fn checkout_pinned_template(
     commit: &str,
     template_id: &str,
 ) -> AppResult<tempfile::TempDir> {
-    crate::catalog::require_public_network_url(repository).await?;
+    let pinned_options = crate::catalog::pinned_git_options(repository).await?;
     std::fs::create_dir_all(cache_root)?;
     let checkout = tempfile::Builder::new()
         .prefix(&format!("{template_id}-"))
         .tempdir_in(cache_root)?;
+    let git_command = |checkout: &Path, args: &[&str]| {
+        let mut options = pinned_options.clone();
+        options.extend(args.iter().map(|arg| (*arg).to_string()));
+        crate::command_runner::git_command(checkout, options)
+    };
     run_checked(
-        git_command(checkout.path(), ["init", "--quiet", "--template="]),
+        git_command(checkout.path(), &["init", "--quiet", "--template="]),
         "Initializing template checkout",
         Duration::from_secs(20),
     )
     .await?;
     run_checked(
-        git_command(checkout.path(), ["remote", "add", "origin", repository]),
+        git_command(checkout.path(), &["remote", "add", "origin", repository]),
         "Configuring template source",
         Duration::from_secs(20),
     )
@@ -286,7 +284,7 @@ async fn checkout_pinned_template(
     run_checked(
         git_command(
             checkout.path(),
-            [
+            &[
                 "fetch",
                 "--quiet",
                 "--no-tags",
@@ -302,7 +300,7 @@ async fn checkout_pinned_template(
     )
     .await?;
     let tree = run_checked(
-        git_command(checkout.path(), ["ls-tree", "-r", "-l", "FETCH_HEAD"]),
+        git_command(checkout.path(), &["ls-tree", "-r", "-l", "FETCH_HEAD"]),
         "Inspecting pinned template size",
         Duration::from_secs(30),
     )
@@ -311,14 +309,14 @@ async fn checkout_pinned_template(
     run_checked(
         git_command(
             checkout.path(),
-            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+            &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
         ),
         "Checking out pinned template",
         Duration::from_secs(60),
     )
     .await?;
     let actual = run_checked(
-        git_command(checkout.path(), ["rev-parse", "HEAD"]),
+        git_command(checkout.path(), &["rev-parse", "HEAD"]),
         "Verifying pinned template",
         Duration::from_secs(15),
     )
@@ -346,7 +344,7 @@ fn ensure_destination(path: &str, allow_existing_project: bool) -> AppResult<Pat
             ));
         }
         if allow_existing_project && destination.join("azure.yaml").is_file() {
-            return Ok(destination);
+            return Ok(std::fs::canonicalize(destination)?);
         }
         let mut entries = std::fs::read_dir(&destination)?;
         if entries.next().is_some() {
@@ -357,7 +355,99 @@ fn ensure_destination(path: &str, allow_existing_project: bool) -> AppResult<Pat
     } else {
         std::fs::create_dir_all(&destination)?;
     }
-    Ok(destination)
+    Ok(std::fs::canonicalize(destination)?)
+}
+
+async fn resolve_entry_with_local_source(
+    request: &PrepareDeploymentRequest,
+    database: &Database,
+    inspected_local_source: Option<&Path>,
+) -> AppResult<CatalogEntry> {
+    let entry = match request.source_mode.as_str() {
+        "catalog" => entry_by_id(&request.template_id)?,
+        "externalCatalog" => database
+            .accepted_catalog_entry(&request.template_id)?
+            .ok_or_else(|| {
+                AppError::Invalid(
+                    "External template is not present in an accepted catalog snapshot.".into(),
+                )
+            })?,
+        "localTemplate" | "existingProject" => {
+            let source = request
+                .source_path
+                .as_deref()
+                .ok_or_else(|| AppError::Invalid("Local source path is required.".into()))?;
+            if request.source_mode == "existingProject"
+                && std::fs::canonicalize(source)? != std::fs::canonicalize(&request.destination)?
+            {
+                return Err(AppError::Invalid(
+                    "The inspected source and existing project must match.".into(),
+                ));
+            }
+            let source = inspected_local_source
+                .unwrap_or_else(|| Path::new(source))
+                .to_str()
+                .ok_or_else(|| {
+                    AppError::Invalid("Local source path is not valid Unicode.".into())
+                })?;
+            let mut entry = crate::catalog::inspect_local(source)?.entry;
+            if let Some(binding) = &request.source_binding {
+                entry.repository = binding.source_path.clone();
+                entry.description = format!("Local project loaded from {}", binding.source_path);
+            }
+            entry
+        }
+        "github" => {
+            crate::catalog::inspect_github_at_revision(
+                request
+                    .source_path
+                    .as_deref()
+                    .ok_or_else(|| AppError::Invalid("GitHub source is required.".into()))?,
+                request.source_revision.as_deref().ok_or_else(|| {
+                    AppError::Invalid("Pinned GitHub revision is required.".into())
+                })?,
+            )
+            .await?
+            .entry
+        }
+        _ => return Err(AppError::Invalid("Unsupported template source.".into())),
+    };
+    let expected_revision = (entry.commit != "local").then_some(entry.commit.as_str());
+    if entry.id != request.template_id || request.source_revision.as_deref() != expected_revision {
+        return Err(AppError::Invalid(
+            "Template identity changed. Inspect and approve the source again.".into(),
+        ));
+    }
+    if let Some(manifest) = &entry.manifest {
+        crate::manifest::validate(manifest)?;
+    }
+    Ok(entry)
+}
+
+fn stage_local_source(
+    request: &PrepareDeploymentRequest,
+    cache_root: &Path,
+) -> AppResult<Option<tempfile::TempDir>> {
+    if !matches!(
+        request.source_mode.as_str(),
+        "localTemplate" | "existingProject"
+    ) {
+        return Ok(None);
+    }
+    let source = request
+        .source_path
+        .as_deref()
+        .ok_or_else(|| AppError::Invalid("Local source path is required.".into()))?;
+    let binding = request.source_binding.as_ref().ok_or_else(|| {
+        AppError::Invalid(
+            "Local templates require a fresh native source inspection before approval.".into(),
+        )
+    })?;
+    Ok(Some(crate::local_source::stage_for_path(
+        binding,
+        Path::new(source),
+        &cache_root.join("local-source-staging"),
+    )?))
 }
 
 pub async fn prepare(
@@ -373,19 +463,20 @@ pub async fn prepare(
     validate_resource_group(request.resource_group.as_deref())?;
     let existing_project = request.source_mode == "existingProject";
 
-    let entry = match request.source_mode.as_str() {
-        "catalog" => Some(entry_by_id(&request.template_id)?),
-        "externalCatalog" => Some(
-            database
-                .accepted_catalog_entry(&request.template_id)?
-                .ok_or_else(|| {
-                    AppError::Invalid(
-                        "External template is not present in an accepted catalog snapshot.".into(),
-                    )
-                })?,
-        ),
-        _ => None,
-    };
+    let local_stage = stage_local_source(&request, cache_root)?;
+    let entry = Some(
+        resolve_entry_with_local_source(
+            &request,
+            database,
+            local_stage.as_ref().map(|stage| stage.path()),
+        )
+        .await?,
+    );
+    if let Some(manifest) = entry.as_ref().and_then(|entry| entry.manifest.as_ref()) {
+        crate::tools::ensure_manifest_requirements(manifest).await?;
+    }
+    let snapshot =
+        ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;
     let environment_assignments = environment_assignments(&request, entry.as_ref())?;
     let destination = ensure_destination(&request.destination, existing_project)?;
     let name = destination
@@ -396,25 +487,23 @@ pub async fn prepare(
     let mut project = ProjectSummary {
         id: format!("{}-{}", name, request.environment),
         name,
-        path: destination.display().to_string(),
+        path: database
+            .project_by_path(&destination.display().to_string())?
+            .map(|project| project.path)
+            .unwrap_or_else(|| destination.display().to_string()),
         environment: Some(request.environment.clone()),
         template_id: Some(request.template_id.clone()),
         revision: entry
             .as_ref()
+            .filter(|entry| entry.commit != "local")
             .map(|entry| entry.commit.clone())
             .or_else(|| request.source_revision.clone()),
         last_operation: Some(Utc::now().to_rfc3339()),
-        state: if existing_project {
-            "ready"
-        } else {
-            "attention"
-        }
-        .into(),
+        state: "attention".into(),
     };
 
-    if !existing_project {
-        database.upsert_project(&project)?;
-    }
+    database.upsert_project(&project)?;
+    database.save_project_template(&project, &snapshot)?;
 
     if !existing_project {
         let mut temporary_checkout = None;
@@ -435,14 +524,14 @@ pub async fn prepare(
                 source
             }
             "localTemplate" => {
-                let source = request
-                    .source_path
-                    .as_deref()
-                    .ok_or_else(|| AppError::Invalid("Local template path is required.".into()))?;
-                let source = std::fs::canonicalize(source)?;
+                let source = local_stage
+                    .as_ref()
+                    .ok_or_else(|| AppError::Invalid("Approved local source is unavailable.".into()))?
+                    .path()
+                    .to_path_buf();
                 if !source.join("azure.yaml").is_file() {
                     return Err(AppError::Invalid(
-                        "Local template does not contain azure.yaml.".into(),
+                        "Approved local source does not contain azure.yaml.".into(),
                     ));
                 }
                 source
@@ -611,6 +700,7 @@ mod tests {
             execution_approval_token: "test-approval".into(),
             source_path: None,
             source_revision: None,
+            source_binding: None,
             destination: "/tmp/myworkid".into(),
             environment: "dev".into(),
             tenant: Some("11111111-1111-1111-1111-111111111111".into()),
@@ -626,6 +716,67 @@ mod tests {
                 ),
             ]),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires installed azd; initializes only a temporary hook-free local fixture"]
+    async fn installed_azd_prepares_the_selected_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("fixture-source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("azure.yaml"), "name: local-preparation-smoke\n").unwrap();
+        let inspection = crate::catalog::inspect_local(source.to_str().unwrap()).unwrap();
+        let mut request = myworkid_request();
+        request.template_id = inspection.entry.id;
+        request.source_mode = "localTemplate".into();
+        request.source_path = Some(source.display().to_string());
+        request.source_binding = inspection.source_binding;
+        request.destination = root
+            .path()
+            .join("selected-destination")
+            .display()
+            .to_string();
+        request.tenant = None;
+        request.subscription = None;
+        request.resource_group = None;
+        request.environment_values.clear();
+        let database = crate::persistence::Database::open(&root.path().join("review.db")).unwrap();
+        let project = super::prepare(request, &root.path().join("cache"), &database)
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(&project.path)
+            .join("azure.yaml")
+            .is_file());
+        assert!(std::path::Path::new(&project.path)
+            .join(".azure/dev/.env")
+            .is_file());
+    }
+
+    #[tokio::test]
+    async fn staged_local_contract_preserves_reviewed_identity() {
+        let source = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("azure.yaml"), "name: staged-sample").unwrap();
+        let inspected = crate::catalog::inspect_local(source.path().to_str().unwrap()).unwrap();
+        let mut request = myworkid_request();
+        request.template_id = inspected.entry.id.clone();
+        request.source_mode = "localTemplate".into();
+        request.source_path = Some(source.path().display().to_string());
+        request.source_binding = inspected.source_binding;
+        let staged = super::stage_local_source(&request, cache.path())
+            .unwrap()
+            .unwrap();
+        let database = crate::persistence::Database::open(&cache.path().join("review.db")).unwrap();
+        let entry =
+            super::resolve_entry_with_local_source(&request, &database, Some(staged.path()))
+                .await
+                .unwrap();
+        assert_eq!(entry.id, inspected.entry.id);
+        assert_eq!(
+            entry.repository,
+            request.source_binding.unwrap().source_path
+        );
+        assert_eq!(entry.commit, "local");
     }
 
     #[test]
@@ -678,6 +829,23 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("dedicated fields"));
+    }
+
+    #[test]
+    fn allows_maester_declared_azure_rbac_scopes_without_overriding_target() {
+        let entry = entry_by_id("maester-automation").unwrap();
+        let mut request = myworkid_request();
+        request.environment_values =
+            HashMap::from([("AZURE_RBAC_SCOPES".into(), json!("/subscriptions/example"))]);
+        let values = environment_assignments(&request, Some(&entry))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(values["AZURE_RBAC_SCOPES"], "/subscriptions/example");
+        assert_eq!(
+            values["AZURE_SUBSCRIPTION_ID"],
+            request.subscription.unwrap()
+        );
     }
 
     #[test]

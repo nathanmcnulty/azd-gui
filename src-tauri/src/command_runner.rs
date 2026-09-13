@@ -243,6 +243,57 @@ pub struct CommandSpec {
     pub environment: Vec<(String, String)>,
 }
 
+// Template transport never inherits repository, credential-helper, or proxy policy
+// from the desktop's launch environment. Application-owned values are applied afterward.
+fn isolate_git_environment(command: &mut Command, keys: impl IntoIterator<Item = OsString>) {
+    for key in keys {
+        let name = key.to_string_lossy().to_ascii_uppercase();
+        if name.starts_with("GIT_") || name.starts_with("GCM_") || name.ends_with("_PROXY") {
+            command.env_remove(key);
+        }
+    }
+}
+
+pub(crate) fn git_command(
+    cwd: &Path,
+    args: impl IntoIterator<Item = impl Into<String>>,
+) -> CommandSpec {
+    let mut restricted_args = [
+        "-c",
+        "http.followRedirects=false",
+        "-c",
+        "http.proxy=",
+        "-c",
+        "http.sslVerify=true",
+        "-c",
+        "credential.helper=",
+        "-c",
+        "credential.interactive=false",
+        "-c",
+        "http.extraHeader=",
+        "-c",
+        "http.cookieFile=",
+        "-c",
+        "http.saveCookies=false",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect::<Vec<_>>();
+    restricted_args.extend(args.into_iter().map(Into::into));
+    let empty_config = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    CommandSpec::new(Executable::Git, restricted_args)
+        .cwd(cwd)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_SYSTEM", empty_config)
+        .env("GIT_CONFIG_GLOBAL", empty_config)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never")
+        .env("GIT_ALLOW_PROTOCOL", "https")
+        // Prevent libcurl's optional netrc lookup from finding the user's credentials.
+        .env("HOME", cwd.display().to_string())
+        .env("USERPROFILE", cwd.display().to_string())
+}
+
 impl CommandSpec {
     pub fn new(executable: Executable, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
@@ -310,6 +361,9 @@ impl CommandSpec {
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
+        }
+        if matches!(self.executable, Executable::Git) {
+            isolate_git_environment(&mut command, std::env::vars_os().map(|(key, _)| key));
         }
         for (key, value) in &self.environment {
             command.env(key, value);
@@ -904,6 +958,75 @@ pub fn spawn_operation(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn git_pins_transport_and_rejects_redirects() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut bytes = [0; 1024];
+                let count = socket.read(&mut bytes).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&bytes[..count]);
+                assert!(request.len() < 16384);
+                if request.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+            socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: http://redirect.invalid/repo.git\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let result = capture(
+            super::git_command(
+                directory.path(),
+                [
+                    "-c".to_string(),
+                    format!("http.curloptResolve=pinning.invalid:{port}:127.0.0.1"),
+                    "ls-remote".to_string(),
+                    format!("http://pinning.invalid:{port}/repo.git"),
+                    "HEAD".to_string(),
+                ],
+            )
+            .env("GIT_ALLOW_PROTOCOL", "http"),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        let request = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(request.contains("/repo.git/info/refs"));
+        assert!(!request.to_ascii_lowercase().contains("authorization:"));
+        assert!(!result.success);
+        assert!(result.stderr.contains("302"), "{}", result.stderr);
+    }
+
+    #[test]
+    fn git_removes_inherited_configuration_and_proxies() {
+        let keys = [
+            "GIT_CONFIG_COUNT",
+            "GIT_SSL_NO_VERIFY",
+            "GCM_PROVIDER",
+            "https_proxy",
+        ];
+        let mut command = tokio::process::Command::new("git");
+        for key in keys {
+            command.env(key, "untrusted");
+        }
+        super::isolate_git_environment(&mut command, keys.into_iter().map(Into::into));
+        assert!(command
+            .as_std()
+            .get_envs()
+            .all(|(_, value)| value.is_none()));
+    }
+
     use super::{
         capture, operation_timeout, read_bounded_output, terminal_outcome, BoundedLineBuffer,
         CommandSpec, Executable, OUTPUT_TRUNCATED_MARKER,

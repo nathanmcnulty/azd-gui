@@ -6,6 +6,8 @@ mod connections;
 mod deployment;
 mod error;
 mod execution_approval;
+mod local_source;
+mod manifest;
 mod models;
 mod permissions;
 mod persistence;
@@ -21,8 +23,8 @@ use crate::{
         ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest, ExternalCatalogPreview,
         OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
         ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        TemplateInspection, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan,
-        ToolStatus,
+        ProjectTemplateSnapshot, TemplateInspection, TemplateManifest, ToolInstallApprovalGrant,
+        ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -239,6 +241,11 @@ async fn check_tools() -> AppResult<Vec<ToolStatus>> {
 }
 
 #[tauri::command]
+async fn check_template_prerequisites(manifest: TemplateManifest) -> AppResult<Vec<ToolStatus>> {
+    Ok(tools::evaluate_manifest_prerequisites(&manifest).await)
+}
+
+#[tauri::command]
 async fn preview_tool_install(id: String) -> AppResult<ToolInstallPlan> {
     tools::resolve_install_plan(&id).await
 }
@@ -345,7 +352,7 @@ fn start_login(
 }
 
 #[tauri::command]
-fn start_azd_operation(
+async fn start_azd_operation(
     app: AppHandle,
     state: State<'_, AppState>,
     action: String,
@@ -360,33 +367,42 @@ fn start_azd_operation(
             canonical.display()
         )));
     }
+    let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
     if matches!(
         action.as_str(),
         "preview" | "up" | "provision" | "deploy" | "down"
     ) {
+        let environment = environment.as_deref().ok_or_else(|| {
+            AppError::Invalid("A lifecycle action requires an explicit environment.".into())
+        })?;
         let token = execution_approval_token
             .as_deref()
             .ok_or_else(|| AppError::Invalid("A native execution approval is required.".into()))?;
         let project = state
             .database
-            .projects()?
-            .into_iter()
-            .find(|project| project.path == canonical.display().to_string());
+            .project_by_path(&canonical.display().to_string())?;
+        if let Some(project) = &project {
+            if let Some(snapshot) = resolve_project_template(&state.database, project)? {
+                if let Some(manifest) = &snapshot.entry.manifest {
+                    tools::ensure_manifest_requirements(manifest).await?;
+                }
+            }
+        }
         state.execution_approvals.consume(
             token,
             ExecutionApprovalRequest {
                 action: action.clone(),
                 project_path: canonical.display().to_string(),
-                environment: environment.clone().unwrap_or_else(|| "dev".into()),
+                environment: environment.to_string(),
                 template_id: project
                     .as_ref()
                     .and_then(|project| project.template_id.clone())
                     .unwrap_or_default(),
                 revision: project.and_then(|project| project.revision),
+                source_binding: None,
             },
         )?;
     }
-    let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
     spawn_operation(
         app,
         state.operations.clone(),
@@ -457,6 +473,15 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
+    let requires_local_binding = matches!(
+        request.source_mode.as_str(),
+        "localTemplate" | "existingProject"
+    );
+    if requires_local_binding != request.source_binding.is_some() {
+        return Err(AppError::Invalid(
+            "Local sources require the exact binding returned by native inspection.".into(),
+        ));
+    }
     state.execution_approvals.consume(
         &request.execution_approval_token,
         ExecutionApprovalRequest {
@@ -465,6 +490,7 @@ async fn prepare_deployment(
             environment: request.environment.clone(),
             template_id: request.template_id.clone(),
             revision: request.source_revision.clone(),
+            source_binding: request.source_binding.clone(),
         },
     )?;
     deployment::prepare(request, &state.template_cache, &state.database).await
@@ -492,10 +518,21 @@ fn request_execution_approval(
         .as_deref()
         .map(|revision| format!("\nRevision: {revision}"))
         .unwrap_or_default();
+    let source_binding = request
+        .source_binding
+        .as_ref()
+        .map(|binding| {
+            format!(
+                "\nReviewed local source: {}\nContent digest: {}\n.git and .azure runtime state are excluded. Local templates are staged after verification; existing-project working trees remain mutable after approval.",
+                binding.source_path,
+                &binding.content_digest[..12]
+            )
+        })
+        .unwrap_or_default();
     let approved = app
         .dialog()
         .message(format!(
-            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
+            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}{source_binding}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
             request.project_path, request.environment, request.template_id
         ))
         .title(if destructive {
@@ -611,19 +648,50 @@ fn dotenv_keys(path: &Path) -> AppResult<HashSet<String>> {
     Ok(keys)
 }
 
-fn project_configuration_fields(
-    state: &AppState,
-    template_id: Option<&str>,
-) -> AppResult<Vec<crate::models::ConfigurationField>> {
-    let Some(template_id) = template_id.filter(|value| !value.is_empty()) else {
-        return Ok(Vec::new());
+pub(crate) fn resolve_project_template(
+    database: &Database,
+    project: &ProjectSummary,
+) -> AppResult<Option<ProjectTemplateSnapshot>> {
+    if let Some(snapshot) = database.project_template(&project.path)? {
+        return Ok(Some(snapshot));
+    }
+    // Legacy catalog projects may use only the exact recorded revision, never a newer catalog contract.
+    let Some(template_id) = project.template_id.as_deref() else {
+        return Ok(None);
     };
     let entry = match catalog::entry_by_id(template_id) {
         Ok(entry) => Some(entry),
-        Err(_) => state.database.accepted_catalog_entry(template_id)?,
+        Err(_) => database.accepted_catalog_entry(template_id)?,
     };
-    Ok(entry
-        .and_then(|entry| entry.manifest)
+    entry
+        .filter(|entry| project.revision.as_deref() == Some(entry.commit.as_str()))
+        .map(ProjectTemplateSnapshot::new)
+        .transpose()
+}
+
+#[tauri::command]
+fn get_project_template(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<Option<ProjectTemplateSnapshot>> {
+    let canonical = std::fs::canonicalize(project_path)?.display().to_string();
+    let project = state
+        .database
+        .project_by_path(&canonical)?
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
+    resolve_project_template(&state.database, &project)
+}
+
+fn project_configuration_fields(
+    state: &AppState,
+    project_path: &str,
+) -> AppResult<Vec<crate::models::ConfigurationField>> {
+    let project = state
+        .database
+        .project_by_path(project_path)?
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
+    Ok(resolve_project_template(&state.database, &project)?
+        .and_then(|snapshot| snapshot.entry.manifest)
         .map(|manifest| {
             manifest
                 .configuration
@@ -668,13 +736,7 @@ async fn get_project_environment_values(
         dotenv_keys(&dotenv)?
     };
     let canonical_path = canonical.display().to_string();
-    let template_id = state
-        .database
-        .projects()?
-        .into_iter()
-        .find(|project| project.path == canonical_path)
-        .and_then(|project| project.template_id);
-    let fields = project_configuration_fields(&state, template_id.as_deref())?;
+    let fields = project_configuration_fields(&state, &canonical_path)?;
     let declared_names = fields
         .iter()
         .map(|field| field.environment_variable.clone())
@@ -889,9 +951,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             list_projects,
+            get_project_template,
             inspect_local_template,
             inspect_github_template,
             check_tools,
+            check_template_prerequisites,
             preview_tool_install,
             request_tool_install_approval,
             install_tool,

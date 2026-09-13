@@ -1555,6 +1555,54 @@ kbd {
   height: 16px;
 }
 
+.multiselect-field {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.multiselect-field legend {
+  padding: 0;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 520;
+}
+
+.option-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input);
+}
+
+.field .option-choice input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin-top: 1px;
+  flex: 0 0 auto;
+}
+
+.option-choice span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.option-choice small,
+.option-description,
+.field-type-note {
+  color: var(--faint);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .environment-configuration-actions {
   display: flex;
   align-items: center;
@@ -2307,13 +2355,14 @@ button.compact {
 
 .field {
   display: flex;
+  min-width: 0;
   margin-top: 16px;
   flex-direction: column;
   gap: 6px;
   color: var(--text);
 }
 
-.field > label {
+.field > label:not(.toggle-line) {
   display: contents;
 }
 
