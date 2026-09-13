@@ -1,5 +1,5 @@
 use crate::{
-    command_runner::{capture, CommandSpec, Executable},
+    command_runner::{capture, git_command},
     error::{AppError, AppResult},
     models::{
         Catalog, CatalogEntry, CatalogFile, Configuration, ConnectionRequirement, Prerequisite,
@@ -111,15 +111,34 @@ async fn public_origin_addresses(origin: &Url) -> AppResult<Vec<SocketAddr>> {
     Ok(addresses)
 }
 
-pub async fn require_public_network_url(url: &str) -> AppResult<()> {
-    let parsed = Url::parse(url).map_err(|error| AppError::Url(error.to_string()))?;
-    if parsed.scheme() != "https" {
+pub(crate) async fn pinned_git_options(url: &str) -> AppResult<Vec<String>> {
+    let origin = Url::parse(url).map_err(|error| AppError::Url(error.to_string()))?;
+    if origin.scheme() != "https" {
         return Err(AppError::Url(
             "Template repositories must use HTTPS.".into(),
         ));
     }
-    reject_private_url_components(&parsed, "Template repository URL")?;
-    public_origin_addresses(&parsed).await.map(|_| ())
+    reject_private_url_components(&origin, "Template repository URL")?;
+    let addresses = public_origin_addresses(&origin).await?;
+    let addresses = addresses
+        .iter()
+        .take(64)
+        .map(|address| match address.ip() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    Ok(vec![
+        "-c".into(),
+        "http.curloptResolve=".into(),
+        "-c".into(),
+        format!(
+            "http.curloptResolve={}:{}:{addresses}",
+            origin.host_str().unwrap(),
+            origin.port_or_known_default().unwrap()
+        ),
+    ])
 }
 
 async fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
@@ -130,6 +149,7 @@ async fn restricted_http_client(origin: &Url) -> AppResult<reqwest::Client> {
         .to_string();
     let addresses = public_origin_addresses(&origin).await?;
     reqwest::Client::builder()
+        .no_proxy()
         .resolve_to_addrs(&host, &addresses)
         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
             if attempt.previous().len() >= 5 {
@@ -563,11 +583,10 @@ async fn inspect_github_revision(
     let commit = if let Some(revision) = revision {
         revision.to_string()
     } else {
-        let output = capture(
-            CommandSpec::new(Executable::Git, ["ls-remote", url, "HEAD"]),
-            Duration::from_secs(30),
-        )
-        .await?;
+        let directory = tempfile::tempdir()?;
+        let mut args = pinned_git_options(url).await?;
+        args.extend(["ls-remote".into(), url.into(), "HEAD".into()]);
+        let output = capture(git_command(directory.path(), args), Duration::from_secs(30)).await?;
         if !output.success {
             return Err(AppError::Command(format!(
                 "Could not resolve repository HEAD: {}",

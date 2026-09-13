@@ -210,16 +210,6 @@ async fn run_checked(spec: CommandSpec, label: &str, timeout: Duration) -> AppRe
     Ok(output.stdout)
 }
 
-fn git_command(checkout: &Path, args: impl IntoIterator<Item = impl Into<String>>) -> CommandSpec {
-    CommandSpec::new(Executable::Git, args)
-        .cwd(checkout)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env(
-            "GIT_CONFIG_GLOBAL",
-            if cfg!(windows) { "NUL" } else { "/dev/null" },
-        )
-}
-
 fn validate_template_tree(output: &str) -> AppResult<()> {
     if output.contains("[output truncated]") {
         return Err(AppError::Invalid(
@@ -269,19 +259,24 @@ async fn checkout_pinned_template(
     commit: &str,
     template_id: &str,
 ) -> AppResult<tempfile::TempDir> {
-    crate::catalog::require_public_network_url(repository).await?;
+    let pinned_options = crate::catalog::pinned_git_options(repository).await?;
     std::fs::create_dir_all(cache_root)?;
     let checkout = tempfile::Builder::new()
         .prefix(&format!("{template_id}-"))
         .tempdir_in(cache_root)?;
+    let git_command = |checkout: &Path, args: &[&str]| {
+        let mut options = pinned_options.clone();
+        options.extend(args.iter().map(|arg| (*arg).to_string()));
+        crate::command_runner::git_command(checkout, options)
+    };
     run_checked(
-        git_command(checkout.path(), ["init", "--quiet", "--template="]),
+        git_command(checkout.path(), &["init", "--quiet", "--template="]),
         "Initializing template checkout",
         Duration::from_secs(20),
     )
     .await?;
     run_checked(
-        git_command(checkout.path(), ["remote", "add", "origin", repository]),
+        git_command(checkout.path(), &["remote", "add", "origin", repository]),
         "Configuring template source",
         Duration::from_secs(20),
     )
@@ -289,7 +284,7 @@ async fn checkout_pinned_template(
     run_checked(
         git_command(
             checkout.path(),
-            [
+            &[
                 "fetch",
                 "--quiet",
                 "--no-tags",
@@ -305,7 +300,7 @@ async fn checkout_pinned_template(
     )
     .await?;
     let tree = run_checked(
-        git_command(checkout.path(), ["ls-tree", "-r", "-l", "FETCH_HEAD"]),
+        git_command(checkout.path(), &["ls-tree", "-r", "-l", "FETCH_HEAD"]),
         "Inspecting pinned template size",
         Duration::from_secs(30),
     )
@@ -314,14 +309,14 @@ async fn checkout_pinned_template(
     run_checked(
         git_command(
             checkout.path(),
-            ["checkout", "--quiet", "--detach", "FETCH_HEAD"],
+            &["checkout", "--quiet", "--detach", "FETCH_HEAD"],
         ),
         "Checking out pinned template",
         Duration::from_secs(60),
     )
     .await?;
     let actual = run_checked(
-        git_command(checkout.path(), ["rev-parse", "HEAD"]),
+        git_command(checkout.path(), &["rev-parse", "HEAD"]),
         "Verifying pinned template",
         Duration::from_secs(15),
     )
