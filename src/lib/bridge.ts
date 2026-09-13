@@ -35,10 +35,19 @@ import type {
   ToolInstallPlan,
   ToolStatus,
   TemplateManifest,
-  ValidationReportRead
+  ValidationReportRead,
+  SecurityGroupSearch
 } from "./types";
 
 let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
+
+export async function searchSecurityGroups(target: ConnectionTarget, query: string): Promise<SecurityGroupSearch> {
+  if (!isTauri()) {
+    const groups = [{ id: "a1111111-1111-4111-8111-111111111111", displayName: "Azure dashboard admins (preview)" }];
+    return { ...target, groups: groups.filter((group) => group.displayName.toLowerCase().startsWith(query.trim().toLowerCase())), hasMore: false };
+  }
+  return invoke<SecurityGroupSearch>("search_security_groups", { ...target, query });
+}
 const previewInspectedEntries = new Map<string, ProjectTemplateSnapshot["entry"]>();
 const previewProjectTemplates = new Map<string, ProjectTemplateSnapshot>();
 let previewCatalogReview: (ExternalCatalogPreview & { sourceUrl: string }) | null = null;

@@ -1,10 +1,12 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
-  import type { ConfigurationField, WizardValues } from "../lib/types";
+  import type { ConfigurationField, ConnectionTarget, WizardValues } from "../lib/types";
+  import SecurityGroupPicker from "./SecurityGroupPicker.svelte";
 
   export let field: ConfigurationField;
   export let value: WizardValues[string] = "";
   export let configuredSensitive = false;
+  export let lookupTarget: ConnectionTarget | null = null;
 
   const dispatch = createEventDispatcher<{ change: WizardValues[string] }>();
 
@@ -101,6 +103,13 @@
   {#if field.type !== "boolean" && sensitive}<small class="sensitive-note">This value is never saved in the app draft or logs.</small>{/if}
   {#if ["entraObject", "tenant", "subscription", "location", "resourceGroup"].includes(field.type)}
     <small class="field-type-note">{field.type === "entraObject" ? "Enter a Microsoft Entra object ID." : field.type === "tenant" ? "Enter a tenant ID." : field.type === "subscription" ? "Enter a subscription ID." : field.type === "location" ? "Enter an Azure region name." : "Enter an Azure resource group name."}</small>
+  {/if}
+  {#if field.lookup === "securityGroup" && field.type === "entraObject" && !sensitive}
+    {#if lookupTarget}
+      <SecurityGroupPicker target={lookupTarget} value={String(value ?? "")} on:change={(event) => change(event.detail)} />
+    {:else}
+      <small>Group search is available in the deployment wizard after choosing an Azure tenant and subscription. You can enter the ID manually.</small>
+    {/if}
   {/if}
   <small><code>{field.environmentVariable}</code></small>
 </div>

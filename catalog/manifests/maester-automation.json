@@ -104,6 +104,7 @@
         "fields": [
           {
             "id": "securityGroupObjectId",
+            "lookup": "securityGroup",
             "environmentVariable": "SECURITY_GROUP_OBJECT_ID",
             "label": "Allowed security group",
             "type": "entraObject",

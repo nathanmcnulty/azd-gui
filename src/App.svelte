@@ -574,6 +574,11 @@
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
     hookExecutionAccepted = false;
+    if ((id === "tenantId" || id === "subscriptionId") && wizardValues[id] !== value) {
+      const groupFields = selectedEntry?.manifest?.configuration.groups.flatMap((group) => group.fields)
+        .filter((field) => field.lookup === "securityGroup") ?? [];
+      wizardValues = { ...wizardValues, ...Object.fromEntries(groupFields.map((field) => [field.id, ""])) };
+    }
     if (
       id === "sourceMode" ||
       id === "sourcePath" ||
@@ -2341,6 +2346,7 @@
                   <ConfigurationFieldControl
                     {field}
                     value={wizardValues[field.id]}
+                    lookupTarget={connectionTarget}
                     on:change={(event) => setWizardValue(field.id, event.detail ?? "")}
                   />
                 {/each}

@@ -198,6 +198,7 @@ export interface FieldOption {
 }
 
 export interface ConfigurationField {
+  lookup?: "securityGroup";
   id: string;
   environmentVariable: string;
   label: string;
@@ -210,6 +211,13 @@ export interface ConfigurationField {
   options?: FieldOption[];
   pattern?: string;
   condition?: FieldCondition;
+}
+
+export interface SecurityGroupSearch {
+  tenantId: string;
+  subscriptionId: string;
+  groups: { id: string; displayName: string }[];
+  hasMore: boolean;
 }
 
 export interface PermissionCheck {

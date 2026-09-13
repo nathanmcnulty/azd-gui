@@ -128,13 +128,18 @@
         },
         "required": { "type": "boolean" },
         "sensitive": { "type": "boolean" },
+        "lookup": { "enum": ["securityGroup"] },
         "help": { "type": "string" },
         "placeholder": { "type": "string" },
         "default": { "type": ["string", "boolean", "array"], "items": { "type": "string" } },
         "options": { "type": "array", "items": { "$ref": "#/$defs/option" } },
         "pattern": { "type": "string" },
         "condition": { "$ref": "#/$defs/condition" }
-      }
+      },
+      "allOf": [{
+        "if": { "properties": { "lookup": {} }, "required": ["lookup"] },
+        "then": { "properties": { "type": { "const": "entraObject" }, "sensitive": { "const": false } } }
+      }]
     },
     "group": {
       "type": "object",

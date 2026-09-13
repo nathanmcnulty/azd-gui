@@ -52,6 +52,20 @@ describe("catalog contracts", () => {
     expect(validateManifest(manifest)).toBe(false);
   });
 
+  it("allows only registered lookups on non-sensitive Entra fields", () => {
+    const manifest = json("catalog/manifests/maester-automation.json");
+    const field = manifest.configuration.groups[1].fields[0];
+    expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    field.lookup = "arbitrary-url";
+    expect(validateManifest(manifest)).toBe(false);
+    field.lookup = "securityGroup";
+    field.sensitive = true;
+    expect(validateManifest(manifest)).toBe(false);
+    field.sensitive = false;
+    field.type = "text";
+    expect(validateManifest(manifest)).toBe(false);
+  });
+
   it("restricts requirement conditions to explicit boolean equality", () => {
     const manifest = json("catalog/manifests/maester-automation.json");
     manifest.prerequisites[0].condition = { field: "includeExchange", equals: false };

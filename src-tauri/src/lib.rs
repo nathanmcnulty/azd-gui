@@ -12,6 +12,7 @@ mod models;
 mod permissions;
 mod persistence;
 mod redaction;
+mod security_groups;
 mod terminal;
 mod tools;
 mod validation_report;
@@ -24,8 +25,8 @@ use crate::{
         ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest, ExternalCatalogPreview,
         OperationEvent, PermissionCheckRequest, PermissionCheckResult, PrepareDeploymentRequest,
         ProjectEnvironment, ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
-        ProjectTemplateSnapshot, TemplateInspection, TemplateManifest, ToolInstallApprovalGrant,
-        ToolInstallPlan, ToolStatus,
+        ProjectTemplateSnapshot, SecurityGroupSearch, TemplateInspection, TemplateManifest,
+        ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -329,6 +330,15 @@ async fn discover_azure_scope(
     refresh: bool,
 ) -> AppResult<AzureDiscovery> {
     azure::discover(subscription_id.as_deref(), refresh).await
+}
+
+#[tauri::command]
+async fn search_security_groups(
+    tenant_id: String,
+    subscription_id: String,
+    query: String,
+) -> AppResult<SecurityGroupSearch> {
+    security_groups::search(&tenant_id, &subscription_id, &query).await
 }
 
 #[tauri::command]
@@ -1029,6 +1039,7 @@ pub fn run() {
             install_tool,
             check_connections,
             discover_azure_scope,
+            search_security_groups,
             run_permission_checks,
             start_login,
             start_azd_operation,

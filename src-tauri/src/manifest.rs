@@ -100,6 +100,15 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
             ) {
                 return Err(AppError::Invalid("Unsupported template field type.".into()));
             }
+            if let Some(lookup) = &field.lookup {
+                if lookup != "securityGroup" || field.sensitive || field.field_type != "entraObject"
+                {
+                    return Err(AppError::Invalid(
+                        "Only non-sensitive entraObject fields may use the securityGroup lookup."
+                            .into(),
+                    ));
+                }
+            }
             let mut options = HashSet::new();
             if field
                 .options
@@ -690,6 +699,30 @@ mod tests {
         let duplicate = manifest.configuration.groups[0].fields[0].clone();
         manifest.configuration.groups[0].fields.push(duplicate);
         assert!(validate(&manifest).is_err());
+    }
+
+    #[test]
+    fn security_group_lookup_is_limited_to_non_sensitive_entra_object_fields() {
+        let mut manifest = crate::catalog::entry_by_id("myworkid")
+            .unwrap()
+            .manifest
+            .unwrap();
+
+        manifest.configuration.groups[0].fields[0].field_type = "entraObject".into();
+        manifest.configuration.groups[0].fields[0].sensitive = false;
+        manifest.configuration.groups[0].fields[0].lookup = Some("securityGroup".into());
+        validate(&manifest).unwrap();
+
+        manifest.configuration.groups[0].fields[0].lookup = Some("unknownDirectoryObject".into());
+        assert!(validate(&manifest).is_err());
+        manifest.configuration.groups[0].fields[0].lookup = Some("securityGroup".into());
+        manifest.configuration.groups[0].fields[0].sensitive = true;
+        assert!(validate(&manifest).is_err());
+
+        manifest.configuration.groups[0].fields[0].lookup = None;
+        assert!(!serde_json::to_string(&manifest)
+            .unwrap()
+            .contains("\"lookup\":null"));
     }
 
     #[test]
