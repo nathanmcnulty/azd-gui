@@ -331,6 +331,19 @@ describe("desktop experience", () => {
     expect(prepares).toHaveBeenCalledTimes(1);
     expect(writes).toHaveBeenCalledWith(expect.any(String), "dev", expect.arrayContaining([{ name: "MAIL_RECIPIENT", value: "" }]));
     expect(starts).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: /dismiss terminal notice/i }));
+    const creates = vi.spyOn(bridge, "createProjectEnvironment");
+    await fireEvent.click(screen.getByRole("button", { name: /Configure environment$/i }));
+    await fireEvent.input(screen.getByLabelText(/environment name/i), { target: { value: "staging" } });
+    await fireEvent.click(screen.getByRole("button", { name: /Review deployment$/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /prepare and open terminal/i }));
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    expect(prepares).toHaveBeenCalledTimes(1);
+    expect(creates).toHaveBeenCalledWith(expect.any(String), "staging", expect.any(String), expect.any(String));
+    expect(writes).toHaveBeenCalledWith(expect.any(String), "staging", expect.any(Array));
+    expect(starts).not.toHaveBeenCalled();
   });
 
   it("opens the post-deployment project workspace", async () => {

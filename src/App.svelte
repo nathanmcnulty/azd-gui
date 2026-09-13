@@ -34,6 +34,7 @@
     saveWizardDraft,
     getProjectState,
     getProjectEnvironmentValues,
+    listProjectEnvironments,
     runPermissionChecks,
     saveAppSettings,
     selectProjectEnvironment,
@@ -149,6 +150,8 @@
   let lastOperationResult: OperationEvent | null = null;
   let theme: "system" | "dark" | "light" = "system";
   let projectPrepared = false;
+  let preparedEnvironmentName: string | null = null;
+  let preparedEnvironmentVariables = new Set<string>();
   let terminalLaunch: ExternalTerminalLaunch | null = null;
   let terminalOpening = false;
   let interactivePreparing = false;
@@ -548,6 +551,8 @@
     activeOperationKind = null;
     lastOperationResult = null;
     projectPrepared = false;
+    preparedEnvironmentName = null;
+    preparedEnvironmentVariables = new Set();
     azureDiscovery = null;
     azureDiscoveryLoading = false;
     azureDiscoveryError = "";
@@ -564,10 +569,11 @@
     if (
       id === "sourceMode" ||
       id === "sourcePath" ||
-      id === "projectPath" ||
-      id === "environmentName"
+      id === "projectPath"
     ) {
       projectPrepared = false;
+      preparedEnvironmentName = null;
+      preparedEnvironmentVariables = new Set();
     }
     if (
       id === "sourceMode" ||
@@ -977,6 +983,20 @@
     if (projectPrepared) {
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
       const environment = String(wizardValues.environmentName || "dev");
+      if (preparedEnvironmentName !== environment) {
+        const environments = await listProjectEnvironments(projectPath);
+        if (environments.some((item) => item.name === environment)) {
+          await selectProjectEnvironment(projectPath, environment);
+        } else {
+          await createProjectEnvironment(
+            projectPath,
+            environment,
+            String(wizardValues.subscriptionId || "") || undefined,
+            String(wizardValues.location || "") || undefined
+          );
+        }
+        preparedEnvironmentName = environment;
+      }
       const targetValues: Record<string, string | boolean | string[] | undefined> = {
         ...environmentValuesForPlan(wizardPlan, wizardValues, true),
         AZURE_LOCATION: wizardValues.location,
@@ -987,7 +1007,11 @@
       const values = Object.entries(targetValues)
         .filter(([, value]) => value !== undefined)
         .map(([name, value]) => ({ name, value: serializeConfigurationValue(value) }));
+      for (const name of preparedEnvironmentVariables) {
+        if (!Object.hasOwn(targetValues, name)) values.push({ name, value: "" });
+      }
       await setProjectEnvironmentValues(projectPath, environment, values);
+      for (const [name] of Object.entries(targetValues)) preparedEnvironmentVariables.add(name);
       addSystemLog("Refreshed the prepared project environment with the reviewed values.", "success");
       return projectPath;
     }
@@ -1018,6 +1042,10 @@
         projects: [project, ...data.projects.filter((existing) => existing.path !== project.path)]
       };
       projectPrepared = true;
+      preparedEnvironmentName = String(wizardValues.environmentName || "dev");
+      preparedEnvironmentVariables = new Set(
+        Object.keys(environmentValuesForPlan(wizardPlan, wizardValues))
+      );
     }
     return projectPath;
   }
