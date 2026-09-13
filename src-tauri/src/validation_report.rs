@@ -209,6 +209,26 @@ fn read_inner(
     project_root: &Path,
     selected_environment: Option<&str>,
 ) -> Result<ValidationReport, ValidationReportState> {
+    let bytes = read_fixed_report_bytes(project_root, REPORT_FILE, MAX_REPORT_BYTES)?;
+
+    let raw: RawValidationReport =
+        serde_json::from_slice(&bytes).map_err(|_| ValidationReportState::Invalid)?;
+    project_report(raw, selected_environment).ok_or(ValidationReportState::Invalid)
+}
+
+pub(crate) fn read_fixed_report_bytes(
+    project_root: &Path,
+    report_file: &str,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ValidationReportState> {
+    if report_file.is_empty()
+        || report_file == "."
+        || report_file == ".."
+        || report_file.contains('/')
+        || report_file.contains('\\')
+    {
+        return Err(ValidationReportState::Invalid);
+    }
     if is_link_or_reparse(project_root).map_err(|_| ValidationReportState::Invalid)? {
         return Err(ValidationReportState::UnsafePath);
     }
@@ -218,19 +238,19 @@ fn read_inner(
     }
 
     let reports = root.join(REPORT_DIRECTORY);
-    let report_path = reports.join(REPORT_FILE);
+    let report_path = reports.join(report_file);
     let report_metadata = safe_report_metadata(&reports, &report_path)?;
-    if report_metadata.len() > MAX_REPORT_BYTES {
+    if report_metadata.len() > max_bytes {
         return Err(ValidationReportState::TooLarge);
     }
 
     let mut bytes = Vec::new();
     fs::File::open(&report_path)
         .map_err(|_| ValidationReportState::Invalid)?
-        .take(MAX_REPORT_BYTES + 1)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| ValidationReportState::Invalid)?;
-    if bytes.len() as u64 > MAX_REPORT_BYTES {
+    if bytes.len() as u64 > max_bytes {
         return Err(ValidationReportState::TooLarge);
     }
 
@@ -241,10 +261,7 @@ fn read_inner(
     if !canonical_report.starts_with(&root) {
         return Err(ValidationReportState::UnsafePath);
     }
-
-    let raw: RawValidationReport =
-        serde_json::from_slice(&bytes).map_err(|_| ValidationReportState::Invalid)?;
-    project_report(raw, selected_environment).ok_or(ValidationReportState::Invalid)
+    Ok(bytes)
 }
 
 fn safe_report_metadata(

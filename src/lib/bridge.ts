@@ -16,6 +16,7 @@ import type {
   BootstrapData,
   Catalog,
   CatalogEntry,
+  DeploymentReceiptRead,
   ConnectionStatus,
   ConnectionTarget,
   ExternalCatalogPreview,
@@ -451,6 +452,11 @@ export async function getProjectState(
 export async function getProjectValidationReport(projectPath: string): Promise<ValidationReportRead> {
   if (!isTauri()) return { state: "notFound" };
   return invoke<ValidationReportRead>("get_project_validation_report", { projectPath });
+}
+
+export async function getProjectDeploymentReceipt(projectPath: string): Promise<DeploymentReceiptRead> {
+  if (!isTauri()) return { state: "notFound" };
+  return invoke<DeploymentReceiptRead>("get_project_deployment_receipt", { projectPath });
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

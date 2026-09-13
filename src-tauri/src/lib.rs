@@ -4,6 +4,7 @@ mod catalog;
 mod command_runner;
 mod connections;
 mod deployment;
+mod deployment_receipt;
 mod error;
 mod execution_approval;
 mod local_source;
@@ -604,6 +605,20 @@ fn get_project_validation_report(
 }
 
 #[tauri::command]
+fn get_project_deployment_receipt(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<deployment_receipt::DeploymentReceiptRead> {
+    let root = PathBuf::from(project_path);
+    let canonical = std::fs::canonicalize(&root)?.display().to_string();
+    let project = state
+        .database
+        .project_by_path(&canonical)?
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
+    Ok(deployment_receipt::read(Path::new(&project.path)))
+}
+
+#[tauri::command]
 async fn list_project_environments(project_path: String) -> AppResult<Vec<ProjectEnvironment>> {
     let canonical = std::fs::canonicalize(project_path)?;
     azd::environment_list(&canonical).await
@@ -1068,6 +1083,7 @@ pub fn run() {
             request_execution_approval,
             get_project_state,
             get_project_validation_report,
+            get_project_deployment_receipt,
             list_project_environments,
             create_project_environment,
             select_project_environment,
