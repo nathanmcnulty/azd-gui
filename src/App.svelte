@@ -207,6 +207,7 @@
   let azureDiscoveryError = "";
   let manualAzureScope = false;
   let activeStepReady = false;
+  let stepBlockingReason = "";
   let sourceTrustAccepted = false;
   let hookExecutionAccepted = false;
   let requiresInteractiveTerminal = false;
@@ -379,35 +380,38 @@
   $: {
     const page = activePage;
     if (!page) {
-      activeStepReady = false;
+      stepBlockingReason = "Choose a template to continue.";
     } else if (page.kind === "source") {
-      activeStepReady =
-        wizardValues.sourceMode === "localTemplate" || wizardValues.sourceMode === "github"
-          ? Boolean(wizardValues.sourcePath && wizardValues.projectPath)
-          : Boolean(wizardValues.projectPath);
+      stepBlockingReason =
+        (wizardValues.sourceMode === "localTemplate" || wizardValues.sourceMode === "github") && !wizardValues.sourcePath
+          ? "Choose the template folder or repository to continue."
+          : !wizardValues.projectPath ? "Choose a project destination to continue." : "";
     } else if (page.kind === "environment") {
-      activeStepReady = Boolean(
-        wizardValues.environmentName &&
-          wizardValues.tenantId &&
-          wizardValues.subscriptionId &&
-          wizardValues.location &&
-          !selectedTenantMismatch
-      );
+      stepBlockingReason = !wizardValues.environmentName ? "Enter an environment name to continue."
+        : !wizardValues.tenantId ? "Choose an Azure tenant to continue."
+        : !wizardValues.subscriptionId ? "Choose an Azure subscription to continue."
+        : !wizardValues.location ? "Choose an Azure region to continue."
+        : selectedTenantMismatch ? "Return to Connect accounts and connect the required tools to this Azure tenant and subscription." : "";
     } else if (page.kind === "overview") {
-      activeStepReady = selectedPlatformSupported && Boolean(selectedEntry?.trusted || sourceTrustAccepted);
+      stepBlockingReason = !selectedPlatformSupported ? "This template does not support the current operating system. Choose a compatible template."
+        : !(selectedEntry?.trusted || sourceTrustAccepted) ? "Review the source and accept the trust acknowledgement to continue." : "";
     } else if (page.kind === "prerequisites") {
-      activeStepReady = requiredToolsReady;
+      stepBlockingReason = requiredToolsReady ? "" : "Install or update the required tools shown above, then select Check again.";
     } else if (page.kind === "connections") {
-      activeStepReady = requiredConnectionsReady && !requiredTenantMismatch;
+      stepBlockingReason = requiredTenantMismatch ? "Reconnect the required accounts to the same Azure tenant."
+        : !requiredConnectionsReady ? "Connect the required accounts shown above to continue." : "";
     } else if (page.kind === "configuration") {
-      activeStepReady = page.blockingIssues.length === 0;
+      stepBlockingReason = page.blockingIssues[0] ?? "";
     } else if (page.kind === "preflight") {
-      activeStepReady = preflightRan;
+      stepBlockingReason = preflightRan ? "" : requiresInteractiveTerminal
+        ? "Use Prepare and open terminal to complete this template's interactive deployment."
+        : "Run checks and preview successfully before continuing.";
     } else if (page.kind === "review") {
-      activeStepReady = hookExecutionAccepted;
+      stepBlockingReason = hookExecutionAccepted ? "" : "Review your choices and approve template code execution to continue.";
     } else {
-      activeStepReady = true;
+      stepBlockingReason = "";
     }
+    activeStepReady = stepBlockingReason === "";
   }
 
   onMount(() => {
@@ -2481,9 +2485,9 @@
 
         <footer class="wizard-footer">
           <button class="secondary" disabled={activeStep === 0} on:click={previousStep}>Back</button>
-          <div class="footer-spacer"></div>
+          <p class="wizard-next-guidance" id="wizard-next-guidance" role="status">{stepBlockingReason}</p>
           {#if activeStep < wizardPlan.pages.length - 1}
-            <button class="primary" disabled={!activeStepReady} on:click={nextStep}>Continue <Icon name="chevron" size={15} /></button>
+            <button class="primary" aria-describedby={stepBlockingReason ? "wizard-next-guidance" : undefined} disabled={!activeStepReady} on:click={nextStep}>Continue <Icon name="chevron" size={15} /></button>
           {/if}
         </footer>
       </section>

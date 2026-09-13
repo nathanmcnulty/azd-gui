@@ -37,6 +37,8 @@ The security-group picker was verified with a cached, explicitly selected Azure 
 
 - Replace raw wizard keys in the final review with visible configuration groups, field labels, readable option names, Yes/No choices, and explicit unset/hidden states. Include the Azure tenant and resource group in the target summary. Direct Edit buttons return to the relevant earlier section and clear execution approval; normal readiness gates remain in place.
 
+- Explain each disabled Continue action beside the button, with accessible live guidance for missing inputs, tools, connections, target mismatches, source trust, preview, and execution approval. One readiness decision drives both the instruction and button state.
+
 ## Next milestones
 
 | Order | Deliverable | Acceptance evidence |

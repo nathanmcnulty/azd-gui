@@ -33,6 +33,7 @@ describe("desktop experience", () => {
 
     const continueButton = screen.getByRole("button", { name: /^continue$/i });
     expect(continueButton).toBeDisabled();
+    expect(continueButton).toHaveAccessibleDescription("Choose a project destination to continue.");
 
     const destination = screen.getByPlaceholderText(/empty destination folder/i);
     expect(destination).toBeRequired();
@@ -40,6 +41,8 @@ describe("desktop experience", () => {
       target: { value: "C:\\Deployments\\entra-health-dev" }
     });
     expect(continueButton).toBeEnabled();
+    expect(continueButton).not.toHaveAttribute("aria-describedby");
+    expect(screen.getByRole("status").textContent).toBe("");
   });
 
   it("discovers Azure scope when the wizard reaches environment configuration", async () => {
@@ -64,6 +67,12 @@ describe("desktop experience", () => {
       );
     });
     expect(screen.getByRole("combobox", { name: /azure region/i })).toHaveValue("westus2");
+    expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
+    const environmentName = screen.getByLabelText(/environment name/i);
+    await fireEvent.input(environmentName, { target: { value: "" } });
+    expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^continue$/i })).toHaveAccessibleDescription("Enter an environment name to continue.");
+    await fireEvent.input(environmentName, { target: { value: "dev" } });
     expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
   });
 
@@ -136,8 +145,10 @@ describe("desktop experience", () => {
     expect(within(configurationReview).getByText(initialLink)).toBeInTheDocument();
 
     const approval = screen.getByRole("checkbox", { name: /approve pinned template code execution/i });
+    expect(screen.getByRole("button", { name: /^continue$/i })).toHaveAccessibleDescription("Review your choices and approve template code execution to continue.");
     await fireEvent.click(approval);
     expect(approval).toBeChecked();
+    expect(screen.getByRole("button", { name: /^continue$/i })).not.toHaveAttribute("aria-describedby");
 
     await fireEvent.click(screen.getByRole("button", { name: "Edit Entra health alerts" }));
     expect(screen.getByRole("heading", { name: "Entra health alerts" })).toBeInTheDocument();
