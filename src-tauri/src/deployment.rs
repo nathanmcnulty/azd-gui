@@ -719,6 +719,40 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires installed azd; initializes only a temporary hook-free local fixture"]
+    async fn installed_azd_prepares_the_selected_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("fixture-source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("azure.yaml"), "name: local-preparation-smoke\n").unwrap();
+        let inspection = crate::catalog::inspect_local(source.to_str().unwrap()).unwrap();
+        let mut request = myworkid_request();
+        request.template_id = inspection.entry.id;
+        request.source_mode = "localTemplate".into();
+        request.source_path = Some(source.display().to_string());
+        request.source_binding = inspection.source_binding;
+        request.destination = root
+            .path()
+            .join("selected-destination")
+            .display()
+            .to_string();
+        request.tenant = None;
+        request.subscription = None;
+        request.resource_group = None;
+        request.environment_values.clear();
+        let database = crate::persistence::Database::open(&root.path().join("review.db")).unwrap();
+        let project = super::prepare(request, &root.path().join("cache"), &database)
+            .await
+            .unwrap();
+        assert!(std::path::Path::new(&project.path)
+            .join("azure.yaml")
+            .is_file());
+        assert!(std::path::Path::new(&project.path)
+            .join(".azure/dev/.env")
+            .is_file());
+    }
+
+    #[tokio::test]
     async fn staged_local_contract_preserves_reviewed_identity() {
         let source = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
