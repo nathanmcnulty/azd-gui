@@ -176,6 +176,10 @@
   let projectDeploymentResult: ProjectDeploymentResult | null = null;
   let projectExecutionAccepted = false;
   let projectLoading = false;
+  let projectWaitingForEnvironment = false;
+  let projectWorkspaceRequest = 0;
+  let environmentReadRequest = 0;
+  const projectEnvironmentWrites = new Map<string, Promise<unknown>>();
   let environmentEditorOpen = false;
   let environmentBusy = false;
   let environmentError = "";
@@ -459,7 +463,7 @@
   function navigate(id: NavId) {
     activeNav = id;
     closeWizard();
-    if (id !== "projects") selectedProject = null;
+    if (id !== "projects") closeProjectWorkspace();
   }
 
   function toggleNavigation() {
@@ -1575,18 +1579,41 @@
     environmentConfigurationLoaded = true;
   }
 
-  async function loadEnvironmentConfiguration(projectPath: string, environment: string) {
+  function isCurrentProject(request: number, path: string, environment?: string) {
+    return request === projectWorkspaceRequest && selectedProject?.path === path &&
+      (environment === undefined || selectedProject.environment === environment);
+  }
+
+  function closeProjectWorkspace() {
+    projectWorkspaceRequest += 1;
+    selectedProject = null;
+    rawVariableName = "";
+    rawVariableValue = "";
+  }
+
+  async function loadEnvironmentConfiguration(projectPath: string, environment: string, preserveEdits = false) {
+    const workspace = projectWorkspaceRequest;
+    if (!isCurrentProject(workspace, projectPath, environment)) return;
+    const request = ++environmentReadRequest;
+    const isCurrent = () => request === environmentReadRequest && isCurrentProject(workspace, projectPath, environment);
     environmentConfigurationLoaded = false;
     environmentConfigurationError = "";
     try {
-      hydrateEnvironmentConfiguration(
-        await getProjectEnvironmentValues(projectPath, environment)
-      );
-    } catch (error) {
+      const values = await getProjectEnvironmentValues(projectPath, environment);
+      if (!isCurrent()) return;
+      const dirty = preserveEdits ? [...environmentConfigurationDirty] : [];
+      const edits = Object.fromEntries(selectedProjectConfigurationFields
+        .filter((field) => dirty.includes(field.environmentVariable))
+        .map((field) => [field.id, environmentConfigurationValues[field.id]]));
+      hydrateEnvironmentConfiguration(values);
+      environmentConfigurationValues = { ...environmentConfigurationValues, ...edits };
+      environmentConfigurationDirty = dirty;
+    } catch {
+      if (!isCurrent()) return;
       projectEnvironmentValues = [];
-      environmentConfigurationError = String(error);
+      environmentConfigurationError = "Environment configuration could not be read. Refresh the project to try again.";
     } finally {
-      environmentConfigurationLoaded = true;
+      if (isCurrent()) environmentConfigurationLoaded = true;
     }
   }
 
@@ -1603,7 +1630,12 @@
   }
 
   async function saveEnvironmentConfiguration() {
-    if (!selectedProject?.environment || environmentConfigurationBusy) return;
+    if (!selectedProject?.environment || environmentConfigurationBusy || environmentBusy || projectLoading) return;
+    if (projectEnvironmentWrites.has(selectedProject.path)) return;
+    const project = selectedProject;
+    const environment = selectedProject.environment;
+    const workspace = projectWorkspaceRequest;
+    const isCurrent = () => isCurrentProject(workspace, project.path, environment);
     const fields = selectedProjectConfigurationFields;
     const validationIssue = visibleProjectConfigurationFields
       .filter((field) => {
@@ -1629,35 +1661,63 @@
     if (values.length === 0) return;
     environmentConfigurationBusy = true;
     environmentConfigurationError = "";
+    const write = setProjectEnvironmentValues(project.path, environment, values);
+    projectEnvironmentWrites.set(project.path, write);
     try {
-      await setProjectEnvironmentValues(selectedProject.path, selectedProject.environment, values);
+      await write;
+      if (!isCurrent()) return;
       projectPreview = null;
+      environmentConfigurationDirty = environmentConfigurationDirty.filter((name) => {
+        const saved = values.find((value) => value.name === name);
+        const field = fields.find((field) => field.environmentVariable === name);
+        return !saved || !field || environmentConfigurationValues[field.id] !== saved.value;
+      });
       addSystemLog(`Updated ${values.length} azd environment value${values.length === 1 ? "" : "s"}.`, "success");
-      await loadEnvironmentConfiguration(selectedProject.path, selectedProject.environment);
-    } catch (error) {
-      environmentConfigurationError = String(error);
+      await loadEnvironmentConfiguration(project.path, environment, true);
+    } catch {
+      if (isCurrent()) environmentConfigurationError = "Configuration could not be saved. Your edits are still available; retry when ready.";
+      else {
+        addSystemLog("An earlier project's configuration save failed. Reopen that project and review its environment values.", "warning");
+        outputOpen = true;
+      }
     } finally {
-      environmentConfigurationBusy = false;
+      if (projectEnvironmentWrites.get(project.path) === write) projectEnvironmentWrites.delete(project.path);
+      if (isCurrent()) environmentConfigurationBusy = false;
     }
   }
 
   async function setRawEnvironmentVariable() {
-    if (!selectedProject?.environment || !rawVariableName.trim() || !rawVariableValue || environmentConfigurationBusy) return;
+    if (!selectedProject?.environment || !rawVariableName.trim() || !rawVariableValue || environmentConfigurationBusy || environmentBusy || projectLoading) return;
+    if (projectEnvironmentWrites.has(selectedProject.path)) return;
+    const project = selectedProject;
+    const environment = selectedProject.environment;
+    const workspace = projectWorkspaceRequest;
+    const name = rawVariableName.trim();
+    const value = rawVariableValue;
+    const isCurrent = () => isCurrentProject(workspace, project.path, environment);
     environmentConfigurationBusy = true;
     environmentConfigurationError = "";
+    const write = setProjectEnvironmentValues(project.path, environment, [{ name, value }]);
+    projectEnvironmentWrites.set(project.path, write);
     try {
-      await setProjectEnvironmentValues(selectedProject.path, selectedProject.environment, [
-        { name: rawVariableName.trim(), value: rawVariableValue }
-      ]);
+      await write;
+      if (!isCurrent()) return;
       projectPreview = null;
-      addSystemLog(`Updated azd environment variable '${rawVariableName.trim()}'. Its value was not logged.`, "success");
-      rawVariableName = "";
-      rawVariableValue = "";
-      await loadEnvironmentConfiguration(selectedProject.path, selectedProject.environment);
-    } catch (error) {
-      environmentConfigurationError = String(error);
+      addSystemLog("Updated an azd environment variable. Its value was not logged.", "success");
+      if (rawVariableName.trim() === name && rawVariableValue === value) {
+        rawVariableName = "";
+        rawVariableValue = "";
+      }
+      await loadEnvironmentConfiguration(project.path, environment, true);
+    } catch {
+      if (isCurrent()) environmentConfigurationError = "The variable could not be saved. Retry when ready.";
+      else {
+        addSystemLog("An earlier project's variable save failed. Reopen that project and review its environment values.", "warning");
+        outputOpen = true;
+      }
     } finally {
-      environmentConfigurationBusy = false;
+      if (projectEnvironmentWrites.get(project.path) === write) projectEnvironmentWrites.delete(project.path);
+      if (isCurrent()) environmentConfigurationBusy = false;
     }
   }
 
@@ -1702,6 +1762,8 @@
     project: ProjectSummary,
     preserveView = false
   ) {
+    const request = ++projectWorkspaceRequest;
+    const isCurrent = () => isCurrentProject(request, project.path);
     if (!preserveView) {
       closeWizard();
       selectedInspection = null;
@@ -1717,9 +1779,23 @@
     environmentEditorOpen = false;
     environmentError = "";
     environmentConfigurationLoaded = false;
+    environmentConfigurationBusy = false;
+    environmentBusy = false;
+    environmentConfigurationDirty = [];
+    environmentConfigurationValues = {};
+    projectEnvironmentValues = [];
+    rawVariableName = "";
+    rawVariableValue = "";
     projectLoading = true;
+    const pendingWrite = projectEnvironmentWrites.get(project.path);
+    projectWaitingForEnvironment = Boolean(pendingWrite);
+    if (pendingWrite) {
+      await pendingWrite.catch(() => undefined);
+      if (!isCurrent()) return;
+    }
+    projectWaitingForEnvironment = false;
     const snapshot = await loadProjectWorkspace(project);
-    if (selectedProject?.path !== project.path) return;
+    if (!isCurrent()) return;
     selectedProjectTemplate = snapshot.template;
     projectState = snapshot.state;
     projectEnvironments = snapshot.environments;
@@ -1727,6 +1803,7 @@
     if (snapshot.currentEnvironment) {
       await loadEnvironmentConfiguration(project.path, snapshot.currentEnvironment);
     }
+    if (!isCurrent()) return;
     projectOperationHistory = snapshot.history;
     if (snapshot.failedSources > 0) {
       addSystemLog(
@@ -1739,19 +1816,25 @@
   }
 
   function refreshSelectedProject() {
-    if (selectedProject) void openProjectWorkspace(selectedProject, true);
+    if (selectedProject && !environmentConfigurationBusy && !environmentBusy) void openProjectWorkspace(selectedProject, true);
   }
 
   async function useReviewedProjectContract() {
     const project = selectedProject;
-    if (!project || activeOperationId) return;
+    if (!project || activeOperationId || environmentConfigurationBusy || environmentBusy) return;
+    let workspace = projectWorkspaceRequest;
     try {
       await refreshProjectTemplate(project.path);
+      if (!isCurrentProject(workspace, project.path)) return;
       projectExecutionAccepted = false;
       projectPreview = null;
-      await openProjectWorkspace(project, true);
+      const refresh = openProjectWorkspace(project, true);
+      workspace = projectWorkspaceRequest;
+      await refresh;
+      if (!isCurrentProject(workspace, project.path)) return;
       addSystemLog("Applied the reviewed catalog contract for the same template revision. Review configuration before running template code.", "success");
     } catch (error) {
+      if (!isCurrentProject(workspace, project.path)) return;
       addSystemLog(String(error), "error");
       outputOpen = true;
     }
@@ -1780,9 +1863,13 @@
   }
 
   async function refreshEnvironmentProjectState(projectPath: string, environment: string) {
+    const workspace = projectWorkspaceRequest;
     try {
-      projectState = await getProjectState(projectPath, environment);
+      const state = await getProjectState(projectPath, environment);
+      if (!isCurrentProject(workspace, projectPath, environment)) return;
+      projectState = state;
     } catch (error) {
+      if (!isCurrentProject(workspace, projectPath, environment)) return;
       projectState = null;
       addSystemLog(
         `The environment changed, but azd project state could not be refreshed: ${String(error)}`,
@@ -1793,44 +1880,68 @@
   }
 
   async function createEnvironment() {
-    if (!selectedProject || environmentBusy || !environmentName.trim()) return;
+    if (!selectedProject || environmentBusy || environmentConfigurationBusy || !environmentName.trim()) return;
+    if (projectEnvironmentWrites.has(selectedProject.path)) return;
+    const project = selectedProject;
+    const name = environmentName.trim();
+    const workspace = ++projectWorkspaceRequest;
+    const isCurrent = () => isCurrentProject(workspace, project.path);
     environmentBusy = true;
     environmentError = "";
+    const write = createProjectEnvironment(
+      project.path, name,
+      environmentSubscription.trim() || undefined,
+      environmentLocation.trim() || undefined
+    );
+    projectEnvironmentWrites.set(project.path, write);
     try {
-      const environments = await createProjectEnvironment(
-        selectedProject.path,
-        environmentName.trim(),
-        environmentSubscription.trim() || undefined,
-        environmentLocation.trim() || undefined
-      );
+      const environments = await write;
+      if (!isCurrent()) return;
       projectPreview = null;
       applyProjectEnvironments(environments);
-      addSystemLog(`Created and selected azd environment '${environmentName.trim()}'.`, "success");
+      addSystemLog(`Created and selected azd environment '${name}'.`, "success");
       environmentEditorOpen = false;
-      await refreshEnvironmentProjectState(selectedProject.path, environmentName.trim());
-      await loadEnvironmentConfiguration(selectedProject.path, environmentName.trim());
+      rawVariableName = "";
+      rawVariableValue = "";
+      environmentConfigurationLoaded = false;
+      await refreshEnvironmentProjectState(project.path, name);
+      if (!isCurrent()) return;
+      await loadEnvironmentConfiguration(project.path, name);
     } catch (error) {
-      environmentError = String(error);
+      if (isCurrent()) environmentError = String(error);
     } finally {
-      environmentBusy = false;
+      if (projectEnvironmentWrites.get(project.path) === write) projectEnvironmentWrites.delete(project.path);
+      if (isCurrent()) environmentBusy = false;
     }
   }
 
   async function selectEnvironment(environment: ProjectEnvironment) {
-    if (!selectedProject || environmentBusy || environment.isDefault) return;
+    if (!selectedProject || environmentBusy || environmentConfigurationBusy || environment.isDefault) return;
+    if (projectEnvironmentWrites.has(selectedProject.path)) return;
+    const project = selectedProject;
+    const workspace = ++projectWorkspaceRequest;
+    const isCurrent = () => isCurrentProject(workspace, project.path);
     environmentBusy = true;
     environmentError = "";
+    const write = selectProjectEnvironment(project.path, environment.name);
+    projectEnvironmentWrites.set(project.path, write);
     try {
-      const environments = await selectProjectEnvironment(selectedProject.path, environment.name);
+      const environments = await write;
+      if (!isCurrent()) return;
       projectPreview = null;
       applyProjectEnvironments(environments);
       addSystemLog(`Selected azd environment '${environment.name}'.`, "success");
-      await refreshEnvironmentProjectState(selectedProject.path, environment.name);
-      await loadEnvironmentConfiguration(selectedProject.path, environment.name);
+      rawVariableName = "";
+      rawVariableValue = "";
+      environmentConfigurationLoaded = false;
+      await refreshEnvironmentProjectState(project.path, environment.name);
+      if (!isCurrent()) return;
+      await loadEnvironmentConfiguration(project.path, environment.name);
     } catch (error) {
-      environmentError = String(error);
+      if (isCurrent()) environmentError = String(error);
     } finally {
-      environmentBusy = false;
+      if (projectEnvironmentWrites.get(project.path) === write) projectEnvironmentWrites.delete(project.path);
+      if (isCurrent()) environmentBusy = false;
     }
   }
 
@@ -2632,7 +2743,7 @@
       <section class="page">
         {#if selectedProject}
           <div class="project-workspace-header">
-            <button class="text-button back-link" on:click={() => (selectedProject = null)}>‹ All projects</button>
+            <button class="text-button back-link" on:click={closeProjectWorkspace}>‹ All projects</button>
             <div class="page-header">
               <div>
                 <span class="eyebrow">AZD PROJECT</span>
@@ -2652,7 +2763,7 @@
             {/each}
           </nav>
           {#if projectLoading}
-            <div class="project-loading"><span class="spinner"></span><span>Refreshing azd project state…</span></div>
+            <div class="project-loading" role="status"><span class="spinner"></span><span>{projectWaitingForEnvironment ? "Finishing the earlier environment change before loading this project…" : "Refreshing azd project state…"}</span></div>
           {:else if projectTab === "overview"}
             <div class="workspace-grid">
               <section class="workspace-panel">
@@ -2662,7 +2773,7 @@
               <section class="workspace-panel">
                 <h2>Source</h2>
                 {#if !selectedProjectTemplate && selectedProject.templateId?.startsWith("external-")}
-                  <div class="callout warning"><div><strong>Catalog contract needs review</strong><p>Review this catalog in Settings, then apply its contract for this exact template revision. Project files and Azure resources are preserved.</p><button class="secondary compact" on:click={() => (activeNav = "settings")}>Review catalog sources</button><button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={useReviewedProjectContract}>Use reviewed catalog contract</button></div></div>
+                  <div class="callout warning"><div><strong>Catalog contract needs review</strong><p>Review this catalog in Settings, then apply its contract for this exact template revision. Project files and Azure resources are preserved.</p><button class="secondary compact" on:click={() => (activeNav = "settings")}>Review catalog sources</button><button class="secondary compact" disabled={Boolean(activeOperationId) || environmentConfigurationBusy || environmentBusy} on:click={useReviewedProjectContract}>Use reviewed catalog contract</button></div></div>
                 {/if}
                 <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
@@ -2786,7 +2897,7 @@
             <div class="environment-management">
               <div class="environment-toolbar">
                 <div><h2>Project environments</h2><p>azd owns the values under <code>.azure</code>; the app only invokes supported environment commands.</p></div>
-                <button class="primary" disabled={environmentBusy} on:click={openEnvironmentEditor}><Icon name="plus" size={15} /> New environment</button>
+                <button class="primary" disabled={environmentBusy || environmentConfigurationBusy} on:click={openEnvironmentEditor}><Icon name="plus" size={15} /> New environment</button>
               </div>
               {#if environmentEditorOpen}
                 <form class="environment-form" on:submit|preventDefault={createEnvironment}>
@@ -2794,8 +2905,8 @@
                   <label><span>Subscription ID <small>Optional</small></span><input bind:value={environmentSubscription} placeholder="00000000-0000-0000-0000-000000000000" /></label>
                   <label><span>Azure location <small>Optional</small></span><input bind:value={environmentLocation} placeholder="westus2" /></label>
                   <div class="environment-form-actions">
-                    <button type="button" class="secondary" disabled={environmentBusy} on:click={() => (environmentEditorOpen = false)}>Cancel</button>
-                    <button type="submit" class="primary" disabled={environmentBusy || !environmentName.trim()}>{environmentBusy ? "Creating…" : "Create environment"}</button>
+                    <button type="button" class="secondary" disabled={environmentBusy || environmentConfigurationBusy} on:click={() => (environmentEditorOpen = false)}>Cancel</button>
+                    <button type="submit" class="primary" disabled={environmentBusy || environmentConfigurationBusy || !environmentName.trim()}>{environmentBusy ? "Creating…" : "Create environment"}</button>
                   </div>
                 </form>
               {/if}
@@ -2813,7 +2924,7 @@
                     {#if environment.isDefault}
                       <span class="current-environment-label">Selected</span>
                     {:else}
-                      <button class="secondary compact" disabled={environmentBusy} aria-label={`Use ${environment.name} environment`} on:click={() => selectEnvironment(environment)}>Use environment</button>
+                      <button class="secondary compact" disabled={environmentBusy || environmentConfigurationBusy} aria-label={`Use ${environment.name} environment`} on:click={() => selectEnvironment(environment)}>Use environment</button>
                     {/if}
                   </div>
                 {/each}
@@ -2828,7 +2939,7 @@
                   {/if}
                 </div>
                 {#if environmentConfigurationError}<div class="inline-error" role="alert">{environmentConfigurationError}</div>{/if}
-                {#if !environmentConfigurationLoaded}
+                {#if !environmentConfigurationLoaded || environmentBusy}
                   <div class="project-loading"><span class="spinner"></span><span>Reading safe environment metadata…</span></div>
                 {:else}
                   {#if missingProjectConfiguration.length > 0}
@@ -2897,7 +3008,7 @@
             <section class="resource-state" aria-label="Project resources">
               <div class="section-toolbar">
                 <div><h2>Services and Azure resources</h2><p>Current state returned by <code>azd show --output json</code> for {selectedProject.environment ?? "the active environment"}.</p></div>
-                <button class="secondary" on:click={refreshSelectedProject}><Icon name="refresh" size={14} /> Refresh</button>
+                <button class="secondary" disabled={environmentConfigurationBusy || environmentBusy} on:click={refreshSelectedProject}><Icon name="refresh" size={14} /> Refresh</button>
               </div>
               {#if projectState}
                 <div class="resource-summary" aria-label="Resource summary">

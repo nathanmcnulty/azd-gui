@@ -738,6 +738,285 @@ describe("desktop experience", () => {
     expect(starts).not.toHaveBeenCalled();
   });
 
+  it("ignores late project metadata after closing and reopening the same project", async () => {
+    const states = [
+      {
+        services: {
+          stale: {
+            project: { language: "TypeScript" },
+            target: {
+              resourceIds: [
+                "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg/providers/Microsoft.Web/sites/stale"
+              ]
+            }
+          }
+        }
+      },
+      {
+        services: {
+          current: {
+            project: { language: "TypeScript" },
+            target: {
+              resourceIds: [
+                "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg/providers/Microsoft.Web/sites/current"
+              ]
+            }
+          }
+        }
+      }
+    ] as const;
+    const resolvers: Array<(state: Awaited<ReturnType<typeof bridge.getProjectState>>) => void> = [];
+    const getState = vi.spyOn(bridge, "getProjectState").mockImplementation(
+      () => new Promise((resolve) => {
+        resolvers.push(resolve);
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await waitFor(() => expect(getState).toHaveBeenCalledTimes(1));
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await waitFor(() => expect(getState).toHaveBeenCalledTimes(2));
+
+    await act(() => {
+      resolvers[1](states[1]);
+    });
+    await fireEvent.click(await screen.findByRole("button", { name: "resources" }));
+    expect(await screen.findByRole("heading", { name: "current" })).toBeInTheDocument();
+    await act(() => {
+      resolvers[0](states[0]);
+    });
+    expect(screen.getByRole("heading", { name: "current" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "stale" })).not.toBeInTheDocument();
+  });
+
+  it("does not apply a delayed environment selection to another project", async () => {
+    const selectedEnvironments = [
+      {
+        name: "staging",
+        dotEnvPath: "C:\\Deployments\\maester-lab\\.azure\\staging\\.env",
+        hasLocal: true,
+        hasRemote: false,
+        isDefault: true
+      }
+    ];
+    let resolveSelection!: (environments: Awaited<ReturnType<typeof bridge.selectProjectEnvironment>>) => void;
+    const selectEnvironment = vi.spyOn(bridge, "selectProjectEnvironment").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveSelection = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    await fireEvent.click(screen.getByRole("button", { name: /use test environment/i }));
+    await waitFor(() => expect(selectEnvironment).toHaveBeenCalled());
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /myworkid/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Active environment" }).closest("section"))
+        .toHaveTextContent("dev");
+    });
+
+    await act(() => {
+      resolveSelection(selectedEnvironments);
+    });
+    expect(screen.getByRole("heading", { name: "Active environment" }).closest("section"))
+      .toHaveTextContent("dev");
+    expect(screen.queryByText("staging", { selector: ".environment-hero strong" })).not.toBeInTheDocument();
+  });
+
+  it("does not apply a delayed environment creation to another project", async () => {
+    const createdEnvironments = [
+      {
+        name: "staging",
+        dotEnvPath: "C:\\Deployments\\maester-lab\\.azure\\staging\\.env",
+        hasLocal: true,
+        hasRemote: false,
+        isDefault: true
+      }
+    ];
+    let resolveCreation!: (environments: Awaited<ReturnType<typeof bridge.createProjectEnvironment>>) => void;
+    const createEnvironment = vi.spyOn(bridge, "createProjectEnvironment").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveCreation = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    await fireEvent.click(screen.getByRole("button", { name: /new environment/i }));
+    await fireEvent.input(screen.getByPlaceholderText("staging"), {
+      target: { value: "staging" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /create environment/i }));
+    await waitFor(() => expect(createEnvironment).toHaveBeenCalled());
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /myworkid/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Active environment" }).closest("section"))
+        .toHaveTextContent("dev");
+    });
+
+    await act(() => {
+      resolveCreation(createdEnvironments);
+    });
+    expect(screen.getByRole("heading", { name: "Active environment" }).closest("section"))
+      .toHaveTextContent("dev");
+    expect(screen.queryByText("staging", { selector: ".environment-hero strong" })).not.toBeInTheDocument();
+  });
+
+  it("waits for a pending environment selection before reopening the same project", async () => {
+    const realSelect = bridge.selectProjectEnvironment;
+    let releaseSelection!: () => Promise<void>;
+    const selectEnvironment = vi.spyOn(bridge, "selectProjectEnvironment").mockImplementation(
+      (projectPath, environment) => new Promise((resolve, reject) => {
+        releaseSelection = async () => {
+          try {
+            resolve(await realSelect(projectPath, environment));
+          } catch (error) {
+            reject(error);
+          }
+        };
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    await fireEvent.click(screen.getByRole("button", { name: /use test environment/i }));
+    await waitFor(() => expect(selectEnvironment).toHaveBeenCalledTimes(1));
+
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /maester/i })).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(/finishing the earlier environment change before loading this project/i);
+    });
+    expect(screen.queryByRole("button", { name: /new environment/i })).not.toBeInTheDocument();
+
+    await act(async () => {
+      await releaseSelection();
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Active environment" }).closest("section"))
+        .toHaveTextContent("test");
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "environments" }));
+    expect(screen.getByRole("button", { name: /new environment/i })).toBeEnabled();
+  });
+
+  it("does not reload an old project's configuration after switching projects", async () => {
+    let resolveSave!: () => void;
+    const save = vi.spyOn(bridge, "setProjectEnvironmentValues").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveSave = resolve;
+      })
+    );
+    const reads = vi.spyOn(bridge, "getProjectEnvironmentValues");
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    const permissionProfile = await screen.findByRole("combobox", { name: /permission profile/i });
+    await fireEvent.change(permissionProfile, { target: { value: "Minimal" } });
+    await fireEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /myworkid/i }));
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: /myworkid/i })).toBeInTheDocument();
+      expect(screen.queryByText(/refreshing azd project state/i)).not.toBeInTheDocument();
+    });
+    const readsAfterNewProject = reads.mock.calls.length;
+    await act(() => {
+      resolveSave();
+    });
+
+    expect(reads.mock.calls.length).toBe(readsAfterNewProject);
+    expect(screen.getByRole("heading", { name: /myworkid/i })).toBeInTheDocument();
+  });
+
+  it("preserves edits made while a configuration save and reload are pending", async () => {
+    const baselineValues = await bridge.getProjectEnvironmentValues(
+      "C:\\Deployments\\maester-lab",
+      "lab"
+    );
+    let readCount = 0;
+    let resolveReload!: (values: Awaited<ReturnType<typeof bridge.getProjectEnvironmentValues>>) => void;
+    const reads = vi.spyOn(bridge, "getProjectEnvironmentValues").mockImplementation(
+      () => {
+        readCount += 1;
+        if (readCount === 1) return Promise.resolve(baselineValues);
+        return new Promise((resolve) => {
+          resolveReload = resolve;
+        });
+      }
+    );
+    let resolveSave!: () => void;
+    const save = vi.spyOn(bridge, "setProjectEnvironmentValues").mockImplementation(
+      () => new Promise((resolve) => {
+        resolveSave = resolve;
+      })
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    const permissionProfile = await screen.findByRole("combobox", { name: /permission profile/i });
+    await fireEvent.change(permissionProfile, { target: { value: "Minimal" } });
+    await fireEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    const latestRecipient = "latest@example.invalid";
+    await fireEvent.input(screen.getByLabelText(/mail recipient/i), {
+      target: { value: latestRecipient }
+    });
+    await act(() => {
+      resolveSave();
+    });
+    await waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      resolveReload(baselineValues);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save configuration" })).toBeEnabled());
+    expect(screen.getByLabelText(/mail recipient/i)).toHaveValue(latestRecipient);
+    expect(screen.getByText(/1 unsaved/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save configuration/i })).toBeEnabled();
+  });
+
+  it("shows a generic configuration save error while retaining editable values", async () => {
+    const save = vi.spyOn(bridge, "setProjectEnvironmentValues").mockRejectedValue(
+      new Error("raw configuration secret")
+    );
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    const permissionProfile = await screen.findByRole("combobox", { name: /permission profile/i });
+    await fireEvent.change(permissionProfile, { target: { value: "Minimal" } });
+    await fireEvent.click(screen.getByRole("button", { name: /save configuration/i }));
+    const error = await screen.findByRole("alert");
+
+    expect(error).toHaveTextContent(/configuration could not be saved/i);
+    expect(error).not.toHaveTextContent("raw configuration secret");
+    expect(permissionProfile).toHaveValue("Minimal");
+    expect(screen.getByText(/1 unsaved/i)).toBeInTheDocument();
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
   it("opens the post-deployment project workspace", async () => {
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
