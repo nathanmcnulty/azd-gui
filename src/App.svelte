@@ -258,7 +258,8 @@
   $: projectEnvironmentReady = Boolean(selectedProject?.environment) &&
     !environmentBusy && !environmentConfigurationBusy && !projectLoading;
   $: projectConfigurationReady = projectEnvironmentReady &&
-    environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0;
+    environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0 &&
+    environmentConfigurationDirty.length === 0;
   $: projectPreviewReady = Boolean(
     projectPreview?.event.state === "succeeded" &&
       selectedProject?.path === projectPreview?.projectPath &&
@@ -1632,6 +1633,12 @@
     setEnvironmentConfigurationValue(field, serializeConfigurationValue(value));
   }
 
+  function discardEnvironmentConfigurationChanges() {
+    if (environmentConfigurationBusy || environmentBusy || projectLoading) return;
+    hydrateEnvironmentConfiguration(projectEnvironmentValues);
+    environmentConfigurationError = "";
+  }
+
   async function saveEnvironmentConfiguration() {
     if (!selectedProject?.environment || environmentConfigurationBusy || environmentBusy || projectLoading) return;
     if (projectEnvironmentWrites.has(selectedProject.path)) return;
@@ -2863,6 +2870,8 @@
                   <div class="callout info"><Icon name="cloud" size={17} /><div><strong>Choose an environment</strong><p>Select or create an environment before previewing and deploying this project.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Manage environments</button></div></div>
                 {:else if environmentConfigurationState === "error"}
                   <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration unavailable</strong><p>Load the saved environment configuration before previewing or deploying.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Review configuration</button></div></div>
+                {:else if environmentConfigurationDirty.length > 0}
+                  <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Save configuration changes</strong><p>Preview and deployment use saved environment values. Save or discard your edits before continuing.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Review unsaved changes</button></div></div>
                 {:else if missingProjectConfiguration.length > 0}
                   <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration required</strong><p>Set {missingProjectConfiguration.map((field) => field.label).join(", ")} before previewing this environment.</p></div></div>
                 {:else if projectPreviewReady && projectPreview?.event.outcome}
@@ -2945,6 +2954,8 @@
                   <div><h2>Environment configuration</h2><p>Manifest fields can be read back unless marked sensitive. Raw values are always write-only.</p></div>
                   {#if environmentConfigurationState === "error"}
                     <StatusPill tone="warning" label="Unavailable" />
+                  {:else if environmentConfigurationDirty.length > 0}
+                    <StatusPill tone="warning" label="Unsaved changes" />
                   {:else if missingProjectConfiguration.length > 0}
                     <StatusPill tone="warning" label={`${missingProjectConfiguration.length} required`} />
                   {:else if environmentConfigurationState === "ready" && !environmentBusy}
@@ -2973,12 +2984,15 @@
                         />
                       {/each}
                     </div>
+                  {:else}
+                    <div class="empty-configuration"><strong>No visible manifest fields</strong><span>Add a raw environment variable below when the template documentation requires one.</span></div>
+                  {/if}
+                  {#if visibleProjectConfigurationFields.length > 0 || environmentConfigurationDirty.length > 0}
                     <div class="environment-configuration-actions">
                       <span>{environmentConfigurationDirty.length === 0 ? "No unsaved changes" : `${environmentConfigurationDirty.length} unsaved`}</span>
+                      <button class="secondary" disabled={environmentConfigurationBusy || environmentConfigurationDirty.length === 0} on:click={discardEnvironmentConfigurationChanges}>Discard changes</button>
                       <button class="primary" disabled={environmentConfigurationBusy || environmentConfigurationDirty.length === 0} on:click={saveEnvironmentConfiguration}>{environmentConfigurationBusy ? "Saving…" : "Save configuration"}</button>
                     </div>
-                  {:else}
-                    <div class="empty-configuration"><strong>No manifest-defined fields</strong><span>Add a raw environment variable below when the template documentation requires one.</span></div>
                   {/if}
                   <div class="raw-environment-editor">
                     <div><strong>Advanced variables</strong><span>Existing raw values stay masked and are never returned to the UI.</span></div>
