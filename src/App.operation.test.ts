@@ -348,6 +348,13 @@ describe("structured operation results", () => {
     await fireEvent.click(screen.getByRole("button", { name: "overview" }));
 
     expect(screen.getByRole("button", { name: /deploy with azd up/i })).toBeDisabled();
+    expect(screen.getByText(/save configuration changes/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
+    await fireEvent.click(screen.getByRole("button", { name: /review unsaved changes/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /discard changes/i }));
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    expect(screen.getByRole("button", { name: /deploy with azd up/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeEnabled();
     expect(screen.getByText(/no current preview/i)).toBeInTheDocument();
   });
 

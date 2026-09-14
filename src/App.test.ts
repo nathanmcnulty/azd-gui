@@ -11,6 +11,53 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("can discard changes when a condition hides the last manifest field", async () => {
+    const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
+    const manifest = snapshot!.entry.manifest!;
+    const field = manifest.configuration.groups.flatMap((group) => group.fields)
+      .find((field) => field.label === "Permission profile")!;
+    expect(field).toBeDefined();
+    manifest.configuration.groups = [{
+      ...manifest.configuration.groups[0],
+      fields: [{ ...field, condition: { field: field.id, notEquals: "Minimal" } }]
+    }];
+    vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    await fireEvent.change(await screen.findByRole("combobox", { name: /permission profile/i }), { target: { value: "Minimal" } });
+    expect(screen.queryByRole("combobox", { name: /permission profile/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save configuration/i })).toBeEnabled();
+    await fireEvent.click(screen.getByRole("button", { name: /discard changes/i }));
+    expect(await screen.findByRole("combobox", { name: /permission profile/i })).toBeInTheDocument();
+    expect(screen.getByText("No unsaved changes")).toBeInTheDocument();
+  });
+
+  it.each(["save", "discard"])("requires resolving unsaved configuration before preview (%s)", async (resolution) => {
+    const writes = vi.spyOn(bridge, "setProjectEnvironmentValues");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    const field = await screen.findByRole("combobox", { name: /permission profile/i });
+    const original = (field as HTMLSelectElement).value;
+    await fireEvent.change(field, { target: { value: "Minimal" } });
+    expect(screen.getByText("Unsaved changes", { selector: ".status-pill" })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve this project's template code execution/i }));
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^provision/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^deploy deploy all/i })).toBeDisabled();
+    await fireEvent.click(screen.getByRole("button", { name: /review unsaved changes/i }));
+    await fireEvent.click(screen.getByRole("button", { name: resolution === "save" ? /save configuration/i : /discard changes/i }));
+    await screen.findByText("No unsaved changes");
+    expect(screen.getByRole("combobox", { name: /permission profile/i })).toHaveValue(resolution === "save" ? "Minimal" : original);
+    expect(writes).toHaveBeenCalledTimes(resolution === "save" ? 1 : 0);
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeEnabled();
+  });
+
   it("guides projects without an environment instead of leaving configuration loading", async () => {
     const data = await bridge.bootstrap();
     data.projects = data.projects.map((project) => ({ ...project, environment: undefined }));
