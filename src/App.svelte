@@ -189,7 +189,7 @@
   let projectEnvironmentValues: ProjectEnvironmentValue[] = [];
   let environmentConfigurationValues: Record<string, string> = {};
   let environmentConfigurationDirty: string[] = [];
-  let environmentConfigurationLoaded = false;
+  let environmentConfigurationState: "idle" | "loading" | "ready" | "error" = "idle";
   let environmentConfigurationBusy = false;
   let environmentConfigurationError = "";
   let rawVariableName = "";
@@ -249,12 +249,16 @@
     selectedProjectTemplate?.entry.manifest?.configuration.groups
       ?.filter((group) => conditionMatches(group.condition, projectConfigurationWizardValues))
       .flatMap((group) => visibleFields(group.fields, projectConfigurationWizardValues)) ?? [];
-  $: missingProjectConfiguration = environmentConfigurationLoaded
+  $: missingProjectConfiguration = environmentConfigurationState === "ready"
     ? visibleProjectConfigurationFields.filter((field) =>
         field.required &&
         !projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet
       )
     : [];
+  $: projectEnvironmentReady = Boolean(selectedProject?.environment) &&
+    !environmentBusy && !environmentConfigurationBusy && !projectLoading;
+  $: projectConfigurationReady = projectEnvironmentReady &&
+    environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0;
   $: projectPreviewReady = Boolean(
     projectPreview?.event.state === "succeeded" &&
       selectedProject?.path === projectPreview?.projectPath &&
@@ -1576,7 +1580,7 @@
     }
     environmentConfigurationValues = next;
     environmentConfigurationDirty = [];
-    environmentConfigurationLoaded = true;
+    environmentConfigurationState = "ready";
   }
 
   function isCurrentProject(request: number, path: string, environment?: string) {
@@ -1596,7 +1600,7 @@
     if (!isCurrentProject(workspace, projectPath, environment)) return;
     const request = ++environmentReadRequest;
     const isCurrent = () => request === environmentReadRequest && isCurrentProject(workspace, projectPath, environment);
-    environmentConfigurationLoaded = false;
+    environmentConfigurationState = "loading";
     environmentConfigurationError = "";
     try {
       const values = await getProjectEnvironmentValues(projectPath, environment);
@@ -1611,9 +1615,8 @@
     } catch {
       if (!isCurrent()) return;
       projectEnvironmentValues = [];
-      environmentConfigurationError = "Environment configuration could not be read. Refresh the project to try again.";
-    } finally {
-      if (isCurrent()) environmentConfigurationLoaded = true;
+      environmentConfigurationState = "error";
+      environmentConfigurationError = "Environment configuration could not be read. Retry to load the saved values.";
     }
   }
 
@@ -1778,7 +1781,8 @@
     activeNav = "projects";
     environmentEditorOpen = false;
     environmentError = "";
-    environmentConfigurationLoaded = false;
+    environmentConfigurationState = "idle";
+    environmentConfigurationError = "";
     environmentConfigurationBusy = false;
     environmentBusy = false;
     environmentConfigurationDirty = [];
@@ -1903,7 +1907,7 @@
       environmentEditorOpen = false;
       rawVariableName = "";
       rawVariableValue = "";
-      environmentConfigurationLoaded = false;
+      environmentConfigurationState = "loading";
       await refreshEnvironmentProjectState(project.path, name);
       if (!isCurrent()) return;
       await loadEnvironmentConfiguration(project.path, name);
@@ -1933,7 +1937,7 @@
       addSystemLog(`Selected azd environment '${environment.name}'.`, "success");
       rawVariableName = "";
       rawVariableValue = "";
-      environmentConfigurationLoaded = false;
+      environmentConfigurationState = "loading";
       await refreshEnvironmentProjectState(project.path, environment.name);
       if (!isCurrent()) return;
       await loadEnvironmentConfiguration(project.path, environment.name);
@@ -1947,14 +1951,17 @@
 
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
+    if (action !== "refresh" && !projectEnvironmentReady) {
+      projectTab = "environments";
+      return;
+    }
     if (["preview", "up", "provision", "deploy", "down"].includes(action) && !projectExecutionAccepted) {
       addSystemLog("Approve this project's template code execution before running the lifecycle action.", "warning");
       outputOpen = true;
       return;
     }
-    if (["preview", "up", "provision", "deploy"].includes(action) && missingProjectConfiguration.length > 0) {
+    if (["preview", "up", "provision", "deploy"].includes(action) && !projectConfigurationReady) {
       projectTab = "environments";
-      environmentConfigurationError = "Set the required environment configuration before deployment.";
       return;
     }
     if (action === "up" && !projectPreviewReady) {
@@ -2753,7 +2760,7 @@
               <div class="project-actions">
                 <button class="secondary" disabled={terminalOpening} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
-                <button class="danger" disabled={!projectExecutionAccepted} title={!projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
+                <button class="danger" disabled={!projectExecutionAccepted || !projectEnvironmentReady || Boolean(activeOperationId)} title={!projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
               </div>
             </div>
           </div>
@@ -2837,7 +2844,7 @@
                       <button class="secondary" on:click={() => (outputOpen = true)}><Icon name="terminal" size={14} /> View output</button>
                       <button class="secondary" on:click={() => (projectTab = "resources")}><Icon name="cloud" size={14} /> View structured state</button>
                       {#if projectDeploymentResult.event.state !== "succeeded"}
-                        <button class="primary" disabled={Boolean(activeOperationId) || !projectExecutionAccepted} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
+                        <button class="primary" disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
                       {/if}
                     </div>
                   {/if}
@@ -2852,7 +2859,11 @@
                     <StatusPill tone="warning" label="Preview required" />
                   {/if}
                 </div>
-                {#if missingProjectConfiguration.length > 0}
+                {#if !selectedProject.environment}
+                  <div class="callout info"><Icon name="cloud" size={17} /><div><strong>Choose an environment</strong><p>Select or create an environment before previewing and deploying this project.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Manage environments</button></div></div>
+                {:else if environmentConfigurationState === "error"}
+                  <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration unavailable</strong><p>Load the saved environment configuration before previewing or deploying.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Review configuration</button></div></div>
+                {:else if missingProjectConfiguration.length > 0}
                   <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration required</strong><p>Set {missingProjectConfiguration.map((field) => field.label).join(", ")} before previewing this environment.</p></div></div>
                 {:else if projectPreviewReady && projectPreview?.event.outcome}
                   <div class="project-preview-result">
@@ -2873,12 +2884,12 @@
                 <div class="project-preflight-actions">
                   <button
                     class="secondary"
-                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !environmentConfigurationLoaded || missingProjectConfiguration.length > 0 || !selectedProject.environment}
+                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady}
                     on:click={() => runProjectAction("preview")}
                   ><Icon name="search" size={15} /> {projectPreviewReady ? "Run preview again" : "Run infrastructure preview"}</button>
                   <button
                     class="primary"
-                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectPreviewReady}
+                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady || !projectPreviewReady}
                     title={!projectPreviewReady ? "Complete a current infrastructure preview first" : undefined}
                     on:click={() => runProjectAction("up")}
                   ><Icon name="play" size={15} /> Deploy with azd up</button>
@@ -2887,8 +2898,8 @@
               <section class="workspace-panel full">
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
                 <div class="lifecycle-actions">
-                  <button disabled={!projectExecutionAccepted || missingProjectConfiguration.length > 0} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
-                  <button disabled={!projectExecutionAccepted || missingProjectConfiguration.length > 0} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
+                  <button disabled={!projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
+                  <button disabled={!projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
                   <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong><span>Refresh environment state</span></button>
                 </div>
               </section>
@@ -2932,14 +2943,20 @@
               <section class="workspace-panel environment-configuration-panel">
                 <div class="environment-toolbar">
                   <div><h2>Environment configuration</h2><p>Manifest fields can be read back unless marked sensitive. Raw values are always write-only.</p></div>
-                  {#if missingProjectConfiguration.length > 0}
+                  {#if environmentConfigurationState === "error"}
+                    <StatusPill tone="warning" label="Unavailable" />
+                  {:else if missingProjectConfiguration.length > 0}
                     <StatusPill tone="warning" label={`${missingProjectConfiguration.length} required`} />
-                  {:else if environmentConfigurationLoaded}
+                  {:else if environmentConfigurationState === "ready" && !environmentBusy}
                     <StatusPill tone="success" label="Ready" />
                   {/if}
                 </div>
                 {#if environmentConfigurationError}<div class="inline-error" role="alert">{environmentConfigurationError}</div>{/if}
-                {#if !environmentConfigurationLoaded || environmentBusy}
+                {#if !selectedProject.environment && !environmentBusy}
+                  <div class="empty-configuration"><strong>No environment selected</strong><span>Choose an existing environment or use New environment above to configure this project.</span></div>
+                {:else if environmentConfigurationState === "error" && !environmentBusy}
+                  <button class="secondary" on:click={() => selectedProject?.environment && loadEnvironmentConfiguration(selectedProject.path, selectedProject.environment, true)}>Retry configuration read</button>
+                {:else if environmentConfigurationState !== "ready" || environmentBusy}
                   <div class="project-loading"><span class="spinner"></span><span>Reading safe environment metadata…</span></div>
                 {:else}
                   {#if missingProjectConfiguration.length > 0}

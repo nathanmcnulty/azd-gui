@@ -11,6 +11,50 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("guides projects without an environment instead of leaving configuration loading", async () => {
+    const data = await bridge.bootstrap();
+    data.projects = data.projects.map((project) => ({ ...project, environment: undefined }));
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    vi.spyOn(bridge, "listProjectEnvironments").mockResolvedValue([]);
+    const reads = vi.spyOn(bridge, "getProjectEnvironmentValues");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve this project's template code execution/i }));
+    expect(screen.getByRole("button", { name: "Down" })).toBeDisabled();
+    await fireEvent.click(await screen.findByRole("button", { name: /manage environments/i }));
+    expect(await screen.findByText("No environment selected")).toBeInTheDocument();
+    expect(screen.queryByText("Reading safe environment metadata…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /save configuration/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /new environment/i })).toBeEnabled();
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it("blocks lifecycle actions after a failed configuration read and recovers with retry", async () => {
+    const reads = vi.spyOn(bridge, "getProjectEnvironmentValues").mockRejectedValueOnce(new Error("secret diagnostic"));
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await screen.findByText("Configuration unavailable");
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve this project's template code execution/i }));
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^provision/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^deploy deploy all/i })).toBeDisabled();
+    // Teardown can remain available when saved configuration is unreadable.
+    expect(screen.getByRole("button", { name: "Down" })).toBeEnabled();
+    await fireEvent.click(screen.getByRole("button", { name: /review configuration/i }));
+    expect(screen.getByText("Unavailable", { selector: ".status-pill" })).toBeInTheDocument();
+    expect(screen.queryByText("Ready", { selector: ".status-pill" })).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).not.toHaveTextContent("secret diagnostic");
+    expect(screen.queryByRole("combobox", { name: /permission profile/i })).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /retry configuration read/i }));
+    expect(await screen.findByRole("combobox", { name: /permission profile/i })).toBeInTheDocument();
+    expect(reads).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeEnabled();
+  });
+
   it("opens a catalog template as a calculated deployment wizard", async () => {
     render(App);
 
