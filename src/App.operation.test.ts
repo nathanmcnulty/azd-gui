@@ -19,6 +19,12 @@ vi.mock("./lib/bridge", async (importOriginal) => {
 
   return {
     ...actual,
+    // Exercise output-panel operations with an explicitly noninteractive contract.
+    getProjectTemplate: async (path: string) => {
+      const snapshot = await actual.getProjectTemplate(path);
+      if (snapshot?.entry.manifest) snapshot.entry.manifest.requiresInteractiveTerminal = false;
+      return snapshot;
+    },
     bootstrap: async () => {
       if (operationHarness.failBootstrap) throw new Error("database migration failed");
       return { ...structuredClone(mockBootstrap), isNative: true };

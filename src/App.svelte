@@ -261,6 +261,7 @@
   $: projectConfigurationReady = projectEnvironmentReady &&
     environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0 &&
     !hasUnsavedProjectEdits;
+  $: projectRequiresInteractiveTerminal = Boolean(selectedProjectTemplate?.entry.manifest?.requiresInteractiveTerminal);
   $: hasUnsavedProjectEdits = environmentConfigurationDirty.length > 0 ||
     rawVariableName.length > 0 || rawVariableValue.length > 0;
   $: if (!hasUnsavedProjectEdits) projectEditsNotice = false;
@@ -1983,6 +1984,11 @@
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
     if (!canLeaveProjectEdits()) return;
+    if (action !== "refresh" && projectRequiresInteractiveTerminal) {
+      projectTab = "overview";
+      addSystemLog("This template requires an interactive terminal. Open the project terminal to run azd.", "warning");
+      return;
+    }
     if (action !== "refresh" && !projectEnvironmentReady) {
       projectTab = "environments";
       return;
@@ -2792,7 +2798,7 @@
               <div class="project-actions">
                 <button class="secondary" disabled={terminalOpening} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
-                <button class="danger" disabled={!projectExecutionAccepted || !projectEnvironmentReady || Boolean(activeOperationId)} title={!projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
+                <button class="danger" disabled={projectRequiresInteractiveTerminal || !projectExecutionAccepted || !projectEnvironmentReady || Boolean(activeOperationId)} title={projectRequiresInteractiveTerminal ? "Run azd down in the project terminal" : !projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
               </div>
             </div>
           </div>
@@ -2875,13 +2881,22 @@
                     <div class="project-deployment-actions">
                       <button class="secondary" on:click={() => (outputOpen = true)}><Icon name="terminal" size={14} /> View output</button>
                       <button class="secondary" on:click={() => (projectTab = "resources")}><Icon name="cloud" size={14} /> View structured state</button>
-                      {#if projectDeploymentResult.event.state !== "succeeded"}
+                      {#if projectDeploymentResult.event.state !== "succeeded" && !projectRequiresInteractiveTerminal}
                         <button class="primary" disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
                       {/if}
                     </div>
                   {/if}
                 </section>
               {/if}
+              {#if projectRequiresInteractiveTerminal}
+                <section class="workspace-panel full project-preflight" aria-label="Interactive deployment">
+                  <div class="section-toolbar"><div><h2>Continue in a terminal</h2><p>This template requires interactive prompts. Preview, deploy, and remove resources from the external terminal.</p></div><StatusPill tone="warning" label="Interactive template" /></div>
+                  <p>The terminal opens in this project with a command for the selected environment. Opening it does not run a deployment. Review the template's instructions before running azd.</p>
+                  {#if !selectedProject.environment}<p>Select or create an environment in Environments first.</p>{/if}
+                  {#if hasUnsavedProjectEdits}<p>Save or discard your configuration and advanced-variable edits before opening the terminal.</p>{/if}
+                  <button class="primary" disabled={!projectEnvironmentReady || terminalOpening || Boolean(activeOperationId)} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Open deployment terminal</button>
+                </section>
+              {:else}
               <section class="workspace-panel full project-preflight" aria-label="Deployment preflight">
                 <div class="section-toolbar">
                   <div><h2>Deployment preflight</h2><p>Preview the selected environment before deployment. azd preview can execute template hooks and is not guaranteed read-only.</p></div>
@@ -2929,11 +2944,14 @@
                   ><Icon name="play" size={15} /> Deploy with azd up</button>
                 </div>
               </section>
+              {/if}
               <section class="workspace-panel full">
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
                 <div class="lifecycle-actions">
+                  {#if !projectRequiresInteractiveTerminal}
                   <button disabled={!projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
                   <button disabled={!projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
+                  {/if}
                   <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong><span>Refresh environment state</span></button>
                 </div>
               </section>

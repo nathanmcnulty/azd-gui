@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as bridge from "./lib/bridge";
 import App from "./App.svelte";
 
+async function useNoninteractiveProjectFixture() {
+  const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
+  snapshot!.entry.manifest!.requiresInteractiveTerminal = false;
+  vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
@@ -11,6 +17,31 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("routes a reopened interactive project to the selected environment's terminal", async () => {
+    const terminal = vi.spyOn(bridge, "openExternalTerminal");
+    const starts = vi.spyOn(bridge, "startAzdOperation");
+    const approvals = vi.spyOn(bridge, "requestExecutionApproval");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await screen.findByRole("heading", { name: "Continue in a terminal" });
+    expect(screen.queryByRole("button", { name: /run infrastructure preview/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /deploy with azd up/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^provision/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Down" })).toBeDisabled();
+    await fireEvent.click(screen.getByRole("button", { name: "environments" }));
+    await fireEvent.click(screen.getByRole("button", { name: /use test environment/i }));
+    await screen.findByRole("button", { name: /use dev environment/i });
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /open deployment terminal/i })).toBeEnabled());
+    await fireEvent.click(screen.getByRole("button", { name: /open deployment terminal/i }));
+    expect(terminal).toHaveBeenCalledWith("C:\\Deployments\\maester-lab", "test");
+    expect(await screen.findByText("External terminal opened")).toBeInTheDocument();
+    expect(screen.getByText("azd up --environment test", { selector: "code" })).toBeInTheDocument();
+    expect(starts).not.toHaveBeenCalled();
+    expect(approvals).not.toHaveBeenCalled();
+  });
+
   it("preserves unsaved configuration across navigation, refresh, and environment selection attempts", async () => {
     const select = vi.spyOn(bridge, "selectProjectEnvironment");
     const reads = vi.spyOn(bridge, "getProjectEnvironmentValues");
@@ -78,6 +109,7 @@ describe("desktop experience", () => {
   });
 
   it.each(["save", "discard"])("requires resolving unsaved configuration before preview (%s)", async (resolution) => {
+    await useNoninteractiveProjectFixture();
     const writes = vi.spyOn(bridge, "setProjectEnvironmentValues");
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
@@ -102,6 +134,7 @@ describe("desktop experience", () => {
   });
 
   it("guides projects without an environment instead of leaving configuration loading", async () => {
+    await useNoninteractiveProjectFixture();
     const data = await bridge.bootstrap();
     data.projects = data.projects.map((project) => ({ ...project, environment: undefined }));
     vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
@@ -121,6 +154,7 @@ describe("desktop experience", () => {
   });
 
   it("blocks lifecycle actions after a failed configuration read and recovers with retry", async () => {
+    await useNoninteractiveProjectFixture();
     const reads = vi.spyOn(bridge, "getProjectEnvironmentValues").mockRejectedValueOnce(new Error("secret diagnostic"));
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
@@ -1186,6 +1220,7 @@ describe("desktop experience", () => {
   });
 
   it("selects and creates azd project environments", async () => {
+    await useNoninteractiveProjectFixture();
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));

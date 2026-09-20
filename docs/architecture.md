@@ -84,6 +84,8 @@ Environment reads are applied only to the workspace request that started them. T
 
 Configuration reads distinguish idle, loading, ready, and failed states. Projects without an environment show selection guidance; failed reads hide the editor and offer a retry. Preview, provisioning, and deployment require successfully read configuration. Teardown requires a selected environment with no pending workspace load or local environment mutation, but does not require readable or complete deployment configuration, so configuration failures do not prevent cleanup.
 
+Saved contracts requiring an interactive terminal keep that route after the project is reopened. The workspace offers terminal handoff, and native lifecycle execution rejects preview, up, provision, deploy, and down through the output-only runner before checking prerequisites or consuming approval. Environment refresh remains available. Legacy projects without a resolvable contract retain the existing route; later edits to project files are not frozen or reclassified by this guard.
+
 ## Project validation reports
 
 The Overview panel reads only `reports/deployment-validation.json` beneath a registered project. This read invokes no CLI, hooks, authentication, or cloud operation and does not update deployment state. The native reader accepts the reference `azdDeploymentValidation` version `1.0` envelope, enforces a 1 MiB read bound and 500-check limit, and rejects links/reparse points along the fixed report path. It checks reported totals against check statuses and outcome precedence against the reference producer.
