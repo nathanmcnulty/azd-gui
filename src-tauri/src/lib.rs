@@ -401,6 +401,7 @@ async fn start_azd_operation(
             .project_by_path(&canonical.display().to_string())?;
         if let Some(project) = &project {
             if let Some(snapshot) = resolve_project_template(&state.database, project)? {
+                ensure_project_lifecycle_route(&action, &snapshot)?;
                 if let Some(manifest) = &snapshot.entry.manifest {
                     let requirement_values = registered_requirement_environment_values(
                         manifest,
@@ -437,6 +438,24 @@ async fn start_azd_operation(
             canonical.display().to_string(),
         )),
     )
+}
+
+fn ensure_project_lifecycle_route(
+    action: &str,
+    snapshot: &ProjectTemplateSnapshot,
+) -> AppResult<()> {
+    if matches!(action, "preview" | "up" | "provision" | "deploy" | "down")
+        && snapshot
+            .entry
+            .manifest
+            .as_ref()
+            .is_some_and(|manifest| manifest.requires_interactive_terminal)
+    {
+        return Err(AppError::Invalid(
+            "This project's saved template contract requires an interactive terminal. Open the project terminal to run azd.".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1149,6 +1168,40 @@ mod catalog_review_tests {
         let accepted = reviews.accept(&preview.review_token, source).unwrap();
         assert_eq!(accepted.id, preview.catalog.id);
         assert!(reviews.accept(&preview.review_token, source).is_err());
+    }
+}
+
+#[cfg(test)]
+mod interactive_lifecycle_tests {
+    use super::{catalog, ensure_project_lifecycle_route, ProjectTemplateSnapshot};
+
+    #[test]
+    fn saved_interactive_contract_requires_terminal_for_all_template_actions() {
+        let mut entry = catalog::entry_by_id("myworkid").unwrap();
+        entry
+            .manifest
+            .as_mut()
+            .unwrap()
+            .requires_interactive_terminal = true;
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        for action in ["preview", "up", "provision", "deploy", "down"] {
+            assert!(ensure_project_lifecycle_route(action, &snapshot).is_err());
+        }
+        assert!(ensure_project_lifecycle_route("refresh", &snapshot).is_ok());
+    }
+
+    #[test]
+    fn noninteractive_contract_keeps_output_panel_route() {
+        let mut entry = catalog::entry_by_id("myworkid").unwrap();
+        entry
+            .manifest
+            .as_mut()
+            .unwrap()
+            .requires_interactive_terminal = false;
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        for action in ["preview", "up", "provision", "deploy", "down", "refresh"] {
+            assert!(ensure_project_lifecycle_route(action, &snapshot).is_ok());
+        }
     }
 }
 
