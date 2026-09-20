@@ -12,11 +12,125 @@ async function useNoninteractiveProjectFixture() {
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  vi.unstubAllGlobals();
   window.localStorage.clear();
   document.documentElement.dataset.theme = "";
 });
 
 describe("desktop experience", () => {
+  it("keeps preview success separate from the current wizard deployment", async () => {
+    const data = await bridge.bootstrap();
+    data.isNative = true;
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    let emit!: Parameters<typeof bridge.onOperationEvent>[0];
+    vi.spyOn(bridge, "onOperationEvent").mockImplementation(async (listener) => { emit = listener; return () => {}; });
+    const start = vi.spyOn(bridge, "startAzdOperation").mockImplementation(async (kind) => `wizard-${kind}`);
+    const cancel = vi.spyOn(bridge, "cancelOperation").mockResolvedValue(undefined);
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[3]);
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), { target: { value: "C:\\Deployments\\wizard-check" } });
+    for (let attempt = 0; attempt < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); attempt += 1) {
+      const button = screen.getByRole("button", { name: /^continue$/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      await fireEvent.click(button);
+    }
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^run checks and preview$/i }));
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    await screen.findByRole("button", { name: "Cancel preview" });
+    const event = { operationId: "wizard-preview", kind: "preview", state: "succeeded" as const, timestamp: new Date().toISOString(), stream: "stdout" as const, level: "success" as const, message: "Preview finished", progress: 100 };
+    await act(() => emit(event));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    expect(screen.getByRole("heading", { name: "Ready for azd up" })).toBeInTheDocument();
+    expect(screen.getByText("Waiting to start")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deploy again" })).not.toBeInTheDocument();
+    let resolveStart!: (value: string) => void;
+    start.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+    await fireEvent.click(screen.getByRole("button", { name: "Deploy with azd up" }));
+    expect(screen.getByRole("heading", { name: "Deploying with azd" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deploy with azd up" })).not.toBeInTheDocument();
+    await waitFor(() => expect(resolveStart).toBeDefined());
+    await act(() => resolveStart("wizard-up"));
+    await act(() => emit({ ...event, operationId: "other-project-up", kind: "up", message: "Unrelated deployment" }));
+    expect(screen.getByRole("heading", { name: "Deploying with azd" })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel deployment" }));
+    expect(cancel).toHaveBeenLastCalledWith("wizard-up");
+    await act(() => emit({ ...event, operationId: "other-running", kind: "refresh", state: "running", message: "Other operation" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel deployment" }));
+    expect(cancel).toHaveBeenLastCalledWith("wizard-up");
+    await act(() => emit({ ...event, operationId: "wizard-up", kind: "up", message: "Current deployment finished" }));
+    expect(screen.getByRole("heading", { name: "Deployment complete" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deploy again" })).toBeInTheDocument();
+    start.mockImplementationOnce(async () => {
+      emit({ ...event, operationId: "early-up", kind: "up", message: "Early completion" });
+      return "early-up";
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Deploy again" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(3));
+    await screen.findByRole("heading", { name: "Deployment complete" });
+    await fireEvent.click(screen.getByRole("button", { name: "Deploy again" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(4));
+  });
+
+  it("hides preview data and actions until native startup finishes", async () => {
+    const nativeData = await bridge.bootstrap();
+    nativeData.isNative = true;
+    nativeData.projects = [];
+    nativeData.connections = [];
+    nativeData.tools = [];
+    vi.stubGlobal("isTauri", true);
+    vi.spyOn(bridge, "onOperationEvent").mockResolvedValue(() => {});
+    let resolveBootstrap!: (value: typeof nativeData) => void;
+    vi.spyOn(bridge, "bootstrap").mockImplementation(() => new Promise((resolve) => { resolveBootstrap = resolve; }));
+    render(App);
+    expect(screen.getByRole("status", { name: "Starting Azure Deployment Studio" })).toBeInTheDocument();
+    expect(screen.queryByText("Preview", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    await fireEvent.keyDown(document, { key: "p", ctrlKey: true });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await act(() => resolveBootstrap(nativeData));
+    expect(await screen.findByText("Native", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Starting Azure Deployment Studio" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connections, 3 connected" })).not.toBeInTheDocument();
+  });
+
+  it.each(["bootstrap", "event listener"])("keeps native actions disabled when %s initialization fails", async (failure) => {
+    vi.stubGlobal("isTauri", true);
+    const eventListener = vi.spyOn(bridge, "onOperationEvent").mockResolvedValue(() => {});
+    const bootstrap = vi.spyOn(bridge, "bootstrap").mockRejectedValue(new Error("Startup failed"));
+    if (failure === "event listener") eventListener.mockRejectedValue(new Error("Event listener failed"));
+    render(App);
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not start safely");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    await fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    if (failure === "event listener") expect(bootstrap).not.toHaveBeenCalled();
+  });
+
+  it("checks restored Azure targets and ignores a previous wizard's late connection result", async () => {
+    const connections = await bridge.refreshConnections();
+    const tenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+    const subscriptionId = "11111111-1111-1111-1111-111111111111";
+    vi.spyOn(bridge, "loadWizardDraft").mockResolvedValue({ tenantId, subscriptionId });
+    let resolveOld!: (value: typeof connections) => void;
+    const refresh = vi.spyOn(bridge, "refreshConnections")
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue(connections);
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[2]);
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ tenantId, subscriptionId }));
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[2]);
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connections, 3 connected" })).toBeInTheDocument());
+    await act(() => resolveOld(connections.map((connection) => ({ ...connection, state: "disconnected" }))));
+    expect(screen.getByRole("button", { name: "Connections, 3 connected" })).toBeInTheDocument();
+  });
+
   it("leaves native null defaults empty in reopened project configuration", async () => {
     const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
     snapshot!.entry.manifest!.configuration.groups.push({
@@ -1382,6 +1496,7 @@ describe("desktop experience", () => {
     expect(screen.getAllByRole("button", { name: /configure deployment/i })).toHaveLength(4);
   });
   it("selects a dashboard security group and clears it after an Azure target change", async () => {
+    const refresh = vi.spyOn(bridge, "refreshConnections");
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
     await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[1]);
@@ -1429,6 +1544,7 @@ describe("desktop experience", () => {
     await fireEvent.change(tenant, { target: { value: sandboxTenant } });
     await waitFor(() => expect(subscription).toHaveValue(sandboxSubscription));
     await fireEvent.change(subscription, { target: { value: sandboxSubscription } });
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ tenantId: sandboxTenant, subscriptionId: sandboxSubscription }));
     await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled());
 
     const originalTenant = "72f988bf-86f1-41af-91ab-2d7cd011db47";
