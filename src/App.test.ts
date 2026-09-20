@@ -12,11 +12,47 @@ async function useNoninteractiveProjectFixture() {
 afterEach(() => {
   vi.restoreAllMocks();
   cleanup();
+  vi.unstubAllGlobals();
   window.localStorage.clear();
   document.documentElement.dataset.theme = "";
 });
 
 describe("desktop experience", () => {
+  it("hides preview data and actions until native startup finishes", async () => {
+    const nativeData = await bridge.bootstrap();
+    nativeData.isNative = true;
+    nativeData.projects = [];
+    nativeData.connections = [];
+    nativeData.tools = [];
+    vi.stubGlobal("isTauri", true);
+    vi.spyOn(bridge, "onOperationEvent").mockResolvedValue(() => {});
+    let resolveBootstrap!: (value: typeof nativeData) => void;
+    vi.spyOn(bridge, "bootstrap").mockImplementation(() => new Promise((resolve) => { resolveBootstrap = resolve; }));
+    render(App);
+    expect(screen.getByRole("status", { name: "Starting Azure Deployment Studio" })).toBeInTheDocument();
+    expect(screen.queryByText("Preview", { exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    await fireEvent.keyDown(document, { key: "p", ctrlKey: true });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await act(() => resolveBootstrap(nativeData));
+    expect(await screen.findByText("Native", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Starting Azure Deployment Studio" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Connections, 3 connected" })).not.toBeInTheDocument();
+  });
+
+  it.each(["bootstrap", "event listener"])("keeps native actions disabled when %s initialization fails", async (failure) => {
+    vi.stubGlobal("isTauri", true);
+    const eventListener = vi.spyOn(bridge, "onOperationEvent").mockResolvedValue(() => {});
+    const bootstrap = vi.spyOn(bridge, "bootstrap").mockRejectedValue(new Error("Startup failed"));
+    if (failure === "event listener") eventListener.mockRejectedValue(new Error("Event listener failed"));
+    render(App);
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not start safely");
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    await fireEvent.keyDown(document, { key: "k", ctrlKey: true });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    if (failure === "event listener") expect(bootstrap).not.toHaveBeenCalled();
+  });
+
   it("checks restored Azure targets and ignores a previous wizard's late connection result", async () => {
     const connections = await bridge.refreshConnections();
     const tenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47";

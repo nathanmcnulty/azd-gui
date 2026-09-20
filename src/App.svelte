@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { isTauri } from "@tauri-apps/api/core";
   import AppSidebar from "./components/AppSidebar.svelte";
   import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
@@ -124,6 +125,7 @@
   const defaultOutputHeight = 210;
   const minimumOutputHeight = 120;
   const minimumWorkspaceHeight = 120;
+  const nativeRuntime = isTauri();
 
   let data: BootstrapData = structuredClone(mockBootstrap);
   let loading = true;
@@ -452,8 +454,8 @@
     window.addEventListener("resize", constrainOutputHeight);
     let unlisten: () => void = () => {};
     void (async () => {
-      unlisten = await onOperationEvent(handleOperationEvent);
       try {
+        unlisten = await onOperationEvent(handleOperationEvent);
         data = await bootstrap();
         theme = data.settings.theme;
         navigationExpanded = data.settings.navigationExpanded;
@@ -475,6 +477,7 @@
   });
 
   function handleGlobalKeydown(event: KeyboardEvent) {
+    if ((nativeRuntime && loading) || bootstrapFailure) return;
     if ((event.ctrlKey || event.metaKey) && (event.key === "p" || event.key === "k")) {
       event.preventDefault();
       commandPaletteOpen = true;
@@ -2192,7 +2195,16 @@
   <title>{selectedEntry ? `${selectedEntry.title} — ` : ""}Azure Deployment Studio</title>
 </svelte:head>
 
-{#if bootstrapFailure}
+{#if nativeRuntime && loading}
+  <main class="bootstrap-failure" role="status" aria-label="Starting Azure Deployment Studio" aria-busy="true">
+    <div class="bootstrap-failure-card">
+      <span class="brand-mark"><Icon name="cloud" size={22} /></span>
+      <h1>Starting Azure Deployment Studio</h1>
+      <p>Loading your projects, installed tools, and account status…</p>
+      <span class="spinner" aria-hidden="true"></span>
+    </div>
+  </main>
+{:else if bootstrapFailure}
   <main class="bootstrap-failure" role="alert">
     <div class="bootstrap-failure-card">
       <span class="brand-mark"><Icon name="warning" size={22} /></span>
@@ -3290,7 +3302,7 @@
 </div>
 {/if}
 
-{#if installPlan}
+{#if installPlan && !(nativeRuntime && loading) && !bootstrapFailure}
   <InstallReviewDialog
     plan={installPlan}
     installing={Boolean(installingToolId)}
@@ -3301,11 +3313,11 @@
   />
 {/if}
 
-{#if commandPaletteOpen}
+{#if commandPaletteOpen && !(nativeRuntime && loading) && !bootstrapFailure}
   <CommandPalette bind:query={commandQuery} {commands} onClose={() => (commandPaletteOpen = false)} />
 {/if}
 
-{#if catalogSourceOpen}
+{#if catalogSourceOpen && !(nativeRuntime && loading) && !bootstrapFailure}
   <CatalogSourceDialog
     bind:sourceUrl={catalogSourceUrl}
     preview={catalogPreview}
