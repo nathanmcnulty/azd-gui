@@ -24,10 +24,10 @@ export function visibleFields(fields: ConfigurationField[], values: WizardValues
 }
 
 export function validateField(field: ConfigurationField, value: WizardValues[string]): string | null {
-  if (field.required && (value === undefined || value === "" || (Array.isArray(value) && value.length === 0))) {
+  if (field.required && (value == null || value === "" || (Array.isArray(value) && value.length === 0))) {
     return `${field.label} is required.`;
   }
-  if (value === undefined || value === "" || (Array.isArray(value) && value.length === 0)) return null;
+  if (value == null || value === "" || (Array.isArray(value) && value.length === 0)) return null;
   if (field.type === "multiselect") {
     if (!Array.isArray(value)) return `${field.label} requires one or more choices.`;
     const allowed = new Set((field.options ?? []).map((option) => option.value));

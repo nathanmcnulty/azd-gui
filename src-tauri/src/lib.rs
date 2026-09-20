@@ -929,9 +929,10 @@ fn sanitized_draft(
     let object = values
         .as_object_mut()
         .ok_or_else(|| AppError::Invalid("Wizard draft must be an object.".into()))?;
-    object.retain(|key, _| {
+    object.retain(|key, value| {
         let key = key.to_ascii_lowercase();
-        allowed_keys.contains(&key)
+        !value.is_null()
+            && allowed_keys.contains(&key)
             && !sensitive_keys.contains(&key)
             && !["secret", "password", "token", "webhook", "credential"]
                 .iter()
@@ -1299,6 +1300,28 @@ mod draft_tests {
             sanitized_draft(draft, &keys(&["apikey", "location"]), &keys(&["apikey"])).unwrap();
 
         assert_eq!(sanitized, serde_json::json!({"location": "westus2"}));
+    }
+
+    #[test]
+    fn optional_null_defaults_do_not_prevent_saving_other_draft_values() {
+        let sanitized = sanitized_draft(
+            serde_json::json!({
+                "projectPath": "C:\\Deployments\\draft-only",
+                "customDomains": null,
+                "managedCertificate": false
+            }),
+            &keys(&["projectpath", "customdomains", "managedcertificate"]),
+            &HashSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            sanitized,
+            serde_json::json!({
+                "projectPath": "C:\\Deployments\\draft-only",
+                "managedCertificate": false
+            })
+        );
     }
 
     #[test]

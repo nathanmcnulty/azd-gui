@@ -17,6 +17,22 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("leaves native null defaults empty in reopened project configuration", async () => {
+    const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
+    snapshot!.entry.manifest!.configuration.groups.push({
+      id: "native-default", title: "Native defaults", fields: [{
+        id: "nativeOptionalNote", environmentVariable: "NATIVE_OPTIONAL_NOTE", label: "Optional note",
+        type: "text", default: JSON.parse("null")
+      }]
+    });
+    vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    expect(await screen.findByRole("textbox", { name: "Optional note" })).toHaveValue("");
+  });
+
   it("routes a reopened interactive project to the selected environment's terminal", async () => {
     const terminal = vi.spyOn(bridge, "openExternalTerminal");
     const starts = vi.spyOn(bridge, "startAzdOperation");

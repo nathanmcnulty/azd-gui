@@ -1929,6 +1929,10 @@ button.compact {
   background: var(--accent-bg);
 }
 
+.callout.draft-notice {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .callout.warning {
   color: var(--warning);
   border-color: color-mix(in srgb, var(--warning), transparent 65%);

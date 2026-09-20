@@ -564,7 +564,7 @@
     if (entry.source === "external") values.sourceMode = "externalCatalog";
     for (const group of entry.manifest?.configuration.groups ?? []) {
       for (const field of group.fields) {
-        if (field.default !== undefined) values[field.id] = field.default;
+        if (field.default != null) values[field.id] = field.default;
       }
     }
     return values;
@@ -730,7 +730,7 @@
         sourceTrustAccepted = false;
         for (const group of selectedEntry.manifest?.configuration.groups ?? []) {
           for (const field of group.fields) {
-            if (wizardValues[field.id] === undefined && field.default !== undefined) {
+            if (wizardValues[field.id] === undefined && field.default != null) {
               wizardValues = { ...wizardValues, [field.id]: field.default };
             }
           }
@@ -1581,7 +1581,7 @@
     for (const field of selectedProjectConfigurationFields) {
       const status = values.find((value) => value.name === field.environmentVariable);
       if (status?.value !== undefined) next[field.id] = status.value;
-      else if (!status?.isSet && field.default !== undefined) {
+      else if (!status?.isSet && field.default != null) {
         next[field.id] = Array.isArray(field.default) ? field.default.join(",") : String(field.default);
       } else next[field.id] = "";
     }
@@ -2254,7 +2254,7 @@
 
         <div class="wizard-content">
           {#if draftNotice}
-            <div class="callout" class:warning={draftNotice.kind !== "restored"} class:info={draftNotice.kind === "restored"} role="status" aria-label="Saved wizard choices">
+            <div class="callout draft-notice" class:warning={draftNotice.kind !== "restored"} class:info={draftNotice.kind === "restored"} role="status" aria-label="Saved wizard choices">
               <div><strong>Saved choices</strong><p>{draftNotice.message}</p></div>
               {#if draftNotice.kind === "saveError"}<button class="secondary" on:click={() => { scheduleDraftSave(); flushDraftSave(); }}>Retry saving</button>{/if}
               <button class="text-button" on:click={() => (draftNotice = null)}>Dismiss</button>
