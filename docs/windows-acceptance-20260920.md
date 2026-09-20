@@ -41,6 +41,59 @@ fetched advisory revision `d5c17953a895cf19e8d3ce66eaa42b6fcfe1fb16`.
 The audit tool's initial network fetch crashed locally; fetching with Git and
 rerunning `cargo audit --no-fetch --deny warnings` succeeded.
 
+## Acceptance environment
+
+The isolated acceptance VM is Windows 11 Enterprise, build `10.0.28000`, x64,
+with a non-administrator `AzdAcceptance` profile. Network and clipboard sharing
+are disabled. The Microsoft-signed WebView2 runtime is `153.0.4234.48`.
+This record does not establish acceptance on every supported Windows build.
+
+Immediately before final upgrade, the installed corrected baseline remained
+version 0.1.0 with a valid expected-publisher signature and SHA-256
+`9e177e4fc5eb7a4c9da162c2f12b80272451b53ad06b401992d2fff429048eb9`.
+
+## Final native presentation check
+
+PR #95 merged as `179b89e32b7d2990127f489bf25f4c230d164db6`. The rebuilt
+native app showed the dedicated loading screen before real tools/accounts loaded.
+A fresh pinned-starter workspace completed preview using the same approved target;
+the next page displayed **Ready for azd up**, not deployment success. No second
+provisioning operation was started. Signed workflow `35497506640` builds this
+revision as version 0.1.1 for final artifact and upgrade acceptance.
+
+## Signed 0.1.1 acceptance
+
+[Signed workflow 35497506640](https://github.com/nathanmcnulty/azd-gui/actions/runs/35497506640)
+passed for source `179b89e32b7d2990127f489bf25f4c230d164db6`. Downloaded artifacts
+passed expected-version, SHA-256, Authenticode publisher, and timestamp checks.
+The installed executable was verified before launch and matched the runner's
+installed-payload receipt.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Portable executable | `a8dfe371685f39340d871af0418cd019ecf1dae24d4ebca3a11b091f39e3e2e0` |
+| NSIS installer | `a5e906f69bff52f299b7d5f230cffa965ac6dee46fafd73a10d5a4b49c5c9820` |
+| Installed executable | `34d92922abf4734206c2af75ef059cf5a8a9a0bfb0f8e25fff2fc2da10ed7c24` |
+
+The same standard-user installation directory upgraded from the verified 0.1.0
+baseline to 0.1.1 without elevation. The native app launched successfully and
+retained dark appearance. After process exit, independent SQLite comparison
+confirmed schema 2, integrity, the exact legacy draft values/timestamp, and saved
+appearance/navigation settings. This proves retention, not schema-0 migration
+or execution of the invalid historical installed payload.
+
+Native Home, Catalog, Wizard, Connections, Tools, and Settings rendered. A new
+non-sensitive draft saved and restored after a full process restart, with the
+readable saved-choice notice. Missing prerequisites and absent accounts remained
+visible; no tool installation or authentication was started in this offline VM.
+
+The native-confirmed **Clear local data** flow reset appearance and reloaded Home.
+Independent inspection found zero rows in projects, operation history, catalog
+sources, wizard drafts, and app settings, with SQLite integrity intact. A harmless
+project file and marker in the Azure CLI directory retained identical hashes.
+No real credentials were present, so this is not a credential-cache live test.
+Standard-user uninstall returned zero and the installed executable was absent.
+
 ## Authenticated native GUI pilot
 
 The host native GUI recognized installed prerequisites and cached CLI accounts,
@@ -80,11 +133,10 @@ and deployment-status changes passed all 118 frontend tests and Svelte checks.
 
 Signed runs `35495517974` and `35495878388` were intentionally canceled after
 native acceptance exposed defects, before promoting either candidate. Final
-signed upgrade/uninstall checks must use the revision containing the fixes.
+signed upgrade/uninstall checks passed on the revision containing the fixes.
 Clean-VM interactive authentication still needs the selected disposable account
 and user completion of any broker/browser prompt. Host cached-session checks do
-not satisfy that gate. Historical installer failure
-and final signed artifact acceptance remain explicit release blockers.
+not satisfy that gate. Clean-VM interactive authentication remains open. The previous-public-installer upgrade path remains unverified because its installed payload has an invalid signature; corrected-baseline upgrade and legacy portable data retention passed separately. No public release has been promoted.
 
 Private local evidence is retained under `E:\azd-gui-acceptance-remaining`,
 including artifact signatures/hashes, Sandbox installation results, database
