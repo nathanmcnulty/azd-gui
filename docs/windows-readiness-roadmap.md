@@ -1,6 +1,20 @@
 # Windows readiness and template adoption
 
-Implementation follow-up to the 12 September 2026 review. This branch establishes a local development baseline; signed Windows acceptance and a real deployment pilot remain separate completion gates.
+Implementation follow-up to the 12 September 2026 review. Local development checks, signed-package verification, and live CLI/template evidence are tracked separately from full Windows GUI acceptance.
+
+## Signed packaging evidence
+
+The first signed candidate exposed an installation defect: Tauri changed the executable's installer-type marker after it had been signed. The outer installer and portable signatures passed, but the installed executable failed Authenticode with `HashMismatch`. [PR #89](https://github.com/nathanmcnulty/azd-gui/pull/89) moved signing into Tauri's supported hook, after the marker change, and added an installed-payload gate before artifact upload.
+
+[The replacement signing run](https://github.com/nathanmcnulty/azd-gui/actions/runs/35481838863) passed at `cc3d9540be2bfccb4eb83c5d4efa169446ddffcc`: dependency audits, frontend/native checks, signing, installed-payload hash and signature/version verification, and uninstall on the runner. Independent download verification and non-elevated installation in Windows Sandbox also passed; the installed executable matched the recorded payload and had a valid signature from the independently checked signing profile. Thirteen local PowerShell regression tests cover the verifier and signing hook. This establishes packaging evidence for that exact candidate, not visual, authentication, deployment, or upgrade acceptance, and does not automatically cover later application changes. No tag or public release was created.
+
+After installing Microsoft's signed offline WebView2 Runtime in the disposable sandbox, the candidate passed a non-elevated startup smoke: a responding window, a live child WebView2 process, and newly written local database files. The same standard user uninstalled it successfully, and the executable was absent afterward. A missing-runtime launch was observed separately, but its bootstrap UI was not inspected and is not counted as visual acceptance. Sandbox evidence remains private; the disposable session and guest-only account were removed afterward.
+
+## ARM-only template pilot
+
+An explicitly authorized pilot used the reference skeleton to create only an empty resource group in `westus2`, validate it, and delete it. The first run found a context-validation defect: postprovision checked Azure CLI's global default rather than the environment's subscription. [Reference PR #31](https://github.com/nathanmcnulty/azd-reference/pull/31) scopes that read explicitly and accepts normal azd environments without a tenant variable, while still checking a supplied tenant.
+
+The repeat at reference commit `a1a594f7a33f2362f4fa613fd30e6edc32825269` passed environment creation, preview, provisioning, all three read-only validation checks, and `azd down`. Synthetic delivery remained intentionally skipped. Independent reads confirmed no resources inside the group before cleanup and the group absent afterward. The repeat preserved the CLI default it found; offline regressions cover a different default and reject subscription/tenant mismatches. Private lifecycle reports retain exact targets and command evidence. This proves the minimal CLI/template lifecycle, not GUI deployment, application workloads, or Maester permissions and cleanup.
 
 ## Local validation
 
@@ -9,6 +23,8 @@ On 19 September, the dependency refresh patched the `devalue` malformed-input de
 An opt-in installed-CLI regression also passed with azd 1.34.0: `cargo test --manifest-path src-tauri/Cargo.toml installed_azd_prepares_the_selected_destination -- --ignored`. It prepares a temporary hook-free local template, writes the selected environment, and verifies both `azure.yaml` and `.azure/dev/.env` at the selected destination. It does not authenticate, provision, or deploy. This matters because [azd changed the general template initialization directory behavior](https://devblogs.microsoft.com/azure-sdk/azure-developer-cli-azd-april-2026/); the GUI uses a staged local template path, which the test exercises directly.
 
 On Windows with Node.js 22.23.2, `npm run verify` passed: zero Svelte/TypeScript errors or warnings, 106 frontend tests, production frontend build, Rust formatting, strict Clippy, 130 Rust tests (plus three opt-in installed-tool checks run separately), and doc-tests. `npm run audit:dependencies` passed with zero npm vulnerabilities and no denied Rust audit findings. The companion reference passed all 229 Pester tests on Windows and Linux, and its skeleton manifest passed `Test-Json` against this GUI schema. Independent review verified the environment, version, and Windows path fixes.
+
+[PR #90](https://github.com/nathanmcnulty/azd-gui/pull/90) subsequently passed 110 frontend tests, Svelte/TypeScript checks, and the production build; the final target-guard follow-up passed checks and 13 focused tests. Deferred-response regressions reproduce both prior environment-state races. The reference pilot fix passed 230 Pester tests locally and in Windows/Linux CI.
 
 An unsigned development executable was built with a separate review application identity and opened on Windows. Native startup, tool detection, local-folder selection, embedded-manifest parsing, and minimum-version readiness were exercised using a task-authored fixture. The visual pass identified the native null-condition and checkbox layout defects covered by this batch. After rebuilding, the multiselect layout, selection-driven conditional page, and option recommendation text were visually verified. Existing cached connection status and read-only Azure scope discovery were used; no sign-in, installation, provisioning, or deployment was initiated. The isolated test app was closed afterward.
 
@@ -57,16 +73,18 @@ The receipt compatibility fixture was generated by the candidate deployment-rece
 
 - Honor the saved interactive-terminal requirement after reopening registered projects. Their workspace offers a selected-environment terminal handoff; native execution rejects preview, up, provision, deploy, and down through the output-only route before running prerequisite commands or consuming approval. Refresh remains available. This enforces known saved contracts and does not detect later edits to mutable project files.
 
+- Read workspace resources for the environment actually discovered as current. Preserve the initiating project and environment while lifecycle startup is pending, so navigation cannot attach an old preview/result to a different workspace or clear its deployment result.
+
 ## Next milestones
 
 | Order | Deliverable | Acceptance evidence |
 | --- | --- | --- |
 | 1 | Complete external-template provenance | New external-gallery preparation binds reviewed sidecar bytes and the effective contract to the pinned template before any initialization. Next define publisher trust and evidence for old project registrations. Public GitHub compatibility is verified against azd-reference. Specify approval semantics for intentionally mutable existing-project working trees. |
-| 2 | One real Windows template pilot | Select a simple ARM template or make Maester's interactive route explicit. On a disposable authorized target: configure, prepare, preview where supported, deploy, reopen, verify, and clean up. Record remaining manual steps. |
+| 2 | One real Windows template pilot | The resource-group-only reference pilot now passes through the CLI with independent cleanup verification. Give the authoring skeleton a named, reviewed starter-template identity before gallery adoption, then exercise configure, prepare, preview, deploy, reopen, verify, and cleanup through the Windows GUI. Keep Maester's interactive and directory-permission acceptance separate. |
 | 3 | Effective optional features | Boolean feature conditions now select required tools, connections/scopes, and registered checks; edits invalidate review/preview. Extend proven template mappings and per-feature acknowledgements as more projects are adopted. Broader expressions and immutable existing-project approval semantics remain future work. |
 | 4 | Better admin inputs | The wizard now offers a registered security-group picker for Maester's dashboard, with explicit selection and target-change invalidation. Expand proven profiles and inputs with permission, cost, and component explanations as templates are adopted. Existing-project editing and unsupported lookups retain manual ID entry. |
 | 5 | Verification and management | Validation report reading is implemented. A candidate reference receipt writer and aggregate GUI reader now use reports/deployment-receipt.json. Next define explicit deployment-operation outcomes in a real solution, adopt the writer, and bind evidence to the exact deployment, target, and source. Do not count validation checks as applied deployment changes. Present outstanding actions and ownership separately; prove rerun and cleanup behavior before adding PIM or Device Notifications. |
-| 6 | Windows beta release | Build and sign a reviewed candidate, then execute the clean-VM installer, WebView2, authentication, upgrade, and uninstall acceptance checklist. |
+| 6 | Windows beta release | Signed packaging, non-elevated installation, native startup smoke with WebView2, and standard-user uninstall passed for the recorded candidate. Complete visual UI, missing-runtime UX, authentication, and upgrade acceptance, then repeat relevant gates for the final application revision before publication. |
 
 The GUI remains an orchestrator over public CLI contracts. Templates own infrastructure, hooks, optional feature semantics, and verification. The gallery supplies discovery and source identity; descriptive `.azd/catalog.json` commands are never an execution interface.
 
