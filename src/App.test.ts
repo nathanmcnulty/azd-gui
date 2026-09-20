@@ -25,6 +25,7 @@ describe("desktop experience", () => {
     let emit!: Parameters<typeof bridge.onOperationEvent>[0];
     vi.spyOn(bridge, "onOperationEvent").mockImplementation(async (listener) => { emit = listener; return () => {}; });
     const start = vi.spyOn(bridge, "startAzdOperation").mockImplementation(async (kind) => `wizard-${kind}`);
+    const cancel = vi.spyOn(bridge, "cancelOperation").mockResolvedValue(undefined);
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
     await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[3]);
@@ -54,9 +55,23 @@ describe("desktop experience", () => {
     await act(() => resolveStart("wizard-up"));
     await act(() => emit({ ...event, operationId: "other-project-up", kind: "up", message: "Unrelated deployment" }));
     expect(screen.getByRole("heading", { name: "Deploying with azd" })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel deployment" }));
+    expect(cancel).toHaveBeenLastCalledWith("wizard-up");
+    await act(() => emit({ ...event, operationId: "other-running", kind: "refresh", state: "running", message: "Other operation" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Cancel deployment" }));
+    expect(cancel).toHaveBeenLastCalledWith("wizard-up");
     await act(() => emit({ ...event, operationId: "wizard-up", kind: "up", message: "Current deployment finished" }));
     expect(screen.getByRole("heading", { name: "Deployment complete" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Deploy again" })).toBeInTheDocument();
+    start.mockImplementationOnce(async () => {
+      emit({ ...event, operationId: "early-up", kind: "up", message: "Early completion" });
+      return "early-up";
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Deploy again" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(3));
+    await screen.findByRole("heading", { name: "Deployment complete" });
+    await fireEvent.click(screen.getByRole("button", { name: "Deploy again" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(4));
   });
 
   it("hides preview data and actions until native startup finishes", async () => {

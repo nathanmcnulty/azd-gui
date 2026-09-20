@@ -1376,16 +1376,19 @@
         projectPath,
         environment
       );
+      const earlyEvent = [...operationEvents].reverse().find((event) => event.operationId === operationId && event.kind === action) ?? null;
+      const completedEarly = earlyEvent?.state === "succeeded" || earlyEvent?.state === "failed" || earlyEvent?.state === "cancelled";
       if (action === "up" && wizardDeployment?.session === session) {
-        const earlyEvent = [...operationEvents].reverse().find((event) => event.operationId === operationId && event.kind === "up") ?? null;
         wizardDeployment = { ...wizardDeployment, operationId, event: earlyEvent,
           state: earlyEvent?.state === "succeeded" || earlyEvent?.state === "failed" || earlyEvent?.state === "cancelled" ? earlyEvent.state : "running" };
       }
       operationProjectPaths.set(operationId, projectPath);
-      operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
-      activeOperationId = operationId;
-      activeOperationKind = action;
-      if (!data.isNative) simulateOperation(operationId, action);
+      operationEnvironments.set(operationId, environment);
+      if (!completedEarly) {
+        activeOperationId = operationId;
+        activeOperationKind = action;
+        if (!data.isNative) simulateOperation(operationId, action);
+      }
     } catch (error) {
       if (action === "up" && wizardDeployment?.session === session) wizardDeployment = { ...wizardDeployment, state: "failed", error: `Could not start deployment: ${String(error)}` };
       operationState = "failed";
@@ -1588,8 +1591,16 @@
 
   async function stopOperation() {
     if (!activeOperationId) return;
-    const operationId = activeOperationId;
-    const kind = activeOperationKind ?? "up";
+    await cancelTrackedOperation(activeOperationId, activeOperationKind ?? "up");
+  }
+
+  async function stopWizardDeployment() {
+    const deployment = currentWizardDeployment;
+    if (!deployment?.operationId || deployment.state !== "running") return;
+    await cancelTrackedOperation(deployment.operationId, "up");
+  }
+
+  async function cancelTrackedOperation(operationId: string, kind: string) {
     await cancelOperation(operationId);
     if (!data.isNative) {
       const mutating = ["up", "provision", "deploy", "down", "preview"].includes(kind);
@@ -2745,7 +2756,7 @@
               <h2>{wizardDeploymentState === "succeeded" ? "Deployment complete" : wizardDeploymentState === "failed" ? "Deployment needs attention" : wizardDeploymentState === "cancelled" ? "Deployment cancelled" : wizardDeploymentState === "running" ? "Deploying with azd" : "Ready for azd up"}</h2>
               <p>{wizardDeploymentState === "running" ? "You can continue using the app while the operation runs." : requiresInteractiveTerminal ? "This template needs interactive input that the output-only panel cannot provide yet." : currentWizardDeployment?.error ?? wizardDeploymentEvent?.outcome?.summary ?? "The complete guided deployment runs without CLI prompts."}</p>
               {#if wizardDeploymentState === "running"}
-                <button class="danger" disabled={!currentWizardDeployment?.operationId} on:click={stopOperation}><Icon name="stop" size={15} /> Cancel deployment</button>
+                <button class="danger" disabled={!currentWizardDeployment?.operationId} on:click={stopWizardDeployment}><Icon name="stop" size={15} /> Cancel deployment</button>
               {:else}
                 {#if requiresInteractiveTerminal}
                   <button class="primary large" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
