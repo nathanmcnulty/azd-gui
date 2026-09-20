@@ -93,7 +93,7 @@ $results = foreach ($entry in $entries) {
 
 $portablePath = Join-Path $releaseRoot 'azd-gui.exe'
 $productVersion = (Get-Item -LiteralPath $portablePath).VersionInfo.ProductVersion
-if (-not $productVersion -or -not $productVersion.StartsWith($ExpectedVersion, [System.StringComparison]::Ordinal)) {
+if (-not $productVersion -or $productVersion -cne $ExpectedVersion) {
     throw "Portable executable version '$productVersion' does not match '$ExpectedVersion'."
 }
 
