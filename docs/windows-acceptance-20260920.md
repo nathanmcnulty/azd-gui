@@ -41,6 +41,26 @@ fetched advisory revision `d5c17953a895cf19e8d3ce66eaa42b6fcfe1fb16`.
 The audit tool's initial network fetch crashed locally; fetching with Git and
 rerunning `cargo audit --no-fetch --deny warnings` succeeded.
 
+## Acceptance environment
+
+The isolated acceptance VM is Windows 11 Enterprise, build `10.0.28000`, x64,
+with a non-administrator `AzdAcceptance` profile. Network and clipboard sharing
+are disabled. The Microsoft-signed WebView2 runtime is `153.0.4234.48`.
+This record does not establish acceptance on every supported Windows build.
+
+Immediately before final upgrade, the installed corrected baseline remained
+version 0.1.0 with a valid expected-publisher signature and SHA-256
+`9e177e4fc5eb7a4c9da162c2f12b80272451b53ad06b401992d2fff429048eb9`.
+
+## Final native presentation check
+
+PR #95 merged as `179b89e32b7d2990127f489bf25f4c230d164db6`. The rebuilt
+native app showed the dedicated loading screen before real tools/accounts loaded.
+A fresh pinned-starter workspace completed preview using the same approved target;
+the next page displayed **Ready for azd up**, not deployment success. No second
+provisioning operation was started. Signed workflow `35497506640` builds this
+revision as version 0.1.1 for final artifact and upgrade acceptance.
+
 ## Authenticated native GUI pilot
 
 The host native GUI recognized installed prerequisites and cached CLI accounts,
