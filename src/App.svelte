@@ -1983,7 +1983,7 @@
 
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
-    const project = selectedProject;
+    const project = { ...selectedProject };
     if (!canLeaveProjectEdits()) return;
     if (action !== "refresh" && projectRequiresInteractiveTerminal) {
       projectTab = "overview";
@@ -2016,7 +2016,8 @@
     }
     try {
       const operationId = await startProjectOperation(project, action);
-      if (action === "up") projectDeploymentResult = null;
+      if (action === "up" && selectedProject?.path === project.path &&
+          selectedProject.environment === project.environment) projectDeploymentResult = null;
       operationProjectPaths.set(operationId, project.path);
       operationEnvironments.set(operationId, project.environment);
       activeOperationId = operationId;
