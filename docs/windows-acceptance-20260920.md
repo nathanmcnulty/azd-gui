@@ -91,5 +91,3 @@ including artifact signatures/hashes, Sandbox installation results, database
 snapshots, and validation logs. UI observations are recorded in the task's native
 computer-use captures. Do not commit credentials, CLI environments, or raw private
 acceptance evidence.
-
-

@@ -107,4 +107,3 @@ The bundled entry targets `34f4bac7b69ea2a6746705a91f35ef89ab346034`, `automatio
 5. Exercise `azd down` against the same disposable environment and verify the template's best-effort identity, Exchange, and scoped-role cleanup. A successful CLI exit alone is insufficient evidence of complete cleanup.
 
 This pilot has not been run. It requires a selected cloud target and explicit deployment authorization.
-
