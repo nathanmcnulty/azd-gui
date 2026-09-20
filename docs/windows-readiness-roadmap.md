@@ -4,6 +4,8 @@ Implementation follow-up to the 12 September 2026 review. This branch establishe
 
 ## Local validation
 
+On 19 September, the dependency refresh patched the `devalue` malformed-input denial-of-service advisory with 5.9.2 and RUSTSEC-2026-0285 with `rustls` 0.23.45 (plus its `rustls-webpki` 0.103.15 dependency). The npm and strict Cargo audits passed with the existing documented upstream maintenance exceptions unchanged.
+
 An opt-in installed-CLI regression also passed with azd 1.34.0: `cargo test --manifest-path src-tauri/Cargo.toml installed_azd_prepares_the_selected_destination -- --ignored`. It prepares a temporary hook-free local template, writes the selected environment, and verifies both `azure.yaml` and `.azure/dev/.env` at the selected destination. It does not authenticate, provision, or deploy. This matters because [azd changed the general template initialization directory behavior](https://devblogs.microsoft.com/azure-sdk/azure-developer-cli-azd-april-2026/); the GUI uses a staged local template path, which the test exercises directly.
 
 On Windows with Node.js 22.23.2, `npm run verify` passed: zero Svelte/TypeScript errors or warnings, 106 frontend tests, production frontend build, Rust formatting, strict Clippy, 130 Rust tests (plus three opt-in installed-tool checks run separately), and doc-tests. `npm run audit:dependencies` passed with zero npm vulnerabilities and no denied Rust audit findings. The companion reference passed all 229 Pester tests on Windows and Linux, and its skeleton manifest passed `Test-Json` against this GUI schema. Independent review verified the environment, version, and Windows path fixes.
