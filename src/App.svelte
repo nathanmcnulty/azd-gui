@@ -194,6 +194,7 @@
   let environmentConfigurationError = "";
   let rawVariableName = "";
   let rawVariableValue = "";
+  let projectEditsNotice = false;
   let selectedProjectConfigurationFields: ConfigurationField[] = [];
   let visibleProjectConfigurationFields: ConfigurationField[] = [];
   let projectConfigurationWizardValues: WizardValues = {};
@@ -259,7 +260,10 @@
     !environmentBusy && !environmentConfigurationBusy && !projectLoading;
   $: projectConfigurationReady = projectEnvironmentReady &&
     environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0 &&
-    environmentConfigurationDirty.length === 0;
+    !hasUnsavedProjectEdits;
+  $: hasUnsavedProjectEdits = environmentConfigurationDirty.length > 0 ||
+    rawVariableName.length > 0 || rawVariableValue.length > 0;
+  $: if (!hasUnsavedProjectEdits) projectEditsNotice = false;
   $: projectPreviewReady = Boolean(
     projectPreview?.event.state === "succeeded" &&
       selectedProject?.path === projectPreview?.projectPath &&
@@ -466,6 +470,7 @@
   }
 
   function navigate(id: NavId) {
+    if (id !== "projects" && !canLeaveProjectEdits()) return;
     activeNav = id;
     closeWizard();
     if (id !== "projects") closeProjectWorkspace();
@@ -1590,8 +1595,22 @@
   }
 
   function closeProjectWorkspace() {
+    if (!canLeaveProjectEdits()) return;
     projectWorkspaceRequest += 1;
     selectedProject = null;
+    rawVariableName = "";
+    rawVariableValue = "";
+  }
+
+  function canLeaveProjectEdits() {
+    if (!selectedProject || !hasUnsavedProjectEdits) return true;
+    projectTab = "environments";
+    projectEditsNotice = true;
+    return false;
+  }
+
+  function discardRawVariable() {
+    if (environmentConfigurationBusy || environmentBusy) return;
     rawVariableName = "";
     rawVariableValue = "";
   }
@@ -1765,6 +1784,7 @@
   }
 
   function launchSelectedProjectTerminal() {
+    if (!canLeaveProjectEdits()) return;
     if (selectedProject) void launchExternalTerminal(selectedProject.path, selectedProject.environment);
   }
 
@@ -1772,6 +1792,7 @@
     project: ProjectSummary,
     preserveView = false
   ) {
+    if (!canLeaveProjectEdits()) return;
     const request = ++projectWorkspaceRequest;
     const isCurrent = () => isCurrentProject(request, project.path);
     if (!preserveView) {
@@ -1831,6 +1852,7 @@
   }
 
   async function useReviewedProjectContract() {
+    if (!canLeaveProjectEdits()) return;
     const project = selectedProject;
     if (!project || activeOperationId || environmentConfigurationBusy || environmentBusy) return;
     let workspace = projectWorkspaceRequest;
@@ -1891,6 +1913,7 @@
   }
 
   async function createEnvironment() {
+    if (!canLeaveProjectEdits()) return;
     if (!selectedProject || environmentBusy || environmentConfigurationBusy || !environmentName.trim()) return;
     if (projectEnvironmentWrites.has(selectedProject.path)) return;
     const project = selectedProject;
@@ -1927,6 +1950,7 @@
   }
 
   async function selectEnvironment(environment: ProjectEnvironment) {
+    if (!canLeaveProjectEdits()) return;
     if (!selectedProject || environmentBusy || environmentConfigurationBusy || environment.isDefault) return;
     if (projectEnvironmentWrites.has(selectedProject.path)) return;
     const project = selectedProject;
@@ -1958,6 +1982,7 @@
 
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
+    if (!canLeaveProjectEdits()) return;
     if (action !== "refresh" && !projectEnvironmentReady) {
       projectTab = "environments";
       return;
@@ -2787,7 +2812,7 @@
               <section class="workspace-panel">
                 <h2>Source</h2>
                 {#if !selectedProjectTemplate && selectedProject.templateId?.startsWith("external-")}
-                  <div class="callout warning"><div><strong>Catalog contract needs review</strong><p>Review this catalog in Settings, then apply its contract for this exact template revision. Project files and Azure resources are preserved.</p><button class="secondary compact" on:click={() => (activeNav = "settings")}>Review catalog sources</button><button class="secondary compact" disabled={Boolean(activeOperationId) || environmentConfigurationBusy || environmentBusy} on:click={useReviewedProjectContract}>Use reviewed catalog contract</button></div></div>
+                  <div class="callout warning"><div><strong>Catalog contract needs review</strong><p>Review this catalog in Settings, then apply its contract for this exact template revision. Project files and Azure resources are preserved.</p><button class="secondary compact" on:click={() => navigate("settings")}>Review catalog sources</button><button class="secondary compact" disabled={Boolean(activeOperationId) || environmentConfigurationBusy || environmentBusy} on:click={useReviewedProjectContract}>Use reviewed catalog contract</button></div></div>
                 {/if}
                 <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
@@ -2870,7 +2895,7 @@
                   <div class="callout info"><Icon name="cloud" size={17} /><div><strong>Choose an environment</strong><p>Select or create an environment before previewing and deploying this project.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Manage environments</button></div></div>
                 {:else if environmentConfigurationState === "error"}
                   <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration unavailable</strong><p>Load the saved environment configuration before previewing or deploying.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Review configuration</button></div></div>
-                {:else if environmentConfigurationDirty.length > 0}
+                {:else if hasUnsavedProjectEdits}
                   <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Save configuration changes</strong><p>Preview and deployment use saved environment values. Save or discard your edits before continuing.</p><button class="secondary compact" on:click={() => (projectTab = "environments")}>Review unsaved changes</button></div></div>
                 {:else if missingProjectConfiguration.length > 0}
                   <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration required</strong><p>Set {missingProjectConfiguration.map((field) => field.label).join(", ")} before previewing this environment.</p></div></div>
@@ -2915,6 +2940,9 @@
             </div>
           {:else if projectTab === "environments"}
             <div class="environment-management">
+              {#if projectEditsNotice}
+                <div class="callout warning" role="alert"><Icon name="warning" size={17} /><div><strong>Keep your changes before continuing</strong><p>Save or discard configuration edits, and set or discard the advanced variable below. Then retry your action. Any save already started will finish normally.</p></div></div>
+              {/if}
               <div class="environment-toolbar">
                 <div><h2>Project environments</h2><p>azd owns the values under <code>.azure</code>; the app only invokes supported environment commands.</p></div>
                 <button class="primary" disabled={environmentBusy || environmentConfigurationBusy} on:click={openEnvironmentEditor}><Icon name="plus" size={15} /> New environment</button>
@@ -2954,7 +2982,7 @@
                   <div><h2>Environment configuration</h2><p>Manifest fields can be read back unless marked sensitive. Raw values are always write-only.</p></div>
                   {#if environmentConfigurationState === "error"}
                     <StatusPill tone="warning" label="Unavailable" />
-                  {:else if environmentConfigurationDirty.length > 0}
+                  {:else if hasUnsavedProjectEdits}
                     <StatusPill tone="warning" label="Unsaved changes" />
                   {:else if missingProjectConfiguration.length > 0}
                     <StatusPill tone="warning" label={`${missingProjectConfiguration.length} required`} />
@@ -3002,9 +3030,10 @@
                       </div>
                     {/if}
                     <form on:submit|preventDefault={setRawEnvironmentVariable}>
-                      <label><span>Variable name</span><input bind:value={rawVariableName} required maxlength="128" pattern="[A-Z][A-Z0-9_]*" placeholder="CUSTOM_SETTING" /></label>
-                      <label><span>New value</span><input bind:value={rawVariableValue} type="password" required autocomplete="new-password" placeholder="Write-only value" /></label>
+                      <label><span>Variable name</span><input bind:value={rawVariableName} on:input={() => (projectPreview = null)} required maxlength="128" pattern="[A-Z][A-Z0-9_]*" placeholder="CUSTOM_SETTING" /></label>
+                      <label><span>New value</span><input bind:value={rawVariableValue} on:input={() => (projectPreview = null)} type="password" required autocomplete="new-password" placeholder="Write-only value" /></label>
                       <button class="secondary" disabled={environmentConfigurationBusy || !rawVariableName.trim() || !rawVariableValue}>Set variable</button>
+                      <button type="button" class="secondary" disabled={environmentConfigurationBusy || (!rawVariableName && !rawVariableValue)} on:click={discardRawVariable}>Discard variable</button>
                     </form>
                   </div>
                 {/if}

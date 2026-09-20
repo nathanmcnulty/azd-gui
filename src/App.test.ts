@@ -11,6 +11,49 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("preserves unsaved configuration across navigation, refresh, and environment selection attempts", async () => {
+    const select = vi.spyOn(bridge, "selectProjectEnvironment");
+    const reads = vi.spyOn(bridge, "getProjectEnvironmentValues");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    await fireEvent.change(await screen.findByRole("combobox", { name: /permission profile/i }), { target: { value: "Minimal" } });
+    const initialReads = reads.mock.calls.length;
+    await fireEvent.click(screen.getByRole("button", { name: /use test environment/i }));
+    expect(select).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole("button", { name: /^Settings/ }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/keep your changes/i);
+    await fireEvent.click(screen.getByRole("button", { name: "resources" }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /^refresh$/i }).at(-1)!);
+    expect(screen.getByRole("combobox", { name: /permission profile/i })).toHaveValue("Minimal");
+    expect(reads).toHaveBeenCalledTimes(initialReads);
+    await fireEvent.click(screen.getByRole("button", { name: /discard changes/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    expect(screen.getByRole("button", { name: /myworkid/i })).toBeInTheDocument();
+  });
+
+  it("protects write-only advanced input and allows explicit discard without a write", async () => {
+    const writes = vi.spyOn(bridge, "setProjectEnvironmentValues");
+    const terminal = vi.spyOn(bridge, "openExternalTerminal");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    await fireEvent.input(await screen.findByLabelText(/variable name/i), { target: { value: "CUSTOM_SETTING" } });
+    await fireEvent.input(screen.getByLabelText(/new value/i), { target: { value: "sensitive draft" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^terminal$/i }));
+    expect(terminal).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    expect(screen.getByLabelText(/new value/i)).toHaveValue("sensitive draft");
+    expect(screen.getByRole("alert")).not.toHaveTextContent("sensitive draft");
+    await fireEvent.click(screen.getByRole("button", { name: /discard variable/i }));
+    expect(screen.getByLabelText(/new value/i)).toHaveValue("");
+    expect(writes).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    expect(screen.getByRole("button", { name: /myworkid/i })).toBeInTheDocument();
+  });
+
   it("can discard changes when a condition hides the last manifest field", async () => {
     const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
     const manifest = snapshot!.entry.manifest!;
@@ -1004,7 +1047,7 @@ describe("desktop experience", () => {
     expect(screen.getByRole("button", { name: /new environment/i })).toBeEnabled();
   });
 
-  it("does not reload an old project's configuration after switching projects", async () => {
+  it("keeps the editor open until a pending configuration save finishes", async () => {
     let resolveSave!: () => void;
     const save = vi.spyOn(bridge, "setProjectEnvironmentValues").mockImplementation(
       () => new Promise((resolve) => {
@@ -1023,17 +1066,17 @@ describe("desktop experience", () => {
     await waitFor(() => expect(save).toHaveBeenCalled());
 
     await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/keep your changes/i);
+    expect(screen.getByRole("combobox", { name: /permission profile/i })).toHaveValue("Minimal");
+    await act(() => { resolveSave(); });
+    await screen.findByText("No unsaved changes");
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
     await fireEvent.click(screen.getByRole("button", { name: /myworkid/i }));
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: /myworkid/i })).toBeInTheDocument();
       expect(screen.queryByText(/refreshing azd project state/i)).not.toBeInTheDocument();
     });
-    const readsAfterNewProject = reads.mock.calls.length;
-    await act(() => {
-      resolveSave();
-    });
-
-    expect(reads.mock.calls.length).toBe(readsAfterNewProject);
+    expect(reads).toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: /myworkid/i })).toBeInTheDocument();
   });
 
