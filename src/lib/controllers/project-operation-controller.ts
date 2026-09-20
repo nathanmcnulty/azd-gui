@@ -23,8 +23,7 @@ export type ProjectWorkspaceSnapshot = {
 };
 
 export async function loadProjectWorkspace(project: ProjectSummary): Promise<ProjectWorkspaceSnapshot> {
-  const [stateResult, environmentsResult, historyResult, templateResult] = await Promise.allSettled([
-    getProjectState(project.path, project.environment),
+  const [environmentsResult, historyResult, templateResult] = await Promise.allSettled([
     listProjectEnvironments(project.path),
     getOperationHistory(project.path),
     getProjectTemplate(project.path)
@@ -35,13 +34,17 @@ export async function loadProjectWorkspace(project: ProjectSummary): Promise<Pro
       : project.environment
         ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
         : [];
+  const currentEnvironment =
+    environments.find((environment) => environment.isDefault)?.name ?? project.environment;
+  const [stateResult] = await Promise.allSettled([
+    getProjectState(project.path, currentEnvironment)
+  ]);
   return {
     template: templateResult.status === "fulfilled" ? templateResult.value : null,
     state: stateResult.status === "fulfilled" ? stateResult.value : null,
     environments,
     history: historyResult.status === "fulfilled" ? historyResult.value : [],
-    currentEnvironment:
-      environments.find((environment) => environment.isDefault)?.name ?? project.environment,
+    currentEnvironment,
     failedSources: [stateResult, environmentsResult, historyResult, templateResult].filter(
       (result) => result.status === "rejected"
     ).length

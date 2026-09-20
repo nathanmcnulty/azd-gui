@@ -143,7 +143,7 @@ describe("desktop experience", () => {
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
-    await fireEvent.click(screen.getByRole("checkbox", { name: /approve this project's template code execution/i }));
+    await fireEvent.click(await screen.findByRole("checkbox", { name: /approve this project's template code execution/i }));
     expect(screen.getByRole("button", { name: "Down" })).toBeDisabled();
     await fireEvent.click(await screen.findByRole("button", { name: /manage environments/i }));
     expect(await screen.findByText("No environment selected")).toBeInTheDocument();
