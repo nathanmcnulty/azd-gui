@@ -37,6 +37,18 @@
       "tags": ["Entra", "Health", "Monitoring"],
       "platforms": ["windows"],
       "manifest": "manifests/entra-health-monitoring.json"
+    },
+    {
+      "id": "deployment-check",
+      "title": "Azure deployment check",
+      "summary": "Start with one empty resource group to check your deployment setup.",
+      "description": "Creates one resource group and validates access in your selected subscription. No applications, identities, or role assignments. Use a new environment name and remove the dedicated group when finished; cleanup deletes anything later placed in it.",
+      "repository": "https://github.com/nathanmcnulty/azd-reference",
+      "commit": "abc6e896620990e68360a63dd14efda66a3f75cd",
+      "subdirectory": "examples/deployment-check",
+      "tags": ["Start here", "Azure", "Validation"],
+      "platforms": ["windows"],
+      "manifest": "manifests/deployment-check.json"
     }
   ]
 }

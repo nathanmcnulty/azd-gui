@@ -14,9 +14,11 @@ import catalogDocument from "../../catalog/azd-gui.catalog.json";
 import entraHealthManifest from "../../catalog/manifests/entra-health-monitoring.json";
 import maesterManifest from "../../catalog/manifests/maester-automation.json";
 import myworkidManifest from "../../catalog/manifests/myworkid.json";
+import deploymentCheckManifest from "../../catalog/manifests/deployment-check.json";
 
 const bundledManifests = {
   "manifests/myworkid.json": myworkidManifest,
+  "manifests/deployment-check.json": deploymentCheckManifest,
   "manifests/maester-automation.json": maesterManifest,
   "manifests/entra-health-monitoring.json": entraHealthManifest
 } as const;
@@ -322,6 +324,6 @@ export const mockBootstrap: BootstrapData = {
     navigationExpanded: true
   },
   platform: "windows",
-  appVersion: "0.1.0",
+  appVersion: "0.1.1",
   isNative: false
 };

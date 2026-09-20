@@ -24,6 +24,7 @@ describe("catalog contracts", () => {
 
   it.each([
     "catalog/manifests/myworkid.json",
+    "catalog/manifests/deployment-check.json",
     "catalog/manifests/maester-automation.json",
     "catalog/manifests/entra-health-monitoring.json"
   ])("validates %s", (path) => {

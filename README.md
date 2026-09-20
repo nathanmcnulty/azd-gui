@@ -11,7 +11,7 @@ The supported beta is Windows 10/11 on x64. macOS and Linux source builds are ex
 - Compact VS Code-inspired shell with one persistent, collapsible navigation tree for Catalog, Projects, Connections, Tools, and Settings.
 - System, light, and dark appearance preferences persisted with the navigation state.
 - Dynamic deployment wizard with conditional manifest pages and preserved values.
-- Bundled catalog containing pinned MyWorkID, Maester Automation, and Entra Health Monitoring templates.
+- Bundled catalog containing pinned Azure deployment check, MyWorkID, Maester Automation, and Entra Health Monitoring templates. Start with Azure deployment check to create and validate one dedicated empty resource group before trying an application template.
 - HTTPS/GitHub external catalog preview and explicit trust gate.
 - Direct GitHub templates resolved to immutable commits before use.
 - Local existing-project and copy-as-template workflows.

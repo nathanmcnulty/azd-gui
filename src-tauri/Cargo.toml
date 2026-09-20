@@ -1,6 +1,6 @@
 [package]
 name = "azd-gui"
-version = "0.1.0"
+version = "0.1.1"
 description = "A guided desktop experience for Azure Developer CLI deployments"
 authors = ["azd-gui contributors"]
 edition = "2021"

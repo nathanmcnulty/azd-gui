@@ -482,7 +482,7 @@ describe("desktop experience", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
     await fireEvent.click(
-      screen.getAllByRole("button", { name: /configure deployment/i })[3]
+      within(screen.getAllByRole("heading", { name: "MyWorkID" }).at(-1)!.closest("article")!).getByRole("button", { name: /configure deployment/i })
     );
     await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
       target: { value: "C:\\Deployments\\external-race" }
@@ -1347,9 +1347,9 @@ describe("desktop experience", () => {
       expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument();
     });
     const externalSource = screen.getByText("External catalog preview").closest<HTMLElement>(".setting-row")!;
-    expect(within(externalSource).getByText(/3 pinned templates/i)).toBeInTheDocument();
+    expect(within(externalSource).getByText(/4 pinned templates/i)).toBeInTheDocument();
     expect(screen.getByText("Bundled catalog").closest<HTMLElement>(".setting-row")).toHaveTextContent(
-      "3 pinned templates"
+      "4 pinned templates"
     );
 
     await fireEvent.click(within(externalSource).getByRole("button", { name: /review latest/i }));
@@ -1363,7 +1363,7 @@ describe("desktop experience", () => {
     await fireEvent.click(within(externalSource).getByRole("button", { name: /confirm remove/i }));
     await waitFor(() => expect(screen.queryByText("External catalog preview")).not.toBeInTheDocument());
     await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
-    expect(screen.getAllByRole("button", { name: /configure deployment/i })).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: /configure deployment/i })).toHaveLength(4);
   });
   it("selects a dashboard security group and clears it after an Azure target change", async () => {
     render(App);

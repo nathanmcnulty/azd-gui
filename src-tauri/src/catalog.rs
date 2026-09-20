@@ -16,6 +16,8 @@ use url::Url;
 
 const CATALOG_JSON: &str = include_str!("../../catalog/azd-gui.catalog.json");
 const MYWORKID_MANIFEST: &str = include_str!("../../catalog/manifests/myworkid.json");
+const DEPLOYMENT_CHECK_MANIFEST: &str =
+    include_str!("../../catalog/manifests/deployment-check.json");
 const MAESTER_MANIFEST: &str = include_str!("../../catalog/manifests/maester-automation.json");
 const ENTRA_HEALTH_MANIFEST: &str =
     include_str!("../../catalog/manifests/entra-health-monitoring.json");
@@ -279,6 +281,7 @@ fn require_manifest_digest(bytes: &[u8], expected_digest: &str) -> AppResult<()>
 fn manifest_json(path: &str) -> AppResult<&'static str> {
     match path.replace('\\', "/").as_str() {
         "manifests/myworkid.json" => Ok(MYWORKID_MANIFEST),
+        "manifests/deployment-check.json" => Ok(DEPLOYMENT_CHECK_MANIFEST),
         "manifests/maester-automation.json" => Ok(MAESTER_MANIFEST),
         "manifests/entra-health-monitoring.json" => Ok(ENTRA_HEALTH_MANIFEST),
         _ => Err(AppError::Invalid(format!(
