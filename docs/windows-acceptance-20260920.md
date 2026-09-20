@@ -41,7 +41,7 @@ fetched advisory revision `d5c17953a895cf19e8d3ce66eaa42b6fcfe1fb16`.
 The audit tool's initial network fetch crashed locally; fetching with Git and
 rerunning `cargo audit --no-fetch --deny warnings` succeeded.
 
-## Remaining acceptance
+## Authenticated native GUI pilot
 
 The host native GUI recognized installed prerequisites and cached CLI accounts,
 and showed the exact starter revision and approved Azure target. Preparation
@@ -53,19 +53,37 @@ for the selected tenant without returning tokens, and ignores late checks for
 earlier wizard sessions or targets. The live GUI subsequently passed account
 alignment, subscription permission checks, and pinned project preparation.
 Preview cancellation reported cancellation and kept deployment blocked; the
-prepared project remained available for retry.
+prepared project remained available for retry. Retry succeeded; editing the Azure
+target cleared approval and required a new preview. The GUI then ran `azd up`
+successfully against the authorized empty-resource-group target. All three
+validation checks passed (zero failed, warning, or skipped checks). Independent
+Azure queries confirmed the approved group in `westus2`, provisioning succeeded,
+and zero resources inside the group.
+
+After closing and reopening the app, the registered project retained its source
+revision, validation report, and operation history. The resources view correctly
+reported no services or endpoints for this infrastructure-only starter. GUI
+`azd down` succeeded; independent `az group exists` returned false afterward.
+The Azure CLI default subscription matched its pre-pilot value. Local project
+files and historical validation evidence remain; they are not current resource
+existence claims. This was the native development build at `94f60f7` with cached
+host authentication, not final signed or clean-VM authentication acceptance.
+
+The pilot also exposed preview success incorrectly marking the wizard deployment
+complete before `azd up` began. Deployment presentation now follows only the
+wizard's matching deployment operation, including asynchronous startup. Cancellation targets that exact operation, and completion received before command startup returns does not block retry. Independent review confirmed both event-race corrections.
 
 An additional startup fix hides simulated preview data while native bootstrap is
 pending and catches operation-listener initialization failures. The integrated
 tenant fix passed 114 frontend and 133 native tests; the subsequent startup-only
-change passed all 117 frontend tests and Svelte checks.
+and deployment-status changes passed all 118 frontend tests and Svelte checks.
 
 Signed runs `35495517974` and `35495878388` were intentionally canceled after
 native acceptance exposed defects, before promoting either candidate. Final
 signed upgrade/uninstall checks must use the revision containing the fixes.
 Clean-VM interactive authentication still needs the selected disposable account
 and user completion of any broker/browser prompt. Host cached-session checks do
-not satisfy that gate. Historical installer failure, authenticated GUI deployment,
+not satisfy that gate. Historical installer failure
 and final signed artifact acceptance remain explicit release blockers.
 
 Private local evidence is retained under `E:\azd-gui-acceptance-remaining`,
@@ -73,3 +91,5 @@ including artifact signatures/hashes, Sandbox installation results, database
 snapshots, and validation logs. UI observations are recorded in the task's native
 computer-use captures. Do not commit credentials, CLI environments, or raw private
 acceptance evidence.
+
+
