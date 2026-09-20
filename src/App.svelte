@@ -155,7 +155,15 @@
   let activeOperationKind: string | null = null;
   let operationEvents: OperationEvent[] = [];
   let operationState: "idle" | "running" | "succeeded" | "failed" | "cancelled" = "idle";
-  let lastOperationResult: OperationEvent | null = null;
+  let wizardDeployment: {
+    session: number;
+    projectPath: string;
+    environment: string;
+    operationId: string | null;
+    state: "running" | "succeeded" | "failed" | "cancelled";
+    event: OperationEvent | null;
+    error?: string;
+  } | null = null;
   let theme: "system" | "dark" | "light" = "system";
   let projectPrepared = false;
   let preparedEnvironmentName: string | null = null;
@@ -237,6 +245,14 @@
   const operationEnvironments = new Map<string, string | undefined>();
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
+  $: currentWizardDeployment = wizardDeployment && selectedEntry &&
+    wizardDeployment.session === wizardSession &&
+    wizardDeployment.projectPath === String(wizardValues.projectPath || "") &&
+    wizardDeployment.environment === String(wizardValues.environmentName || "dev")
+      ? wizardDeployment : null;
+  $: wizardDeploymentState = currentWizardDeployment?.state ?? "idle";
+  $: wizardDeploymentEvent = currentWizardDeployment?.event ?? null;
+  $: wizardDeploymentProgress = wizardDeploymentState === "succeeded" ? 100 : wizardDeploymentEvent?.progress ?? 0;
   $: sensitiveWizardFields = sensitiveFieldIds(selectedEntry);
   $: selectedProjectConfigurationFields = selectedProjectTemplate?.entry.manifest?.configuration.groups
     .flatMap((group) => group.fields) ?? [];
@@ -604,7 +620,6 @@
     operationEvents = [];
     operationState = "idle";
     activeOperationKind = null;
-    lastOperationResult = null;
     projectPrepared = false;
     preparedEnvironmentName = null;
     preparedEnvironmentVariables = new Map();
@@ -1341,24 +1356,38 @@
       outputOpen = true;
       return;
     }
+    const session = wizardSession;
+    const environment = String(wizardValues.environmentName || "dev");
+    const entry = selectedEntry;
+    if (action === "up") wizardDeployment = {
+      session, projectPath: String(wizardValues.projectPath || ""), environment,
+      operationId: null, state: "running", event: null
+    };
     operationState = "running";
-    lastOperationResult = null;
     outputOpen = true;
     addSystemLog(`Starting azd ${action} --no-prompt`, "info");
     try {
       const projectPath = await materializeProject();
+      if (session !== wizardSession) return;
+      if (action === "up" && wizardDeployment) wizardDeployment = { ...wizardDeployment, projectPath };
       const operationId = await startApprovedDeploymentOperation(
         action,
-        selectedEntry,
+        entry,
         projectPath,
-        String(wizardValues.environmentName || "dev")
+        environment
       );
+      if (action === "up" && wizardDeployment?.session === session) {
+        const earlyEvent = [...operationEvents].reverse().find((event) => event.operationId === operationId && event.kind === "up") ?? null;
+        wizardDeployment = { ...wizardDeployment, operationId, event: earlyEvent,
+          state: earlyEvent?.state === "succeeded" || earlyEvent?.state === "failed" || earlyEvent?.state === "cancelled" ? earlyEvent.state : "running" };
+      }
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
       activeOperationId = operationId;
       activeOperationKind = action;
       if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
+      if (action === "up" && wizardDeployment?.session === session) wizardDeployment = { ...wizardDeployment, state: "failed", error: `Could not start deployment: ${String(error)}` };
       operationState = "failed";
       activeOperationKind = null;
       addSystemLog(`Could not start deployment: ${String(error)}`, "error");
@@ -1424,10 +1453,11 @@
 
   function handleOperationEvent(event: OperationEvent) {
     operationEvents = [...operationEvents.slice(-499), event];
+    if (event.kind === "up" && wizardDeployment?.operationId === event.operationId) {
+      wizardDeployment = { ...wizardDeployment, event,
+        state: event.state === "succeeded" || event.state === "failed" || event.state === "cancelled" ? event.state : "running" };
+    }
     if (event.state === "succeeded" || event.state === "failed" || event.state === "cancelled") {
-      if (["up", "provision", "deploy", "refresh", "show", "down"].includes(event.kind)) {
-        lastOperationResult = event;
-      }
       completedOperations.set(event.operationId, event);
       const waiter = operationResolvers.get(event.operationId);
       if (waiter) {
@@ -2030,7 +2060,6 @@
     }
     outputOpen = true;
     operationState = "running";
-    lastOperationResult = null;
     if (["preview", "up", "provision", "deploy", "refresh", "down"].includes(action)) {
       projectPreview = null;
     }
@@ -2710,30 +2739,30 @@
             </label>
           {:else if activePage.kind === "deploy"}
             <div class="deployment-hero">
-              <div class={`deployment-orb ${operationState}`}>
-                {#if operationState === "running"}<span class="spinner"></span>{:else if operationState === "succeeded"}<Icon name="check" size={38} />{:else if operationState === "failed" || operationState === "cancelled"}<Icon name="warning" size={38} />{:else}<Icon name="cloud" size={38} />{/if}
+              <div class={`deployment-orb ${wizardDeploymentState}`}>
+                {#if wizardDeploymentState === "running"}<span class="spinner"></span>{:else if wizardDeploymentState === "succeeded"}<Icon name="check" size={38} />{:else if wizardDeploymentState === "failed" || wizardDeploymentState === "cancelled"}<Icon name="warning" size={38} />{:else}<Icon name="cloud" size={38} />{/if}
               </div>
-              <h2>{operationState === "succeeded" ? "Deployment complete" : operationState === "failed" ? "Deployment needs attention" : operationState === "cancelled" ? "Deployment cancelled" : operationState === "running" ? "Deploying with azd" : "Ready for azd up"}</h2>
-              <p>{operationState === "running" ? "You can continue using the app while the operation runs." : requiresInteractiveTerminal ? "This template needs interactive input that the output-only panel cannot provide yet." : lastOperationResult?.outcome?.summary ?? "The complete guided deployment runs without CLI prompts."}</p>
-              {#if operationState === "running"}
-                <button class="danger" on:click={stopOperation}><Icon name="stop" size={15} /> Cancel deployment</button>
+              <h2>{wizardDeploymentState === "succeeded" ? "Deployment complete" : wizardDeploymentState === "failed" ? "Deployment needs attention" : wizardDeploymentState === "cancelled" ? "Deployment cancelled" : wizardDeploymentState === "running" ? "Deploying with azd" : "Ready for azd up"}</h2>
+              <p>{wizardDeploymentState === "running" ? "You can continue using the app while the operation runs." : requiresInteractiveTerminal ? "This template needs interactive input that the output-only panel cannot provide yet." : currentWizardDeployment?.error ?? wizardDeploymentEvent?.outcome?.summary ?? "The complete guided deployment runs without CLI prompts."}</p>
+              {#if wizardDeploymentState === "running"}
+                <button class="danger" disabled={!currentWizardDeployment?.operationId} on:click={stopOperation}><Icon name="stop" size={15} /> Cancel deployment</button>
               {:else}
                 {#if requiresInteractiveTerminal}
                   <button class="primary large" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
                 {:else}
-                  <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {operationState === "succeeded" ? "Deploy again" : lastOperationResult?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
+                  <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {wizardDeploymentState === "succeeded" ? "Deploy again" : wizardDeploymentEvent?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
                 {/if}
               {/if}
             </div>
-            {#if lastOperationResult?.outcome}
-              <div class={`operation-outcome ${lastOperationResult.outcome.resourceState}`}>
+            {#if wizardDeploymentEvent?.outcome}
+              <div class={`operation-outcome ${wizardDeploymentEvent.outcome.resourceState}`}>
                 <StatusPill
-                  tone={lastOperationResult.outcome.resourceState === "changed" ? "success" : lastOperationResult.outcome.resourceState === "possiblyModified" ? "warning" : "neutral"}
-                  label={resourceStateLabel(lastOperationResult)}
+                  tone={wizardDeploymentEvent.outcome.resourceState === "changed" ? "success" : wizardDeploymentEvent.outcome.resourceState === "possiblyModified" ? "warning" : "neutral"}
+                  label={resourceStateLabel(wizardDeploymentEvent)}
                 />
                 <div>
-                  <strong>{lastOperationResult.outcome.summary}</strong>
-                  <p>{lastOperationResult.outcome.guidance}</p>
+                  <strong>{wizardDeploymentEvent.outcome.summary}</strong>
+                  <p>{wizardDeploymentEvent.outcome.guidance}</p>
                 </div>
               </div>
             {/if}
@@ -2741,12 +2770,12 @@
               <div class="callout warning interactive-hook-warning">
                 <Icon name="terminal" size={18} />
                 <div><strong>Need interactive input?</strong><p>Open a terminal in the materialized project and run the copyable command without <code>--no-prompt</code>.</p></div>
-                <button class="secondary" disabled={terminalOpening || interactivePreparing || !projectPrepared || operationState === "running"} on:click={prepareAndOpenInteractiveTerminal}>Open external terminal</button>
+                <button class="secondary" disabled={terminalOpening || interactivePreparing || !projectPrepared || wizardDeploymentState === "running"} on:click={prepareAndOpenInteractiveTerminal}>Open external terminal</button>
               </div>
             {/if}
             <div class="deployment-progress">
-              <div class="progress-track"><span style={`width: ${operationEvents.at(-1)?.progress ?? 0}%`}></span></div>
-              <div><span>{operationEvents.at(-1)?.message ?? "Waiting to start"}</span><strong>{operationEvents.at(-1)?.progress ?? 0}%</strong></div>
+              <div class="progress-track"><span style={`width: ${wizardDeploymentProgress}%`}></span></div>
+              <div><span>{wizardDeploymentEvent?.message ?? (wizardDeploymentState === "running" ? "Starting azd up…" : "Waiting to start")}</span><strong>{wizardDeploymentProgress}%</strong></div>
             </div>
           {/if}
         </div>

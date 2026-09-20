@@ -18,6 +18,47 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("keeps preview success separate from the current wizard deployment", async () => {
+    const data = await bridge.bootstrap();
+    data.isNative = true;
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    let emit!: Parameters<typeof bridge.onOperationEvent>[0];
+    vi.spyOn(bridge, "onOperationEvent").mockImplementation(async (listener) => { emit = listener; return () => {}; });
+    const start = vi.spyOn(bridge, "startAzdOperation").mockImplementation(async (kind) => `wizard-${kind}`);
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[3]);
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), { target: { value: "C:\\Deployments\\wizard-check" } });
+    for (let attempt = 0; attempt < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); attempt += 1) {
+      const button = screen.getByRole("button", { name: /^continue$/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      await fireEvent.click(button);
+    }
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^run checks and preview$/i }));
+    await waitFor(() => expect(start).toHaveBeenCalled());
+    await screen.findByRole("button", { name: "Cancel preview" });
+    const event = { operationId: "wizard-preview", kind: "preview", state: "succeeded" as const, timestamp: new Date().toISOString(), stream: "stdout" as const, level: "success" as const, message: "Preview finished", progress: 100 };
+    await act(() => emit(event));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    expect(screen.getByRole("heading", { name: "Ready for azd up" })).toBeInTheDocument();
+    expect(screen.getByText("Waiting to start")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deploy again" })).not.toBeInTheDocument();
+    let resolveStart!: (value: string) => void;
+    start.mockImplementationOnce(() => new Promise((resolve) => { resolveStart = resolve; }));
+    await fireEvent.click(screen.getByRole("button", { name: "Deploy with azd up" }));
+    expect(screen.getByRole("heading", { name: "Deploying with azd" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Deploy with azd up" })).not.toBeInTheDocument();
+    await waitFor(() => expect(resolveStart).toBeDefined());
+    await act(() => resolveStart("wizard-up"));
+    await act(() => emit({ ...event, operationId: "other-project-up", kind: "up", message: "Unrelated deployment" }));
+    expect(screen.getByRole("heading", { name: "Deploying with azd" })).toBeInTheDocument();
+    await act(() => emit({ ...event, operationId: "wizard-up", kind: "up", message: "Current deployment finished" }));
+    expect(screen.getByRole("heading", { name: "Deployment complete" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Deploy again" })).toBeInTheDocument();
+  });
+
   it("hides preview data and actions until native startup finishes", async () => {
     const nativeData = await bridge.bootstrap();
     nativeData.isNative = true;
