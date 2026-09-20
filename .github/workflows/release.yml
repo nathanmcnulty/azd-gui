@@ -20,6 +20,7 @@ env:
   ARTIFACT_SIGNING_ENDPOINT: https://wus2.codesigning.azure.net/
   ARTIFACT_SIGNING_ACCOUNT: asa-nathanmcnulty
   ARTIFACT_SIGNING_PROFILE: kvpp-public-trust
+  ARTIFACT_SIGNING_SUBJECT: CN=Nathan McNulty, O=Nathan McNulty, L=Soldotna, S=Alaska, C=US
 
 concurrency:
   group: signed-windows-release-${{ github.ref }}
@@ -102,31 +103,32 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Sign application executable
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
-          files: ${{ github.workspace }}\src-tauri\target\release\azd-gui.exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      - name: Install pinned signing module
+        shell: pwsh
+        run: Install-Module ArtifactSigning -RequiredVersion 0.1.8 -Scope CurrentUser -Force -Repository PSGallery
 
-      - name: Create NSIS installer
-        run: npm run tauri -- bundle --bundles nsis --ci
+      # Tauri changes the executable's bundle-type marker. Its signing hook runs
+      # AFTER that change and also signs the uninstaller and final installer.
+      - name: Bundle and sign NSIS payload and installer
+        shell: pwsh
+        run: |
+          $config = Join-Path $env:RUNNER_TEMP 'tauri-signing.json'
+          @{
+            bundle = @{ windows = @{ signCommand = @{
+              cmd = (Get-Command pwsh).Source
+              args = @('-NoProfile', '-File', "$env:GITHUB_WORKSPACE/scripts/sign-windows-artifact.ps1", '-Path', '%1')
+            } } }
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $config
+          $env:AZD_NSIS_PAYLOAD_RECEIPT = Join-Path $env:RUNNER_TEMP 'nsis-payload.sha256'
+          if (Test-Path -LiteralPath $env:AZD_NSIS_PAYLOAD_RECEIPT) { throw 'NSIS payload receipt already exists.' }
+          npm run tauri -- bundle --bundles nsis --ci --config $config
+          if ($LASTEXITCODE -ne 0) { throw 'Signed NSIS bundling failed.' }
+          if (-not (Test-Path -LiteralPath $env:AZD_NSIS_PAYLOAD_RECEIPT)) { throw 'Missing signed NSIS payload receipt.' }
 
-      - name: Sign NSIS installer
-        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
-        with:
-          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
-          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
-          files-folder: ${{ github.workspace }}\src-tauri\target\release\bundle\nsis
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      # Bundling restores the original, unpatched executable for portable use.
+      - name: Sign portable executable
+        shell: pwsh
+        run: ./scripts/sign-windows-artifact.ps1 -Path ./src-tauri/target/release/azd-gui.exe
 
       - name: Verify Authenticode signatures
         shell: pwsh
@@ -164,6 +166,37 @@ jobs:
             -Path "${{ github.workspace }}\src-tauri\target\release\SHA256SUMS.txt" `
             -Encoding utf8
 
+      - name: Verify installed payload before upload
+        shell: pwsh
+        run: |
+          $release = Join-Path $env:RUNNER_TEMP 'release-verification'
+          $install = Join-Path $env:LOCALAPPDATA 'azd-gui-release-verification'
+          if (Test-Path -LiteralPath $install) { throw 'Verification install directory already exists.' }
+          New-Item -ItemType Directory -Path $release | Out-Null
+          $installer = @(Get-ChildItem ./src-tauri/target/release/bundle/nsis/*_x64-setup.exe)
+          if ($installer.Count -ne 1) { throw 'Expected exactly one NSIS installer.' }
+          Copy-Item ./src-tauri/target/release/azd-gui.exe, ./src-tauri/target/release/SHA256SUMS.txt -Destination $release
+          Copy-Item -LiteralPath $installer[0].FullName -Destination $release
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          ./scripts/verify-release-artifacts.ps1 -ReleaseDirectory $release -ExpectedVersion $version -ExpectedSignerSubject $env:ARTIFACT_SIGNING_SUBJECT
+          try {
+            $process = Start-Process -FilePath (Join-Path $release $installer[0].Name) -ArgumentList @('/S', "/D=$install") -Wait -PassThru -WindowStyle Hidden
+            if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode)." }
+            $payloadHash = (Get-Content (Join-Path $env:RUNNER_TEMP 'nsis-payload.sha256') -Raw).Trim()
+            if ($payloadHash -notmatch '^[A-Fa-f0-9]{64}$' -or (Get-FileHash "$install/azd-gui.exe" -Algorithm SHA256).Hash -ne $payloadHash) {
+              throw 'Installed executable does not match the signed NSIS payload.'
+            }
+            ./scripts/verify-release-artifacts.ps1 -ReleaseDirectory $release -ExpectedVersion $version -ExpectedSignerSubject $env:ARTIFACT_SIGNING_SUBJECT -InstalledExecutablePath "$install/azd-gui.exe" -EvidencePath ./src-tauri/target/release/installed-artifact-verification.json
+          } finally {
+            $uninstaller = Join-Path $install 'uninstall.exe'
+            if (Test-Path -LiteralPath $uninstaller) {
+              $process = Start-Process -FilePath $uninstaller -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
+              if ($process.ExitCode -ne 0) { throw "Uninstaller exited $($process.ExitCode)." }
+              for ($attempt = 0; $attempt -lt 20 -and (Test-Path "$install/azd-gui.exe"); $attempt++) { Start-Sleep -Seconds 1 }
+              if (Test-Path "$install/azd-gui.exe") { throw 'Uninstall left the application executable behind.' }
+            }
+          }
+
       - name: Upload signed Windows artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -174,6 +207,7 @@ jobs:
             src-tauri/target/release/azd-gui.exe
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/SHA256SUMS.txt
+            src-tauri/target/release/installed-artifact-verification.json
 
       - name: Stage draft GitHub release
         if: startsWith(github.ref, 'refs/tags/v')

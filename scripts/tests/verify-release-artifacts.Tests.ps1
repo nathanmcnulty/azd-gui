@@ -42,4 +42,36 @@ Describe 'Release artifact version verification' {
             Should -Throw '*does not match*'
         Test-Path (Join-Path $release 'artifact-verification.json') | Should -BeFalse
     }
+
+    It 'verifies a separately signed installed payload with a different hash' {
+        Mock Get-Item { [pscustomobject]@{ VersionInfo = @{ ProductVersion = '0.1.0' } } }
+        $installed = Join-Path $TestDrive 'installed.exe'
+        Set-Content -LiteralPath $installed -Value 'different NSIS marker and signature'
+        & $verifier -ReleaseDirectory $release -ExpectedVersion '0.1.0' -ExpectedSignerSubject 'CN=Test' -InstalledExecutablePath $installed
+        $evidence = Get-Content (Join-Path $release 'artifact-verification.json') -Raw | ConvertFrom-Json
+        $evidence.installedExecutable.signatureStatus | Should -BeExactly 'Valid'
+        $evidence.installedExecutable.sha256 | Should -Not -Be $evidence.artifacts[0].Sha256
+    }
+
+    It 'rejects a modified installed executable even when outer artifacts are valid' {
+        Mock Get-Item { [pscustomobject]@{ VersionInfo = @{ ProductVersion = '0.1.0' } } }
+        $installed = Join-Path $TestDrive 'installed.exe'
+        Set-Content -LiteralPath $installed -Value 'modified after signing'
+        Mock Get-AuthenticodeSignature {
+            [pscustomobject]@{ Status = [System.Management.Automation.SignatureStatus]::HashMismatch }
+        } -ParameterFilter { $LiteralPath -like '*installed.exe' }
+        { & $verifier -ReleaseDirectory $release -ExpectedVersion '0.1.0' -ExpectedSignerSubject 'CN=Test' -InstalledExecutablePath $installed } |
+            Should -Throw '*Invalid installed executable signature: HashMismatch*'
+        Test-Path (Join-Path $release 'artifact-verification.json') | Should -BeFalse
+    }
+
+    It 'rejects an installed executable with a different version' {
+        Mock Get-Item { [pscustomobject]@{ VersionInfo = @{ ProductVersion = '0.1.0' } } }
+        $installed = Join-Path $TestDrive 'installed.exe'
+        Set-Content -LiteralPath $installed -Value 'old version'
+        Mock Get-Item { [pscustomobject]@{ VersionInfo = @{ ProductVersion = '0.0.9' } } } -ParameterFilter { $LiteralPath -like '*installed.exe' }
+        { & $verifier -ReleaseDirectory $release -ExpectedVersion '0.1.0' -ExpectedSignerSubject 'CN=Test' -InstalledExecutablePath $installed } |
+            Should -Throw '*Installed executable version*does not match*'
+        Test-Path (Join-Path $release 'artifact-verification.json') | Should -BeFalse
+    }
 }
