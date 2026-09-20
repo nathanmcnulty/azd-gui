@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "1.0",
+  "minimumAzdVersion": "1.23.0",
+  "requiresInteractiveTerminal": false,
+  "prerequisites": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "kind": "tool",
+      "minimumVersion": "1.23.0",
+      "required": true,
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/azure/developer/azure-developer-cli/install-azd"
+    },
+    {
+      "id": "az-cli",
+      "name": "Azure CLI",
+      "kind": "tool",
+      "required": true,
+      "installProvider": "azdTool",
+      "installId": "az-cli",
+      "documentationUrl": "https://learn.microsoft.com/cli/azure/install-azure-cli"
+    },
+    {
+      "id": "pwsh",
+      "name": "PowerShell",
+      "kind": "tool",
+      "required": true,
+      "installProvider": "manual",
+      "documentationUrl": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"
+    }
+  ],
+  "connections": [
+    {
+      "id": "azd",
+      "name": "Azure Developer CLI",
+      "required": true,
+      "reason": "Provision the template resource group."
+    },
+    {
+      "id": "azureCli",
+      "name": "Azure CLI",
+      "required": true,
+      "scopes": ["https://management.azure.com/.default"],
+      "reason": "Run the postprovision read-only Azure CLI validation."
+    }
+  ],
+  "configuration": {
+    "groups": []
+  },
+  "permissionChecks": [
+    {
+      "id": "azure-subscription-access",
+      "name": "Azure subscription access",
+      "provider": "azure",
+      "required": true,
+      "description": "Azure CLI can read the selected enabled subscription in the selected tenant before read-only validation runs."
+    }
+  ]
+}
