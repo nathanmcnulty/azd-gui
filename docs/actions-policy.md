@@ -27,8 +27,8 @@ Creating a `v*` tag is the only automatic Actions trigger in the repository. It 
 3. Runs Rust formatting, Clippy, and tests.
 4. Builds the portable executable.
 5. Authenticates to Azure using GitHub OIDC after the build succeeds.
-6. Signs the executable, creates and signs the NSIS installer, and verifies both signatures.
-7. Generates SHA-256 checksums and uploads the files as a 14-day workflow artifact.
+6. Uses Tauri's signing hook with pinned ArtifactSigning 0.1.8 to sign the patched NSIS payload, uninstaller, and installer, then signs the restored portable executable. Signing uses only the OIDC-authenticated Azure CLI session.
+7. Generates SHA-256 checksums, installs the package in a disposable runner directory, verifies the installed executable's signature, signer, timestamp, and exact version, and uninstalls it before uploading the files and verification evidence as a 14-day workflow artifact. This packaging check does not replace clean-VM standard-user or visual acceptance.
 8. For an actual `v*` tag, stages the same verified files in a draft GitHub Release.
 
 The release workflow can be dispatched manually only after selecting its explicit cost and signing confirmation. It is capped at 45 minutes, and a duplicate run for the same ref cancels the older run.

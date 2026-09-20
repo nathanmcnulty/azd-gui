@@ -10,7 +10,9 @@ param(
     [Parameter(Mandatory)]
     [string] $ExpectedSignerSubject,
 
-    [string] $EvidencePath
+    [string] $EvidencePath,
+
+    [string] $InstalledExecutablePath
 )
 
 Set-StrictMode -Version Latest
@@ -97,6 +99,32 @@ if (-not $productVersion -or $productVersion -cne $ExpectedVersion) {
     throw "Portable executable version '$productVersion' does not match '$ExpectedVersion'."
 }
 
+# Tauri patches the bundle-type marker before signing the NSIS payload, so the
+# installed executable legitimately has a different hash from the portable one.
+$installed = $null
+if ($InstalledExecutablePath) {
+    $installedPath = (Resolve-Path -LiteralPath $InstalledExecutablePath).Path
+    $signature = Get-AuthenticodeSignature -LiteralPath $installedPath
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Invalid installed executable signature: $($signature.Status)"
+    }
+    if ($signature.SignerCertificate.Subject -cne $ExpectedSignerSubject -or -not $signature.TimeStamperCertificate) {
+        throw 'Installed executable has an unexpected signer or missing trusted timestamp.'
+    }
+    $installedVersion = (Get-Item -LiteralPath $installedPath).VersionInfo.ProductVersion
+    if ($installedVersion -cne $ExpectedVersion) {
+        throw "Installed executable version '$installedVersion' does not match '$ExpectedVersion'."
+    }
+    $installed = [ordered]@{
+        sha256 = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        version = $installedVersion
+        signatureStatus = $signature.Status.ToString()
+        signerSubject = $signature.SignerCertificate.Subject
+        signerThumbprint = $signature.SignerCertificate.Thumbprint
+        timestampSubject = $signature.TimeStamperCertificate.Subject
+    }
+}
+
 if (-not $EvidencePath) {
     $EvidencePath = Join-Path $releaseRoot 'artifact-verification.json'
 }
@@ -106,6 +134,7 @@ $evidence = [ordered]@{
     expectedVersion = $ExpectedVersion
     expectedSignerSubject = $ExpectedSignerSubject
     artifacts = @($results)
+    installedExecutable = $installed
 }
 $evidence | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $EvidencePath -Encoding utf8
 

@@ -28,7 +28,7 @@ Retain the generated `artifact-verification.json` in the private release record.
 Begin from a new snapshot with no repository checkout, Node.js, Rust, Azure credentials, azd project, or application data.
 
 - Confirm Windows is fully patched and the WebView2 Runtime is installed. The beta uses the system runtime and does not download one during setup.
-- Install the signed NSIS package without elevation. Confirm the installed app launches with no lingering console window.
+- Install the signed NSIS package without elevation. Before launching it, rerun the artifact verifier with `-InstalledExecutablePath` pointing to the installed `azd-gui.exe` and retain the resulting evidence. The installed file must have a valid, timestamped signature from the expected signer and the exact expected version. Its hash differs from the portable executable because Tauri patches its installer-type marker before signing. Confirm the installed app launches with no lingering console window.
 - Confirm the navigation, theme, catalog, empty Projects page, Connections page, Tools page, and Settings page render correctly.
 - Confirm missing tools are reported without attempting elevation, installation, or a browser-preview fallback.
 - Install supported azd/Azure prerequisites using their official installers, restart the app, and confirm tool versions refresh.
