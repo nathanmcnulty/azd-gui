@@ -11,6 +11,11 @@ import {
 } from "./wizard";
 
 describe("wizard planning", () => {
+  it("treats native null values as missing for required fields", () => {
+    const field = { id: "name", environmentVariable: "NAME", label: "Name", type: "text" as const, required: true };
+    expect(validateField(field, JSON.parse("null"))).toBe("Name is required.");
+    expect(validateField({ ...field, required: false }, JSON.parse("null"))).toBeNull();
+  });
   it("labels interactive deployment steps as a terminal handoff", () => {
     const entry = structuredClone(bundledCatalog.entries[0]);
     entry.manifest!.requiresInteractiveTerminal = true;
