@@ -210,6 +210,8 @@
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let wizardSession = 0;
   let azureDiscoveryRequest = 0;
+  let connectionCheckRequest = 0;
+  let checkedConnectionTargetKey = "";
   let azureTargetGeneration = 0;
   let wizardEditGeneration = 0;
   let draftNotice: { kind: "restored" | "loadError" | "saveError"; message: string } | null = null;
@@ -393,6 +395,15 @@
           subscriptionId: String(wizardValues.subscriptionId)
         } satisfies ConnectionTarget)
       : null;
+  $: {
+    const key = selectedEntry && connectionTarget
+      ? `${wizardSession}:${connectionTarget.tenantId}:${connectionTarget.subscriptionId}` : "";
+    if (key !== checkedConnectionTargetKey) {
+      checkedConnectionTargetKey = key;
+      connectionCheckRequest += 1;
+      if (key && connectionTarget) void refreshTargetConnections(connectionTarget);
+    }
+  }
   $: selectedTenantMismatch = Boolean(
     connectionTarget &&
       requiredConnections
@@ -942,17 +953,23 @@
 
   async function checkConnections() {
     azureDiscovery = null;
+    await refreshTargetConnections(connectionTarget ?? undefined);
+  }
+
+  async function refreshTargetConnections(target?: ConnectionTarget) {
+    const request = ++connectionCheckRequest;
+    const session = wizardSession;
     const currentConnections = data.connections;
-    data = {
-      ...data,
-      connections: data.connections.map((connection) => ({ ...connection, state: "checking" }))
-    };
     try {
+      const connections = await refreshConnectionList(currentConnections, target);
+      if (request !== connectionCheckRequest || session !== wizardSession) return;
       data = {
         ...data,
-        connections: await refreshConnectionList(currentConnections)
+        connections
       };
     } catch (error) {
+      if (request !== connectionCheckRequest || session !== wizardSession) return;
+      data = { ...data, connections: currentConnections.map((connection) => ({ ...connection, state: "unknown" })) };
       addSystemLog(`Connection check failed: ${String(error)}`, "error");
     }
   }

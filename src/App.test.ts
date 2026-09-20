@@ -17,6 +17,28 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("checks restored Azure targets and ignores a previous wizard's late connection result", async () => {
+    const connections = await bridge.refreshConnections();
+    const tenantId = "72f988bf-86f1-41af-91ab-2d7cd011db47";
+    const subscriptionId = "11111111-1111-1111-1111-111111111111";
+    vi.spyOn(bridge, "loadWizardDraft").mockResolvedValue({ tenantId, subscriptionId });
+    let resolveOld!: (value: typeof connections) => void;
+    const refresh = vi.spyOn(bridge, "refreshConnections")
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
+      .mockResolvedValue(connections);
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[2]);
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ tenantId, subscriptionId }));
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[2]);
+    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    await fireEvent.click(screen.getByRole("button", { name: /close deployment/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connections, 3 connected" })).toBeInTheDocument());
+    await act(() => resolveOld(connections.map((connection) => ({ ...connection, state: "disconnected" }))));
+    expect(screen.getByRole("button", { name: "Connections, 3 connected" })).toBeInTheDocument();
+  });
+
   it("leaves native null defaults empty in reopened project configuration", async () => {
     const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
     snapshot!.entry.manifest!.configuration.groups.push({
@@ -1382,6 +1404,7 @@ describe("desktop experience", () => {
     expect(screen.getAllByRole("button", { name: /configure deployment/i })).toHaveLength(4);
   });
   it("selects a dashboard security group and clears it after an Azure target change", async () => {
+    const refresh = vi.spyOn(bridge, "refreshConnections");
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
     await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[1]);
@@ -1429,6 +1452,7 @@ describe("desktop experience", () => {
     await fireEvent.change(tenant, { target: { value: sandboxTenant } });
     await waitFor(() => expect(subscription).toHaveValue(sandboxSubscription));
     await fireEvent.change(subscription, { target: { value: sandboxSubscription } });
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith({ tenantId: sandboxTenant, subscriptionId: sandboxSubscription }));
     await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled());
 
     const originalTenant = "72f988bf-86f1-41af-91ab-2d7cd011db47";

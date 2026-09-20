@@ -167,24 +167,100 @@ pub fn validate_target(target: Option<&ConnectionTarget>) -> AppResult<()> {
     validate_optional_guid("Subscription ID", Some(&target.subscription_id))
 }
 
+fn azd_tenant_status_spec(target: &ConnectionTarget) -> AppResult<CommandSpec> {
+    validate_target(Some(target))?;
+    Ok(CommandSpec::new(
+        Executable::Azd,
+        [
+            "auth",
+            "login",
+            "--check-status",
+            "--tenant-id",
+            &target.tenant_id,
+            "--output",
+            "json",
+            "--no-prompt",
+        ],
+    ))
+}
+
+fn azd_connection_status(
+    value: Option<&Value>,
+    target: Option<&ConnectionTarget>,
+    probe: Option<&Value>,
+    now: DateTime<Utc>,
+) -> ConnectionStatus {
+    // auth status deliberately reports no tenant. check-status verifies the requested
+    // tenant internally without returning a token or changing the default context.
+    let authenticated = value.filter(|value| value["status"] == "authenticated");
+    let mut result = status(
+        "azd",
+        "Azure Developer CLI",
+        "Provision and deploy Azure resources.",
+        authenticated,
+        &["/email", "/account/email", "/user/email"],
+        &[],
+        (&[], &[]),
+    );
+    if value.is_none()
+        || value.is_some_and(|value| {
+            !matches!(
+                value["status"].as_str(),
+                Some("authenticated" | "unauthenticated")
+            )
+        })
+    {
+        result.state = "unknown".into();
+    }
+    apply_expiration(&mut result, authenticated, now);
+    if let Some(target) = target {
+        // Managed identity may ignore --tenant-id. Restrict this evidence to user
+        // credentials; do not infer a tenant for other or unknown identity types.
+        let fresh_probe = probe
+            .filter(|probe| probe["status"] == "success")
+            .filter(|probe| {
+                probe["expiresOn"]
+                    .as_str()
+                    .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+                    .is_some_and(|expires| expires.with_timezone(&Utc) > now)
+            });
+        let current_expiration = authenticated
+            .and_then(|value| value["expiresOn"].as_str())
+            .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+            .is_some_and(|expires| expires.with_timezone(&Utc) > now);
+        if result.state == "connected"
+            && current_expiration
+            && authenticated.is_some_and(|value| value["type"] == "user")
+            && fresh_probe.is_some()
+        {
+            result.tenant_id = Some(target.tenant_id.clone());
+        } else if result.state == "connected" {
+            result.detail = Some("The selected tenant has not been verified for this azd credential. Check connections or reconnect with a user account.".into());
+        }
+    }
+    result
+}
+
 pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatus> {
-    let (azd, az, az_ps, graph_ps) = tokio::join!(
+    let (azd, azd_probe, az, az_ps, graph_ps) = tokio::join!(
         azd::auth_status(),
+        async {
+            match target.and_then(|target| azd_tenant_status_spec(target).ok()) {
+                Some(spec) => json_status(spec).await,
+                None => None,
+            }
+        },
         json_status(azure_cli_context_spec(target)),
         json_status(az_power_shell_context_spec(target)),
         json_status(graph_context_spec())
     );
     let azd_status_value = azd.ok();
-    let mut azd_status = status(
-        "azd",
-        "Azure Developer CLI",
-        "Provision and deploy Azure resources.",
+    let azd_status = azd_connection_status(
         azd_status_value.as_ref(),
-        &["/email", "/account/email", "/user/email"],
-        &["/tenantId", "/tenant/id"],
-        (&[], &[]),
+        target,
+        azd_probe.as_ref(),
+        Utc::now(),
     );
-    apply_expiration(&mut azd_status, azd_status_value.as_ref(), Utc::now());
     let graph_granted_scopes = granted_scopes(graph_ps.as_ref());
     let mut graph_status = status(
         "graphPowerShell",
@@ -330,6 +406,94 @@ pub fn tenant_mismatch(statuses: &[ConnectionStatus]) -> Option<Vec<(String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn azd_tenant_probe_checks_without_login_or_context_mutation() {
+        let target = ConnectionTarget {
+            tenant_id: "11111111-1111-1111-1111-111111111111".into(),
+            subscription_id: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let spec = azd_tenant_status_spec(&target).unwrap();
+        assert_eq!(
+            spec.args,
+            [
+                "auth",
+                "login",
+                "--check-status",
+                "--tenant-id",
+                &target.tenant_id,
+                "--output",
+                "json",
+                "--no-prompt"
+            ]
+        );
+        assert!(spec.environment.is_empty());
+        let invalid = ConnectionTarget {
+            tenant_id: "invalid".into(),
+            ..target
+        };
+        assert!(azd_tenant_status_spec(&invalid).is_err());
+    }
+
+    #[test]
+    fn azd_target_requires_successful_fresh_user_evidence() {
+        let now = DateTime::parse_from_rfc3339("2026-09-20T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let target = ConnectionTarget {
+            tenant_id: "11111111-1111-1111-1111-111111111111".into(),
+            subscription_id: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let value = serde_json::json!({"status":"authenticated", "type":"user", "email":"admin@example.test", "expiresOn":"2026-09-20T13:00:00Z"});
+        let probe = serde_json::json!({"status":"success", "expiresOn":"2026-09-20T13:00:00Z"});
+        let result = azd_connection_status(Some(&value), Some(&target), Some(&probe), now);
+        assert_eq!(result.tenant_id.as_deref(), Some(target.tenant_id.as_str()));
+        assert_eq!(result.account.as_deref(), Some("admin@example.test"));
+        // The CLI returns exit zero even when check-status reports unauthenticated.
+        for probe in [
+            serde_json::json!({"status":"unauthenticated"}),
+            serde_json::json!({"status":"success"}),
+            serde_json::json!({"status":"success","expiresOn":"invalid"}),
+            serde_json::json!({"status":"success","expiresOn":"2026-09-20T11:00:00Z"}),
+            serde_json::json!({"status":"unexpected","expiresOn":"2026-09-20T13:00:00Z"}),
+        ] {
+            assert!(
+                azd_connection_status(Some(&value), Some(&target), Some(&probe), now)
+                    .tenant_id
+                    .is_none()
+            );
+        }
+        for status in ["unauthenticated", "unexpected"] {
+            let mut rejected = value.clone();
+            rejected["status"] = status.into();
+            let result = azd_connection_status(Some(&rejected), Some(&target), Some(&probe), now);
+            assert_ne!(result.state, "connected");
+            assert!(result.tenant_id.is_none());
+        }
+        for kind in ["servicePrincipal", "unknown"] {
+            let mut rejected = value.clone();
+            rejected["type"] = kind.into();
+            assert!(
+                azd_connection_status(Some(&rejected), Some(&target), Some(&probe), now)
+                    .tenant_id
+                    .is_none()
+            );
+        }
+        let mut expired = value.clone();
+        expired["expiresOn"] = "2026-09-20T11:00:00Z".into();
+        assert_eq!(
+            azd_connection_status(Some(&expired), Some(&target), Some(&probe), now).state,
+            "expired"
+        );
+        assert!(
+            azd_connection_status(Some(&value), Some(&target), None, now)
+                .tenant_id
+                .is_none()
+        );
+        assert!(azd_connection_status(Some(&value), None, None, now)
+            .tenant_id
+            .is_none());
+    }
 
     fn connected(name: &str, tenant_id: &str) -> ConnectionStatus {
         ConnectionStatus {
