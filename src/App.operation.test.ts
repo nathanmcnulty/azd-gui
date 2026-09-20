@@ -10,7 +10,8 @@ const operationHarness = vi.hoisted(() => ({
   connectionReads: 0,
   stateReads: 0,
   failStateRefresh: false,
-  failBootstrap: false
+  failBootstrap: false,
+  pendingStart: undefined as Promise<void> | undefined
 }));
 
 vi.mock("./lib/bridge", async (importOriginal) => {
@@ -35,6 +36,7 @@ vi.mock("./lib/bridge", async (importOriginal) => {
     },
     startAzdOperation: async (action: string) => {
       operationHarness.starts.push(action);
+      await operationHarness.pendingStart;
       return `native-${action}-${operationHarness.starts.length}`;
     },
     login: async (providerId: string) => {
@@ -91,6 +93,7 @@ afterEach(() => {
   operationHarness.stateReads = 0;
   operationHarness.failBootstrap = false;
   operationHarness.failStateRefresh = false;
+  operationHarness.pendingStart = undefined;
 });
 
 async function approveProjectExecution() {
@@ -105,6 +108,33 @@ async function approveProjectExecution() {
 }
 
 describe("structured operation results", () => {
+  it("keeps a pending preview bound to its original project after navigation", async () => {
+    let resolveStart!: () => void;
+    operationHarness.pendingStart = new Promise((resolve) => { resolveStart = resolve; });
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    await approveProjectExecution();
+    await fireEvent.click(screen.getByRole("button", { name: /run infrastructure preview/i }));
+    await waitFor(() => expect(operationHarness.starts).toEqual(["preview"]));
+
+    await fireEvent.click(screen.getByRole("button", { name: /all projects/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /myworkid/i }));
+    await waitFor(() => expect(screen.getByText(/active environment/i)).toBeInTheDocument());
+    resolveStart();
+    await waitFor(() => expect(screen.getByRole("button", { name: /cancel preview/i })).toBeInTheDocument());
+    operationHarness.handler?.({
+      operationId: "native-preview-1", kind: "preview", state: "succeeded",
+      timestamp: "2026-09-19T20:15:00.000Z", stream: "system", level: "success",
+      message: "Preview for the original project completed."
+    });
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /cancel preview/i })).not.toBeInTheDocument());
+    await fireEvent.click(screen.getByRole("button", { name: "operations" }));
+    expect(screen.getByText("No recorded operations")).toBeInTheDocument();
+  });
+
   it("fails closed when native bootstrap is unavailable", async () => {
     operationHarness.failBootstrap = true;
     render(App);

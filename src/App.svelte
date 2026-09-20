@@ -1983,6 +1983,7 @@
 
   async function runProjectAction(action: ProjectAction) {
     if (!selectedProject || activeOperationId) return;
+    const project = selectedProject;
     if (!canLeaveProjectEdits()) return;
     if (action !== "refresh" && projectRequiresInteractiveTerminal) {
       projectTab = "overview";
@@ -2014,10 +2015,10 @@
       projectPreview = null;
     }
     try {
-      const operationId = await startProjectOperation(selectedProject, action);
+      const operationId = await startProjectOperation(project, action);
       if (action === "up") projectDeploymentResult = null;
-      operationProjectPaths.set(operationId, selectedProject.path);
-      operationEnvironments.set(operationId, selectedProject.environment);
+      operationProjectPaths.set(operationId, project.path);
+      operationEnvironments.set(operationId, project.environment);
       activeOperationId = operationId;
       activeOperationKind = action;
       if (!data.isNative) simulateOperation(operationId, action);
