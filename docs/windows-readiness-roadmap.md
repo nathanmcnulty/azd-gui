@@ -101,7 +101,7 @@ Browser preview is simulated. Passing offline tests or opening a development exe
 
 ## First Maester pilot
 
-The bundled entry targets `34f4bac7b69ea2a6746705a91f35ef89ab346034`, `automation-account`. Its variables and feature defaults agree with that revision's interactive wizard. Preserve these defaults in the catalog; use explicit choices for a least-privilege pilot.
+The bundled entry targets `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`, `automation-account`. Its variables and feature defaults agree with that revision's interactive wizard, and it pins the signed deployment receipt and validation components. Preserve these defaults in the catalog; use explicit choices for a least-privilege pilot.
 
 1. Use an explicitly authorized disposable subscription/environment and a new resource group with no existing Automation Account. Redeploying an existing account can remove its delete lock and all job schedules.
 2. Select Minimal, dashboard off, Exchange/Teams/Azure off, and an empty mail recipient. Review the eight baseline managed-identity Graph application roles, which still apply.

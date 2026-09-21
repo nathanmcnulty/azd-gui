@@ -2,7 +2,7 @@
 
 This qualification covers the bundled `maester-automation` entry at
 `nathanmcnulty/azd-maester` commit
-`34f4bac7b69ea2a6746705a91f35ef89ab346034`, subdirectory
+`45f839bc2c335cd1c7fa4c40ffe9c6978f715362`, subdirectory
 `automation-account`. It is a source review for the guided contract. It is not a
 deployment approval or live-pilot result.
 
@@ -96,7 +96,24 @@ was not followed, independently discover and remove every residual resource,
 application, service principal, consent grant, and role assignment.
 
 Postprovision publishes the local runbook, starts live runbook validation, and
-writes `outputs/<environment>-setup-summary.md`. Reports are stored under
+writes `outputs/<environment>-setup-summary.md`,
+`reports/deployment-validation.json`, and
+`reports/deployment-receipt.json`. The template vendors the signed and attested
+`deployment-validation@1.1.1` and `deployment-receipt@0.2.1` components from
+`azd-reference` merge `0c96cc89c554ffc3b3ca82ceda12da6591e816c1` with exact
+SHA-256 locks. Its repository validation resolves every hook import to the
+locked `scripts/vendor` location and checks both evidence schemas offline.
+
+The interactive-terminal route does not receive a GUI-issued lifecycle
+operation ID. Its first pilot therefore produces compatible unbound 1.0
+artifacts, which the GUI presents as producer assertions rather than current
+correlated evidence. The receipt binding is available only when this template
+later runs through a native GUI `up`, `provision`, or `deploy` operation with a
+complete injected context; the validation report remains unbound because the
+postprovision validation is part of deployment rather than a separate GUI
+`validate` operation.
+
+Runtime reports are stored under
 `archive/` and `latest/`; archive blobs move to Cold tier after 180 days and are
 deleted after 365 days. A successful hook or CLI exit is not proof that reports
 were delivered or that tenant-level cleanup completed.
