@@ -50,6 +50,7 @@ describe("loadProjectWorkspace", () => {
 
     const snapshot = await loading;
     expect(getProjectState).toHaveBeenCalledExactlyOnceWith(project.path, "production");
+    expect(getOperationHistory).toHaveBeenCalledExactlyOnceWith(project.path, "production");
     expect(snapshot.currentEnvironment).toBe("production");
     expect(snapshot.failedSources).toBe(0);
   });

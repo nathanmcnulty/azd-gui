@@ -1150,7 +1150,11 @@
       activeOperationId = operationId;
       activeOperationKind = "preview";
       operationState = "running";
-      if (!data.isNative) simulateOperation(operationId, "preview");
+      const earlyEvent = [...operationEvents].reverse().find(
+        (event) => event.operationId === operationId && event.kind === "preview"
+      );
+      if (earlyEvent) handleOperationEvent(earlyEvent, true);
+      else if (!data.isNative) simulateOperation(operationId, "preview");
     } catch (error) {
       addSystemLog(`Preflight failed: ${String(error)}`, "error");
       operationState = "idle";
@@ -1395,18 +1399,16 @@
         environment
       );
       const earlyEvent = [...operationEvents].reverse().find((event) => event.operationId === operationId && event.kind === action) ?? null;
-      const completedEarly = earlyEvent?.state === "succeeded" || earlyEvent?.state === "failed" || earlyEvent?.state === "cancelled";
       if (action === "up" && wizardDeployment?.session === session) {
         wizardDeployment = { ...wizardDeployment, operationId, event: earlyEvent,
           state: earlyEvent?.state === "succeeded" || earlyEvent?.state === "failed" || earlyEvent?.state === "cancelled" ? earlyEvent.state : "running" };
       }
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, environment);
-      if (!completedEarly) {
-        activeOperationId = operationId;
-        activeOperationKind = action;
-        if (!data.isNative) simulateOperation(operationId, action);
-      }
+      activeOperationId = operationId;
+      activeOperationKind = action;
+      if (earlyEvent) handleOperationEvent(earlyEvent, true);
+      else if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
       if (action === "up" && wizardDeployment?.session === session) wizardDeployment = { ...wizardDeployment, state: "failed", error: `Could not start deployment: ${String(error)}` };
       operationState = "failed";
@@ -1472,8 +1474,8 @@
     });
   }
 
-  function handleOperationEvent(event: OperationEvent) {
-    operationEvents = [...operationEvents.slice(-499), event];
+  function handleOperationEvent(event: OperationEvent, replay = false) {
+    if (!replay) operationEvents = [...operationEvents.slice(-499), event];
     if (event.kind === "up" && wizardDeployment?.operationId === event.operationId) {
       wizardDeployment = { ...wizardDeployment, event,
         state: event.state === "succeeded" || event.state === "failed" || event.state === "cancelled" ? event.state : "running" };
@@ -1486,10 +1488,7 @@
         if (event.state === "succeeded") waiter.resolve(event);
         else waiter.reject(new Error(event.message));
       }
-      const projectPath =
-        operationProjectPaths.get(event.operationId) ||
-        selectedProject?.path ||
-        String(wizardValues.projectPath || "");
+      const projectPath = operationProjectPaths.get(event.operationId);
       const operationEnvironment = operationEnvironments.get(event.operationId);
       if (
         projectPath &&
@@ -1519,6 +1518,8 @@
       if (
         event.kind === "preview" &&
         event.state === "succeeded" &&
+        projectPath &&
+        operationEnvironment &&
         selectedProject?.path === projectPath &&
         selectedProject.environment === operationEnvironment
       ) {
@@ -1526,6 +1527,8 @@
       }
       if (
         event.kind === "up" &&
+        projectPath &&
+        operationEnvironment &&
         selectedProject?.path === projectPath &&
         selectedProject.environment === operationEnvironment
       ) {
@@ -1555,13 +1558,15 @@
       }
       return;
     }
-    if (event.state === "succeeded" || event.state === "failed" || event.state === "cancelled") {
+    if (
+      activeOperationId === event.operationId &&
+      (event.state === "succeeded" || event.state === "failed" || event.state === "cancelled")
+    ) {
       operationState = event.state;
       activeOperationId = null;
       activeOperationKind = null;
-    } else {
+    } else if (activeOperationId === event.operationId) {
       operationState = "running";
-      activeOperationId = event.operationId;
       activeOperationKind = event.kind;
     }
   }
@@ -2104,9 +2109,13 @@
           selectedProject.environment === project.environment) projectDeploymentResult = null;
       operationProjectPaths.set(operationId, project.path);
       operationEnvironments.set(operationId, project.environment);
+      const earlyEvent = [...operationEvents].reverse().find(
+        (event) => event.operationId === operationId && event.kind === action
+      );
       activeOperationId = operationId;
       activeOperationKind = action;
-      if (!data.isNative) simulateOperation(operationId, action);
+      if (earlyEvent) handleOperationEvent(earlyEvent, true);
+      else if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
       operationState = "failed";
       activeOperationKind = null;
@@ -2115,6 +2124,7 @@
   }
 
   function retryProjectOperation(event: OperationEvent) {
+    if (event.environmentBinding && event.environmentBinding !== "current") return;
     if (["preview", "provision", "deploy", "refresh", "down"].includes(event.kind)) {
       void runProjectAction(event.kind as Exclude<ProjectAction, "up">);
     }
@@ -2131,6 +2141,13 @@
       default:
         return "State unknown";
     }
+  }
+
+  function operationEnvironmentLabel(event: OperationEvent): string | null {
+    if (event.environmentBinding === "current") return "Current environment";
+    if (event.environmentBinding === "other") return "Another environment";
+    if (event.environmentBinding === "unbound") return "Environment unknown";
+    return null;
   }
 
   function applyTheme(value: "system" | "dark" | "light") {
@@ -3166,13 +3183,19 @@
                   <span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span>
                   <div>
                     <strong>azd {event.kind}</strong>
+                    {#if operationEnvironmentLabel(event)}<small>{operationEnvironmentLabel(event)}</small>{/if}
                     <span>{event.outcome?.summary ?? event.message}</span>
                     {#if event.outcome && event.state !== "succeeded"}<small>{event.outcome.guidance}</small>{/if}
                   </div>
                   <time>{new Date(event.timestamp).toLocaleString()}</time>
                   <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} />
                   {#if event.outcome?.retryable && ["preview", "provision", "deploy", "refresh", "down"].includes(event.kind)}
-                    <button class="secondary compact" disabled={Boolean(activeOperationId) || (event.kind !== "refresh" && !projectContractReady)} on:click={() => retryProjectOperation(event)}>Retry</button>
+                    <button
+                      class="secondary compact"
+                      disabled={Boolean(activeOperationId) || (event.kind !== "refresh" && !projectContractReady) || (Boolean(event.environmentBinding) && event.environmentBinding !== "current")}
+                      title={event.environmentBinding && event.environmentBinding !== "current" ? "Select the operation's original environment before retrying" : undefined}
+                      on:click={() => retryProjectOperation(event)}
+                    >Retry</button>
                   {/if}
                 </div>
               {/each}

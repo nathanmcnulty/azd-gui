@@ -1024,11 +1024,12 @@ async fn set_project_environment_values(
 fn get_operation_history(
     state: State<'_, AppState>,
     project_path: String,
+    environment: Option<String>,
 ) -> AppResult<Vec<OperationEvent>> {
     let canonical = std::fs::canonicalize(project_path)?;
     state
         .database
-        .operation_history(&canonical.display().to_string())
+        .operation_history_for_environment(&canonical.display().to_string(), environment.as_deref())
 }
 
 fn sanitized_draft(

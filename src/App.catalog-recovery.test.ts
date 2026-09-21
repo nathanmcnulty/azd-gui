@@ -21,7 +21,8 @@ vi.mock("./lib/bridge", async (importOriginal) => {
     },
     getOperationHistory: async () => recovery.failed ? [{
       operationId: "failed-provision", kind: "provision", state: "failed", timestamp: new Date().toISOString(),
-      level: "error", message: "Provisioning failed.", outcome: { resourceState: "possiblyModified", summary: "Provisioning failed.", guidance: "Review before retrying.", retryable: true }
+      level: "error", message: "Provisioning failed.", environmentBinding: "other",
+      outcome: { resourceState: "possiblyModified", summary: "Provisioning failed.", guidance: "Review before retrying.", retryable: true }
     }] : [],
     getProjectEnvironmentValues: async () => []
   };
@@ -50,8 +51,21 @@ it("offers local re-review and keeps failed lifecycle retries blocked without a 
   await fireEvent.click(await screen.findByRole("button", { name: /Legacy local deployment/ }));
   expect(await screen.findByRole("button", { name: "Review current project files" })).toBeEnabled();
   await fireEvent.click(screen.getByRole("button", { name: "operations" }));
+  expect(await screen.findByText("Another environment")).toBeInTheDocument();
   expect(await screen.findByRole("button", { name: "Retry" })).toBeDisabled();
   await fireEvent.click(screen.getByRole("button", { name: "overview" }));
   await fireEvent.click(screen.getByRole("button", { name: "Review current project files" }));
   expect(await screen.findByRole("heading", { name: "Choose source" })).toBeInTheDocument();
+});
+
+it("does not retry history from another environment in the selected environment", async () => {
+  recovery.applied = true;
+  recovery.failed = true;
+  render(App);
+  await fireEvent.click(await screen.findByRole("button", { name: /^Projects,/ }));
+  await fireEvent.click(await screen.findByRole("button", { name: /Legacy external deployment/ }));
+  await screen.findByText("Active environment");
+  await fireEvent.click(screen.getByRole("button", { name: "operations" }));
+  expect(await screen.findByText("Another environment")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled();
 });

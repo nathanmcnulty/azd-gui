@@ -13,7 +13,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::Command,
-    sync::{oneshot, Mutex},
+    sync::oneshot,
 };
 use uuid::Uuid;
 
@@ -375,7 +375,7 @@ impl CommandSpec {
 
 #[derive(Clone, Default)]
 pub struct OperationManager {
-    cancellations: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
+    cancellations: Arc<Mutex<HashMap<String, Option<oneshot::Sender<()>>>>>,
 }
 
 #[derive(Clone)]
@@ -419,6 +419,15 @@ impl OperationPersistence {
         }
     }
 
+    fn begin(&self, operation_id: &str, kind: &str) -> AppResult<()> {
+        self.database.begin_operation(
+            operation_id,
+            kind,
+            &self.project_path,
+            self.context.as_ref(),
+        )
+    }
+
     fn apply_environment(&self, spec: &mut CommandSpec, operation_id: &str, kind: &str) {
         spec.environment
             .push(("AZD_GUI_OPERATION_ID".into(), operation_id.into()));
@@ -446,16 +455,35 @@ impl OperationPersistence {
 
 impl OperationManager {
     pub async fn is_idle(&self) -> bool {
-        self.cancellations.lock().await.is_empty()
+        self.cancellations
+            .lock()
+            .map(|cancellations| cancellations.is_empty())
+            .unwrap_or(false)
     }
 
     pub async fn cancel(&self, operation_id: &str) -> bool {
         self.cancellations
             .lock()
-            .await
-            .remove(operation_id)
+            .ok()
+            .and_then(|mut cancellations| cancellations.get_mut(operation_id)?.take())
             .map(|sender| sender.send(()).is_ok())
             .unwrap_or(false)
+    }
+
+    fn reserve(&self, operation_id: &str) -> AppResult<oneshot::Receiver<()>> {
+        let (sender, receiver) = oneshot::channel();
+        self.cancellations
+            .lock()
+            .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?
+            .insert(operation_id.to_string(), Some(sender));
+        Ok(receiver)
+    }
+
+    fn remove(&self, operation_id: &str) {
+        let _ = self
+            .cancellations
+            .lock()
+            .map(|mut cancellations| cancellations.remove(operation_id));
     }
 }
 
@@ -641,6 +669,7 @@ fn emit_event(
         message: redact(&message.into()),
         progress,
         outcome: terminal_outcome(kind, state),
+        environment_binding: None,
     };
     let _ = app.emit("operation-event", event.clone());
     event
@@ -761,6 +790,10 @@ pub fn spawn_operation(
         persistence.apply_environment(&mut spec, &operation_id, &kind);
     }
     spec.validate()?;
+    if let Some(persistence) = persistence.as_ref() {
+        persistence.begin(&operation_id, &kind)?;
+    }
+    let mut cancel_receiver = operations.reserve(&operation_id)?;
     emit_event(
         &app,
         &operation_id,
@@ -774,13 +807,6 @@ pub fn spawn_operation(
 
     let result_id = operation_id.clone();
     tauri::async_runtime::spawn(async move {
-        let (cancel_sender, mut cancel_receiver) = oneshot::channel();
-        operations
-            .cancellations
-            .lock()
-            .await
-            .insert(operation_id.clone(), cancel_sender);
-
         let (mut command, executable) = match spec.process() {
             Ok(command) => command,
             Err(error) => {
@@ -797,7 +823,7 @@ pub fn spawn_operation(
                 if let Some(persistence) = persistence.as_ref() {
                     persistence.record(&event);
                 }
-                operations.cancellations.lock().await.remove(&operation_id);
+                operations.remove(&operation_id);
                 return;
             }
         };
@@ -826,7 +852,7 @@ pub fn spawn_operation(
                 if let Some(persistence) = persistence.as_ref() {
                     persistence.record(&event);
                 }
-                operations.cancellations.lock().await.remove(&operation_id);
+                operations.remove(&operation_id);
                 return;
             }
         };
@@ -847,7 +873,7 @@ pub fn spawn_operation(
                 if let Some(persistence) = persistence.as_ref() {
                     persistence.record(&event);
                 }
-                operations.cancellations.lock().await.remove(&operation_id);
+                operations.remove(&operation_id);
                 return;
             }
         };
@@ -935,7 +961,7 @@ pub fn spawn_operation(
             stdout_task.abort();
             stderr_task.abort();
         }
-        operations.cancellations.lock().await.remove(&operation_id);
+        operations.remove(&operation_id);
         let terminal_progress = last_progress.load(Ordering::Relaxed);
 
         let event = if cancelled {
@@ -1075,12 +1101,24 @@ mod tests {
 
     use super::{
         capture, operation_timeout, read_bounded_output, terminal_outcome, BoundedLineBuffer,
-        CommandSpec, Executable, OperationPersistence, OUTPUT_TRUNCATED_MARKER,
+        CommandSpec, Executable, OperationManager, OperationPersistence, OUTPUT_TRUNCATED_MARKER,
     };
     use crate::{error::AppError, evidence::OperationEvidenceContext, persistence::Database};
     use std::sync::Arc;
     use std::{path::PathBuf, time::Duration};
     use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn immediate_cancellation_reaches_a_reserved_operation() {
+        let operations = OperationManager::default();
+        let receiver = operations.reserve("operation-pending").unwrap();
+
+        assert!(operations.cancel("operation-pending").await);
+        assert!(receiver.await.is_ok());
+        assert!(!operations.is_idle().await);
+        operations.remove("operation-pending");
+        assert!(operations.is_idle().await);
+    }
 
     #[tokio::test]
     async fn captured_output_is_bounded_and_drained() {
