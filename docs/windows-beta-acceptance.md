@@ -2,6 +2,12 @@
 
 A tagged build stages signed artifacts in a draft GitHub Release. The draft must remain private until this checklist passes on a clean Windows 10 or Windows 11 x64 virtual machine. Do not substitute a developer workstation or a profile that already contains Azure tool state.
 
+For the current candidate, use the reconciled gate state, remaining inputs, and
+migration proposal in [Windows acceptance status](windows-acceptance-status.md).
+This checklist remains the reusable procedure; a result from another source,
+artifact, Windows image, or authentication context transfers only when the status
+record says so explicitly.
+
 ## Before tagging
 
 - Start from a clean worktree and run `npm ci`, `npm run verify`, and `npm run audit:dependencies` with Node.js 22, Rust stable, and the Windows C++ build tools.
@@ -17,7 +23,7 @@ Before downloading the release, copy the expected Authenticode subject from the 
 ```powershell
 pwsh -File .\scripts\verify-release-artifacts.ps1 `
   -ReleaseDirectory C:\beta-candidate `
-  -ExpectedVersion 0.1.0 `
+  -ExpectedVersion $expectedVersion `
   -ExpectedSignerSubject $expectedSignerSubject
 ```
 
