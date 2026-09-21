@@ -3366,7 +3366,7 @@ dialog::backdrop {
   .sidebar:not(.collapsed) .step-list {
     padding: 3px 6px;
     gap: 0;
-    overflow-y: hidden;
+    overflow-y: auto;
   }
 
   .sidebar:not(.collapsed) .step-list button {

@@ -872,7 +872,13 @@ describe("desktop experience", () => {
     expect(screen.getByRole("heading", { name: "Maester coverage" })).toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
     expect(await screen.findByText("ExchangeOnlineManagement")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled());
+    await waitFor(() => {
+      const continueButton = screen.getByRole("button", { name: /^continue$/i });
+      expect(continueButton).toBeDisabled();
+      expect(continueButton).toHaveAccessibleDescription(
+        "Could not verify ExchangeOnlineManagement. Select Check again; if the check still fails, view its instructions."
+      );
+    });
     await fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
     await fireEvent.click(screen.getByRole("checkbox", { name: /include exchange checks/i }));
     await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
@@ -881,6 +887,34 @@ describe("desktop experience", () => {
     expect(screen.getByText("PowerShell")).toBeInTheDocument();
     expect(screen.queryByText("Microsoft Graph PowerShell")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
+  });
+
+  it("names an unavailable required account in the blocked Continue guidance", async () => {
+    const data = await bridge.bootstrap();
+    data.connections = data.connections.map((connection) =>
+      connection.id === "azureCli"
+        ? { ...connection, state: "unknown", account: undefined, tenantId: undefined, subscriptionId: undefined }
+        : connection
+    );
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[1]);
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\maester-account-guidance" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /include exchange checks/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled());
+    await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+
+    expect(screen.getByRole("heading", { name: /template connections/i })).toBeInTheDocument();
+    const continueButton = screen.getByRole("button", { name: /^continue$/i });
+    expect(continueButton).toBeDisabled();
+    expect(continueButton).toHaveAccessibleDescription("Connect Azure CLI to retry its account check.");
   });
 
   it("applies a template recommendation profile without replacing other values", async () => {
