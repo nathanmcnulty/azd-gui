@@ -561,6 +561,8 @@ pub struct ExecutionApprovalRequest {
     #[serde(default)]
     pub revision: Option<String>,
     #[serde(default)]
+    pub snapshot_digest: Option<String>,
+    #[serde(default)]
     pub source_binding: Option<LocalSourceBinding>,
 }
 
@@ -577,6 +579,7 @@ pub struct PrepareDeploymentRequest {
     pub template_id: String,
     pub source_mode: String,
     pub execution_approval_token: String,
+    pub reviewed_contract_digest: String,
     #[serde(default)]
     pub source_path: Option<String>,
     #[serde(default)]

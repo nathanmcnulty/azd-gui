@@ -85,9 +85,10 @@ describe("startProjectOperation", () => {
   });
 
   it("binds the approved and executed lifecycle action to the same environment", async () => {
-    await startProjectOperation({ ...project, environment: "production" }, "down");
+    await startProjectOperation({ ...project, environment: "production" }, "down", "a".repeat(64));
 
     expect(calls.approvals[0]?.environment).toBe("production");
+    expect(calls.approvals[0]?.snapshotDigest).toBe("a".repeat(64));
     expect(calls.starts[0]).toEqual([
       "down",
       project.path,

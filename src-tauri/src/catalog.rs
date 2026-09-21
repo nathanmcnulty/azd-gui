@@ -602,7 +602,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
         vec!["windows".into(), "macos".into(), "linux".into()]
     };
     let mut warnings =
-        vec!["Local templates are unvetted. Review azure.yaml hooks before deploying.".into()];
+        vec!["Local templates require review. Review azure.yaml hooks before deploying.".into()];
     if interactive_hooks {
         warnings.push(
             "Interactive hooks were detected. Run this template in an external terminal if --no-prompt cannot complete."
@@ -619,7 +619,7 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
             repository: canonical.display().to_string(),
             commit: "local".into(),
             subdirectory: None,
-            tags: vec!["Local".into(), "Unvetted".into()],
+            tags: vec!["Local".into(), "Review required".into()],
             platforms,
             manifest: Some(manifest),
             manifest_sha256: None,
@@ -764,11 +764,11 @@ async fn inspect_github_revision(
             id: format!("github-{}", repository_name.to_ascii_lowercase()),
             title: name.into(),
             summary: format!("Direct GitHub template from {}/{}", segments[0], repository_name),
-            description: "Unvetted GitHub template resolved to an immutable commit.".into(),
+            description: "GitHub template resolved to an immutable commit; review required.".into(),
             repository: url.trim_end_matches(".git").into(),
             commit,
             subdirectory: None,
-            tags: vec!["GitHub".into(), "Unvetted".into()],
+            tags: vec!["GitHub".into(), "Review required".into()],
             platforms: vec!["windows".into(), "macos".into(), "linux".into()],
             manifest: Some(manifest),
             manifest_sha256: None,
@@ -781,7 +781,7 @@ async fn inspect_github_revision(
         manifest_source: manifest_source.into(),
         interactive_hooks,
         warnings: vec![
-            "Direct GitHub templates are unvetted. Review the pinned source and hooks before deploying."
+            "Direct GitHub templates require review. Review the pinned source and hooks before deploying."
                 .into(),
         ],
     })

@@ -44,7 +44,7 @@
       "../schemas/*.json"
     ],
     "shortDescription": "Guided Azure Developer CLI deployments",
-    "longDescription": "Windows beta for discovering trusted azd templates, configuring environments, validating prerequisites, authenticating required tools, and deploying to Azure.",
+    "longDescription": "Windows beta for discovering included and reviewed azd template snapshots, configuring environments, validating prerequisites, authenticating required tools, and deploying to Azure.",
     "windows": {
       "webviewInstallMode": {
         "type": "skip"

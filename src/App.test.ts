@@ -250,7 +250,7 @@ describe("desktop experience", () => {
     await fireEvent.change(field, { target: { value: "Minimal" } });
     expect(screen.getByText("Unsaved changes", { selector: ".status-pill" })).toBeInTheDocument();
     await fireEvent.click(screen.getByRole("button", { name: "overview" }));
-    await fireEvent.click(screen.getByRole("checkbox", { name: /approve this project's template code execution/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /reviewed this project's current files/i }));
     expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^provision/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^deploy deploy all/i })).toBeDisabled();
@@ -273,7 +273,7 @@ describe("desktop experience", () => {
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
-    await fireEvent.click(await screen.findByRole("checkbox", { name: /approve this project's template code execution/i }));
+    await fireEvent.click(await screen.findByRole("checkbox", { name: /reviewed this project's current files/i }));
     expect(screen.getByRole("button", { name: "Down" })).toBeDisabled();
     await fireEvent.click(await screen.findByRole("button", { name: /manage environments/i }));
     expect(await screen.findByText("No environment selected")).toBeInTheDocument();
@@ -290,7 +290,7 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
     await screen.findByText("Configuration unavailable");
-    await fireEvent.click(screen.getByRole("checkbox", { name: /approve this project's template code execution/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /reviewed this project's current files/i }));
     expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^provision/i })).toBeDisabled();
     expect(screen.getByRole("button", { name: /^deploy deploy all/i })).toBeDisabled();
@@ -319,7 +319,7 @@ describe("desktop experience", () => {
 
     expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
     expect(screen.getByText(/STEP 1 OF 9/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /vetted catalog/i })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /reviewed catalog/i })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
@@ -524,7 +524,7 @@ describe("desktop experience", () => {
     });
 
     expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /vetted catalog/i })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /reviewed catalog/i })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
@@ -607,7 +607,7 @@ describe("desktop experience", () => {
       target: { value: "https://example.com/async-race.catalog.json" }
     });
     await fireEvent.click(within(dialog).getByRole("button", { name: /preview source/i }));
-    await fireEvent.click(await within(dialog).findByRole("button", { name: /trust and add/i }));
+    await fireEvent.click(await within(dialog).findByRole("button", { name: /review and add/i }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument());
 
     await fireEvent.click(screen.getByRole("button", { name: "Catalog" }));
@@ -1001,7 +1001,7 @@ describe("desktop experience", () => {
     expect(screen.getByText(/inferred from azure.yaml/i)).toBeInTheDocument();
     const continueButton = screen.getByRole("button", { name: /^continue$/i });
     expect(continueButton).toBeDisabled();
-    await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /reviewed this source and approve/i }));
     expect(continueButton).toBeEnabled();
     await fireEvent.click(continueButton);
     await fireEvent.click(screen.getByRole("button", { name: /apply minimal pilot/i }));
@@ -1022,7 +1022,7 @@ describe("desktop experience", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /open project/i }));
     await fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
-    await fireEvent.click(screen.getByRole("checkbox", { name: /trust this unvetted source/i }));
+    await fireEvent.click(screen.getByRole("checkbox", { name: /reviewed this source and approve/i }));
 
     for (let attempt = 0; attempt < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); attempt += 1) {
       const minimalProfile = screen.queryByRole("button", { name: /apply minimal pilot/i });
@@ -1505,7 +1505,7 @@ describe("desktop experience", () => {
     await fireEvent.click(within(dialog).getByRole("button", { name: /preview source/i }));
 
     expect(await within(dialog).findByText("External catalog preview")).toBeInTheDocument();
-    await fireEvent.click(within(dialog).getByRole("button", { name: /trust and add/i }));
+    await fireEvent.click(within(dialog).getByRole("button", { name: /review and add/i }));
 
     await waitFor(() => {
       expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument();

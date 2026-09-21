@@ -98,7 +98,7 @@ afterEach(() => {
 
 async function approveProjectExecution() {
   const approval = screen.getByRole("checkbox", {
-    name: /approve this project's template code execution/i
+    name: /reviewed this project's current files/i
   });
   await fireEvent.click(approval);
   expect(approval).toBeChecked();

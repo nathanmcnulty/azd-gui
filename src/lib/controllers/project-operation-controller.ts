@@ -55,7 +55,8 @@ export type ProjectAction = "preview" | "up" | "provision" | "deploy" | "refresh
 
 export async function startProjectOperation(
   project: ProjectSummary,
-  action: ProjectAction
+  action: ProjectAction,
+  snapshotDigest?: string
 ): Promise<string> {
   const requiresApproval = ["preview", "up", "provision", "deploy", "down"].includes(action);
   const environment = project.environment;
@@ -68,7 +69,8 @@ export async function startProjectOperation(
       projectPath: project.path,
       environment,
       templateId: project.templateId ?? "",
-      revision: project.revision
+      revision: project.revision,
+      snapshotDigest
     });
     return startAzdOperation(action, approval.projectPath, environment, approval.token);
   }

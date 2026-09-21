@@ -287,6 +287,7 @@
     environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0 &&
     !hasUnsavedProjectEdits;
   $: projectRequiresInteractiveTerminal = Boolean(selectedProjectTemplate?.entry.manifest?.requiresInteractiveTerminal);
+  $: projectContractReady = Boolean(selectedProjectTemplate);
   $: hasUnsavedProjectEdits = environmentConfigurationDirty.length > 0 ||
     rawVariableName.length > 0 || rawVariableValue.length > 0;
   $: if (!hasUnsavedProjectEdits) projectEditsNotice = false;
@@ -455,7 +456,7 @@
         : !requiredConnectionsMatchTarget ? connectionBlockingGuidance(requiredConnections, connectionTarget) : "";
     } else if (page.kind === "overview") {
       stepBlockingReason = !selectedPlatformSupported ? "This template does not support the current operating system. Choose a compatible template."
-        : !(selectedEntry?.trusted || sourceTrustAccepted) ? "Review the source and accept the trust acknowledgement to continue." : "";
+        : !(selectedEntry?.trusted || sourceTrustAccepted) ? "Review the source and approve its use to continue." : "";
     } else if (page.kind === "prerequisites") {
       stepBlockingReason = requiredToolsReady ? "" : toolBlockingGuidance(requiredTools);
     } else if (page.kind === "connections") {
@@ -903,12 +904,10 @@
     if (selected) setWizardValue("sourcePath", selected);
   }
 
-  async function openLocalProject(copyAsTemplate = false) {
+  async function reviewProjectAtPath(path: string, copyAsTemplate = false) {
     const session = wizardSession;
-    const selected = await chooseFolder();
-    if (!selected || session !== wizardSession) return;
     try {
-      const inspection = await inspectLocalTemplate(selected);
+      const inspection = await inspectLocalTemplate(path);
       if (session !== wizardSession) return;
       startWizard(inspection.entry);
       wizardEditGeneration += 1;
@@ -916,8 +915,8 @@
       wizardValues = {
         ...wizardValues,
         sourceMode: copyAsTemplate ? "localTemplate" : "existingProject",
-        sourcePath: selected,
-        projectPath: copyAsTemplate ? "" : selected
+        sourcePath: path,
+        projectPath: copyAsTemplate ? "" : path
       };
       wizardPlan = calculateWizardPlan(inspection.entry, wizardValues, wizardPlan ?? undefined);
       if (inspection.warnings.length) {
@@ -929,6 +928,17 @@
       addSystemLog(`Could not inspect local project: ${String(error)}`, "error");
       outputOpen = true;
     }
+  }
+
+  async function openLocalProject(copyAsTemplate = false) {
+    const session = wizardSession;
+    const selected = await chooseFolder();
+    if (!selected || session !== wizardSession) return;
+    await reviewProjectAtPath(selected, copyAsTemplate);
+  }
+
+  function reviewSelectedProjectSource() {
+    if (selectedProject && !activeOperationId) void reviewProjectAtPath(selectedProject.path);
   }
 
   async function checkTools() {
@@ -1087,7 +1097,7 @@
     preflightRan = false;
     outputOpen = true;
     if (!selectedEntry.trusted && !sourceTrustAccepted) {
-      addSystemLog("Review and accept the unvetted source before preflight.", "error");
+      addSystemLog("Review and approve this source before preflight.", "error");
       return;
     }
     if (!hookExecutionAccepted) {
@@ -1131,7 +1141,6 @@
       );
       const operationId = await startApprovedDeploymentOperation(
         "preview",
-        selectedEntry,
         projectPath,
         String(wizardValues.environmentName || "dev")
       );
@@ -1299,7 +1308,7 @@
   async function prepareAndOpenInteractiveTerminal() {
     if (!selectedEntry || activeOperationId || interactivePreparing) return;
     if (!selectedEntry.trusted && !sourceTrustAccepted) {
-      addSystemLog("Review and accept this unvetted source before opening the terminal.", "error");
+      addSystemLog("Review and approve this source before opening the terminal.", "error");
       outputOpen = true;
       return;
     }
@@ -1382,7 +1391,6 @@
       if (action === "up" && wizardDeployment) wizardDeployment = { ...wizardDeployment, projectPath };
       const operationId = await startApprovedDeploymentOperation(
         action,
-        entry,
         projectPath,
         environment
       );
@@ -2061,6 +2069,12 @@
       addSystemLog("This template requires an interactive terminal. Open the project terminal to run azd.", "warning");
       return;
     }
+    if (["preview", "up", "provision", "deploy", "down"].includes(action) && !projectContractReady) {
+      projectTab = "overview";
+      addSystemLog("This registered project needs a saved reviewed template contract before lifecycle actions.", "warning");
+      outputOpen = true;
+      return;
+    }
     if (action !== "refresh" && !projectEnvironmentReady) {
       projectTab = "environments";
       return;
@@ -2085,7 +2099,7 @@
       projectPreview = null;
     }
     try {
-      const operationId = await startProjectOperation(project, action);
+      const operationId = await startProjectOperation(project, action, selectedProjectTemplate?.digest);
       if (action === "up" && selectedProject?.path === project.path &&
           selectedProject.environment === project.environment) projectDeploymentResult = null;
       operationProjectPaths.set(operationId, project.path);
@@ -2328,7 +2342,7 @@
             <h1>{activePage.title}</h1>
             <p>{activePage.description}</p>
           </div>
-          <StatusPill tone={selectedEntry.trusted ? "success" : "warning"} label={selectedEntry.trusted ? "Vetted" : "Unvetted"} />
+          <StatusPill tone={selectedEntry.trusted ? "success" : "warning"} label={selectedEntry.source === "bundled" ? "Included with app" : selectedEntry.trusted ? "Reviewed snapshot" : "Review required"} />
         </div>
 
         <div class="wizard-content">
@@ -2359,7 +2373,7 @@
                 on:click={() => setWizardValue("sourceMode", selectedEntry?.source === "external" ? "externalCatalog" : "catalog")}
               >
                 <Icon name="catalog" size={24} />
-                <strong>Vetted catalog</strong>
+                <strong>Reviewed catalog</strong>
                 <span>Use the pinned, reviewed template selected from the catalog.</span>
               </button>
               <button
@@ -2466,7 +2480,7 @@
                   on:change={(event) => (sourceTrustAccepted = event.currentTarget.checked)}
                 />
                 <span>
-                  <strong>I trust this unvetted source</strong>
+                  <strong>I reviewed this source and approve its use</strong>
                   <small>I understand that azd may execute code and hooks from this local folder or pinned repository revision.</small>
                 </span>
               </label>
@@ -2474,7 +2488,7 @@
             {#if selectedEntry.commit === "local"}
               <div class="callout warning">
                 <Icon name="warning" size={18} />
-                <div><strong>Local source can change</strong><p>The app inspected this folder, but local files can change before execution. Review changes and accept trust again after selecting a different source.</p></div>
+                <div><strong>Local source can change</strong><p>The app inspected this folder, but local files can change before execution. Review changes and approve again after selecting a different source.</p></div>
               </div>
             {:else}
               <div class="callout info">
@@ -2814,8 +2828,8 @@
         <div class="hero">
           <div>
             <span class="eyebrow">AZURE DEVELOPER CLI</span>
-            <h1>Deploy trusted Azure solutions with confidence.</h1>
-            <p>Choose a vetted template, verify what it needs, connect the right accounts, and follow one guided path to Azure.</p>
+            <h1>Prepare Azure solutions with clear review boundaries.</h1>
+            <p>Choose an included or reviewed snapshot, verify what it needs, connect the right accounts, and follow one guided path to Azure.</p>
             <div class="hero-actions">
               <button class="primary large" on:click={() => navigate("catalog")}><Icon name="catalog" size={17} /> Browse catalog</button>
               <button class="secondary large" on:click={() => openLocalProject(false)}><Icon name="folder" size={17} /> Open project</button>
@@ -2845,7 +2859,7 @@
     {:else if activeNav === "catalog"}
       <section class="page">
         <div class="page-header">
-          <div><span class="eyebrow">TRUSTED SOURCES</span><h1>Template catalog</h1><p>Reviewed, pinned azd deployments that can be configured before any code runs.</p></div>
+          <div><span class="eyebrow">TEMPLATE SOURCES</span><h1>Template catalog</h1><p>Included and reviewed pinned azd templates that can be configured before any code runs.</p></div>
           <button class="secondary" on:click={() => openCatalogSource()}><Icon name="github" size={16} /> Add source</button>
         </div>
         <div class="catalog-toolbar">
@@ -2855,7 +2869,7 @@
         <div class="catalog-grid">
           {#each filteredCatalog as entry}
             <article class="catalog-card">
-              <div class="card-top"><div class="catalog-monogram">{entry.title.slice(0, 2).toUpperCase()}</div><StatusPill tone="success" label="Vetted" /></div>
+              <div class="card-top"><div class="catalog-monogram">{entry.title.slice(0, 2).toUpperCase()}</div><StatusPill tone={entry.trusted ? "success" : "warning"} label={entry.source === "bundled" ? "Included with app" : entry.trusted ? "Reviewed snapshot" : "Review required"} /></div>
               <h2>{entry.title}</h2>
               <p>{entry.summary}</p>
               <div class="tag-row">{#each entry.tags.slice(0, 3) as tag}<span class="tag">{tag}</span>{/each}</div>
@@ -2879,7 +2893,7 @@
               <div class="project-actions">
                 <button class="secondary" disabled={terminalOpening} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
-                <button class="danger" disabled={projectRequiresInteractiveTerminal || !projectExecutionAccepted || !projectEnvironmentReady || Boolean(activeOperationId)} title={projectRequiresInteractiveTerminal ? "Run azd down in the project terminal" : !projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
+                <button class="danger" disabled={!projectContractReady || projectRequiresInteractiveTerminal || !projectExecutionAccepted || !projectEnvironmentReady || Boolean(activeOperationId)} title={!projectContractReady ? "Review and restore the saved template contract first; use Terminal for independent cleanup." : projectRequiresInteractiveTerminal ? "Run azd down in the project terminal" : !projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
               </div>
             </div>
           </div>
@@ -2898,10 +2912,10 @@
               </section>
               <section class="workspace-panel">
                 <h2>Source</h2>
-                {#if !selectedProjectTemplate && selectedProject.templateId?.startsWith("external-")}
-                  <div class="callout warning"><div><strong>Catalog contract needs review</strong><p>Review this catalog in Settings, then apply its contract for this exact template revision. Project files and Azure resources are preserved.</p><button class="secondary compact" on:click={() => navigate("settings")}>Review catalog sources</button><button class="secondary compact" disabled={Boolean(activeOperationId) || environmentConfigurationBusy || environmentBusy} on:click={useReviewedProjectContract}>Use reviewed catalog contract</button></div></div>
+                {#if !selectedProjectTemplate}
+                  <div class="callout warning"><div><strong>Saved template contract needs review</strong><p>Preview, provision, deploy, up, and down are blocked until this registered project has a valid saved reviewed contract. Refresh, history, resources, project files, and Terminal remain available; use Terminal for independent cleanup while you re-review.</p>{#if selectedProject.templateId?.startsWith("external-")}<button class="secondary compact" on:click={() => navigate("settings")}>Review this catalog source</button><button class="secondary compact" disabled={Boolean(activeOperationId) || environmentConfigurationBusy || environmentBusy} on:click={useReviewedProjectContract}>Review and add exact contract</button>{:else}<button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={reviewSelectedProjectSource}>Review current project files</button>{/if}</div></div>
                 {/if}
-                <dl class="summary-list"><div><dt>Template</dt><dd>{selectedProject.templateId ?? "Local project"}</dd></div><div><dt>Revision</dt><dd><code>{selectedProject.revision ?? "local"}</code></dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
+                <dl class="summary-list"><div><dt>Current path</dt><dd><code>{selectedProject.path}</code></dd></div><div><dt>Retained repository</dt><dd>{selectedProjectTemplate?.entry.repository ?? "Saved contract unavailable"}</dd></div><div><dt>Retained revision</dt><dd><code>{selectedProjectTemplate?.entry.commit ?? selectedProject.revision ?? "unavailable"}</code></dd></div>{#if selectedProjectTemplate}<div><dt>Saved contract digest</dt><dd><code>{selectedProjectTemplate.digest}</code><small>Local consistency for the retained reviewed snapshot; not a publisher signature or a hash of current files.</small></dd></div>{/if}<div><dt>Current working tree</dt><dd>Mutable; current files are not compared with the saved contract.</dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
               <ProjectValidationReport project={selectedProject} />
               <ProjectDeploymentReceipt project={selectedProject} />
@@ -2963,7 +2977,7 @@
                       <button class="secondary" on:click={() => (outputOpen = true)}><Icon name="terminal" size={14} /> View output</button>
                       <button class="secondary" on:click={() => (projectTab = "resources")}><Icon name="cloud" size={14} /> View structured state</button>
                       {#if projectDeploymentResult.event.state !== "succeeded" && !projectRequiresInteractiveTerminal}
-                        <button class="primary" disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
+                        <button class="primary" disabled={Boolean(activeOperationId) || !projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("preview")}><Icon name="search" size={14} /> Preview before retry</button>
                       {/if}
                     </div>
                   {/if}
@@ -3009,17 +3023,17 @@
                 {/if}
                 <label class="toggle-line card">
                   <input type="checkbox" bind:checked={projectExecutionAccepted} />
-                  <span><strong>I approve this project's template code execution</strong><small>Required for preview, deployment, provisioning, and resource removal in this app session.</small></span>
+                  <span><strong>I reviewed this project's current files and approve template code execution for this session</strong><small>Required for preview, deployment, provisioning, and resource removal.</small></span>
                 </label>
                 <div class="project-preflight-actions">
                   <button
                     class="secondary"
-                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady}
+                    disabled={Boolean(activeOperationId) || !projectContractReady || !projectExecutionAccepted || !projectConfigurationReady}
                     on:click={() => runProjectAction("preview")}
                   ><Icon name="search" size={15} /> {projectPreviewReady ? "Run preview again" : "Run infrastructure preview"}</button>
                   <button
                     class="primary"
-                    disabled={Boolean(activeOperationId) || !projectExecutionAccepted || !projectConfigurationReady || !projectPreviewReady}
+                    disabled={Boolean(activeOperationId) || !projectContractReady || !projectExecutionAccepted || !projectConfigurationReady || !projectPreviewReady}
                     title={!projectPreviewReady ? "Complete a current infrastructure preview first" : undefined}
                     on:click={() => runProjectAction("up")}
                   ><Icon name="play" size={15} /> Deploy with azd up</button>
@@ -3030,8 +3044,8 @@
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
                 <div class="lifecycle-actions">
                   {#if !projectRequiresInteractiveTerminal}
-                  <button disabled={!projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
-                  <button disabled={!projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
+                  <button disabled={!projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
+                  <button disabled={!projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
                   {/if}
                   <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong><span>Refresh environment state</span></button>
                 </div>
@@ -3158,7 +3172,7 @@
                   <time>{new Date(event.timestamp).toLocaleString()}</time>
                   <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} />
                   {#if event.outcome?.retryable && ["preview", "provision", "deploy", "refresh", "down"].includes(event.kind)}
-                    <button class="secondary compact" disabled={Boolean(activeOperationId)} on:click={() => retryProjectOperation(event)}>Retry</button>
+                    <button class="secondary compact" disabled={Boolean(activeOperationId) || (event.kind !== "refresh" && !projectContractReady)} on:click={() => retryProjectOperation(event)}>Retry</button>
                   {/if}
                 </div>
               {/each}
@@ -3282,7 +3296,7 @@
         </div>
         <div class="settings-group">
           <h2>Catalog sources</h2>
-          <div class="setting-row"><div><strong>Bundled catalog</strong><span>Available offline · {data.catalog.entries.filter((entry) => entry.source !== "external").length} pinned templates</span></div><StatusPill tone="success" label="Trusted" /></div>
+          <div class="setting-row"><div><strong>Bundled catalog</strong><span>Available offline · {data.catalog.entries.filter((entry) => entry.source !== "external").length} pinned templates</span></div><StatusPill tone="success" label="Included with app" /></div>
           {#each data.catalogSources as source}
             <div class="setting-row catalog-source-row">
               <div><strong>{source.label}</strong><span>{source.url} · {data.catalog.entries.filter((entry) => entry.id.startsWith(`external-${source.id}.`)).length} pinned templates</span></div>

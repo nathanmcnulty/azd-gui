@@ -542,6 +542,7 @@ pub async fn prepare(
     };
     let snapshot =
         ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;
+    ensure_reviewed_contract_digest(&request, &snapshot)?;
     let environment_assignments = environment_assignments(&request, entry.as_ref())?;
     let destination = ensure_destination(&request.destination, existing_project)?;
     let name = destination
@@ -740,6 +741,18 @@ pub async fn prepare(
     Ok(project)
 }
 
+fn ensure_reviewed_contract_digest(
+    request: &PrepareDeploymentRequest,
+    snapshot: &ProjectTemplateSnapshot,
+) -> AppResult<()> {
+    if request.reviewed_contract_digest != snapshot.digest {
+        return Err(AppError::Invalid(
+            "The reviewed template contract changed. Inspect and approve the source again.".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -748,7 +761,7 @@ mod tests {
     };
     use crate::{
         catalog::entry_by_id,
-        models::{PrepareDeploymentRequest, ProjectEnvironment},
+        models::{PrepareDeploymentRequest, ProjectEnvironment, ProjectTemplateSnapshot},
     };
     use serde_json::json;
 
@@ -770,6 +783,11 @@ mod tests {
             template_id: "myworkid".into(),
             source_mode: "catalog".into(),
             execution_approval_token: "test-approval".into(),
+            reviewed_contract_digest: ProjectTemplateSnapshot::new(
+                entry_by_id("myworkid").unwrap(),
+            )
+            .unwrap()
+            .digest,
             source_path: None,
             source_revision: None,
             source_binding: None,
@@ -817,6 +835,27 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(values["INCLUDE_EXCHANGE"], "true");
+    }
+
+    #[test]
+    fn changed_manifest_invalidates_the_reviewed_preparation_contract() {
+        let entry = entry_by_id("myworkid").unwrap();
+        let snapshot = ProjectTemplateSnapshot::new(entry.clone()).unwrap();
+        let mut request = myworkid_request();
+        request.reviewed_contract_digest = snapshot.digest;
+        assert!(super::ensure_reviewed_contract_digest(
+            &request,
+            &ProjectTemplateSnapshot::new(entry.clone()).unwrap()
+        )
+        .is_ok());
+
+        let mut changed = entry;
+        changed.manifest.as_mut().unwrap().minimum_azd_version = Some(">=99.0.0".into());
+        assert!(super::ensure_reviewed_contract_digest(
+            &request,
+            &ProjectTemplateSnapshot::new(changed).unwrap()
+        )
+        .is_err());
     }
 
     #[tokio::test]
