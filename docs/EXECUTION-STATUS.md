@@ -120,3 +120,10 @@ conditions, evidence, and independent cleanup checks. Its source commit is now
 fixed at `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` with the attested component
 patches pinned and reviewed. The authorized live deployment and cleanup are now
 complete. No application tag, draft release, or publication was performed.
+
+The live pilot exposed excessive Automation progress replay and ambiguous
+completed-job error output. Maester PR 22 fixed that bounded presentation path at
+`1692b2e5a69c414b1e204c2714281ba0085c3560`; repository validation, dependency
+review, and CodeQL passed. The bundled catalog now targets that commit. The live
+resource evidence remains bound to predecessor `45f839bc`, and adopting the new
+catalog pin means a future signed GUI candidate must use the resulting GUI source.

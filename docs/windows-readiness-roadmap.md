@@ -99,9 +99,9 @@ A saved snapshot's SHA-256 digest checks local consistency; it is not publisher 
 
 Browser preview is simulated. Passing offline tests or opening a development executable does not demonstrate signed installation, real broker authentication, Azure provisioning, recipient-visible notification delivery, or cleanup. Layered provisioning and other unsupported preview capabilities need explicit classification before claiming a fully guided deployment experience.
 
-## First Maester pilot
+## Maester adoption
 
-The bundled entry targets `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`, `automation-account`. Its variables and feature defaults agree with that revision's interactive wizard, and it pins the signed deployment receipt and validation components. Preserve these defaults in the catalog; use explicit choices for a least-privilege pilot.
+The bundled entry targets `1692b2e5a69c414b1e204c2714281ba0085c3560`, `automation-account`. Its variables and feature defaults agree with that revision's interactive wizard, and it pins the signed deployment receipt and validation components. The authorized live lifecycle ran against predecessor `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`; the adopted commit only makes validation streams concise and labels permission-limited error output honestly. Preserve the guided defaults in the catalog and use explicit choices for a least-privilege deployment.
 
 1. Use an explicitly authorized disposable subscription/environment and a new resource group with no existing Automation Account. Redeploying an existing account can remove its delete lock and all job schedules.
 2. Select Minimal, dashboard off, Exchange/Teams/Azure off, and an empty mail recipient. Review the eight baseline managed-identity Graph application roles, which still apply.
@@ -109,4 +109,9 @@ The bundled entry targets `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`, `automatio
 4. Run through the external terminal, capture actual hook/setup outcomes, reopen the project, and verify the resulting resources and test run. Record skipped or failed setup actions separately from provisioning success.
 5. Exercise `azd down` against the same disposable environment and verify the template's best-effort identity, Exchange, and scoped-role cleanup. A successful CLI exit alone is insufficient evidence of complete cleanup.
 
-This pilot has not been run. It requires a selected cloud target and explicit deployment authorization.
+The first pilot completed in `westus2`, including independent Azure and Graph
+cleanup. See the [live pilot record](maester-minimal-pilot-20260921.md). Commit
+`1692b2e5a69c414b1e204c2714281ba0085c3560` passed repository validation,
+dependency review, and CodeQL after applying the bounded stream-output fix; it
+has not been redeployed, so live resource evidence remains bound to the exact
+predecessor.
