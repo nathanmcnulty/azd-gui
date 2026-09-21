@@ -61,13 +61,13 @@
       {
         "id": "features",
         "title": "Maester coverage",
-        "description": "Choose the services and optional dashboard included by the template.",
+        "description": "The raw template defaults the dashboard, Exchange, Teams, and Azure integrations to off. This wizard writes guided choices: Exchange, Teams, and Azure on, dashboard off, with the Extended permission profile. Turning a deployed feature off is additive: it does not remove earlier resources or assignments and can overwrite their tracked cleanup IDs. Run teardown before disabling a feature, or independently discover and remove the residual changes. Review each choice or apply Minimal pilot below.",
         "fields": [
           {
             "id": "includeWebApp",
             "environmentVariable": "INCLUDE_WEB_APP",
             "label": "Include secured web dashboard",
-            "help": "Creates or updates an Entra application and service principal, including tenant-wide delegated Graph consent. Access is restricted to your selected security group.",
+            "help": "Adds an App Service dashboard and creates or updates its Easy Auth Entra application and service principal. Grants all-principals delegated consent for openid, profile, email, and User.Read. The selected security group gates access. Review the App Service SKU and ongoing cost before enabling.",
             "type": "boolean",
             "default": false
           },
@@ -75,7 +75,7 @@
             "id": "includeExchange",
             "environmentVariable": "INCLUDE_EXCHANGE",
             "label": "Include Exchange checks",
-            "help": "Grants Exchange.ManageAsApp and attempts to assign the Exchange View-Only Configuration role.",
+            "help": "Grants Exchange.ManageAsApp and attempts a best-effort Exchange View-Only Configuration role assignment. Setup requires ExchangeOnlineManagement on this computer; the Automation runtime module is deployed even when these checks are off. Automated teardown does not guarantee cleanup of Exchange service-principal and role assignments; review them separately.",
             "type": "boolean",
             "default": true
           },
@@ -91,7 +91,7 @@
             "id": "includeAzure",
             "environmentVariable": "INCLUDE_AZURE",
             "label": "Include Azure checks",
-            "help": "Assigns Azure Reader to the automation identity at each configured scope, or the selected subscription when scopes are blank.",
+            "help": "Assigns Azure Reader to the automation identity at each configured scope, or the selected subscription when scopes are blank. A management-group scope extends read access across its descendant subscriptions; choose the narrowest scope needed.",
             "type": "boolean",
             "default": true
           }
@@ -117,7 +117,8 @@
             "label": "App Service SKU",
             "type": "text",
             "required": true,
-            "default": "F1"
+            "default": "F1",
+            "help": "F1 is the Free tier with shared capacity and limits. Choosing a paid App Service SKU adds ongoing cost; check regional availability and pricing before deployment."
           }
         ]
       },
@@ -142,7 +143,7 @@
             "id": "permissionProfile",
             "environmentVariable": "PERMISSION_PROFILE",
             "label": "Permission profile",
-            "help": "Minimal grants eight baseline Graph application read roles. Extended adds eleven application roles for device, security, SharePoint, and hunting coverage. Review these identity permissions before deployment.",
+            "help": "Minimal grants eight baseline Graph application read roles to the automation identity and still makes directory permission assignments. Extended adds eleven application roles for device, security, SharePoint, and hunting coverage. Neither profile is a read-only setup; review directory changes before deployment.",
             "type": "select",
             "required": true,
             "default": "Extended",
@@ -157,7 +158,7 @@
             "label": "Azure RBAC scopes",
             "type": "text",
             "condition": { "field": "includeAzure", "equals": true },
-            "help": "Optional semicolon-separated ARM scope IDs. The selected subscription is used when left blank."
+            "help": "Optional semicolon-separated ARM scope IDs for Azure Reader assignments. Blank means the selected subscription. Management-group scopes also cover descendant subscriptions; use narrower scopes when possible."
           }
         ]
       }
@@ -167,7 +168,7 @@
     {
       "id": "minimalPilot",
       "title": "Minimal pilot",
-      "description": "Disables the dashboard, Exchange, Teams, and Azure checks while keeping the Minimal profile's eight baseline managed-identity Graph application read roles. No email recipient is configured.",
+      "description": "Disables the dashboard, Exchange, Teams, and Azure checks while keeping the Minimal profile's eight baseline managed-identity Graph application read roles. This still creates directory permission assignments. No email recipient is configured, so no Mail.Send grant is requested.",
       "values": {
         "includeWebApp": false,
         "includeExchange": false,
