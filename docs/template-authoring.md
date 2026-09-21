@@ -56,6 +56,13 @@ For new external-gallery preparation, embed the exact sidecar bytes as `azd-gui.
 
 This binds the new preparation's reviewed metadata to the fetched pinned revision. It does not authenticate the publisher or prove that the template implements every declaration correctly. Review the immutable template commit and its hooks. Existing project registrations are not retroactively verified, and prepared working trees remain mutable. The temporary checkout is not protected against a hostile process running as the same local user or administrator. Old external contracts without a digest require a fresh catalog review.
 
+| Project state | Review evidence | Current files |
+| --- | --- | --- |
+| Bundled | Included app entry and persisted reviewed snapshot | Mutable; not compared with the snapshot. |
+| External pinned | Exact revision and reviewed sidecar digest | Mutable; recovery requires reviewing and adding the exact revision. |
+| Locally copied | Locally inspected contract snapshot | Mutable; no generic working-tree hash is maintained. |
+| Reopened mutable | Saved repository, revision, and local-consistency digest | Mutable; preview, provision, deploy, up, and down require the valid persisted snapshot. Use the external terminal for independent cleanup while re-reviewing. |
+
 ## Interactive hooks
 
 Declare `requiresInteractiveTerminal` when lifecycle scripts require prompts. Local and direct GitHub inspection also detect interactive project, service, and infrastructure-layer hooks from parsed YAML and preserve that requirement when the project is reopened. The GUI routes these templates to approved preparation and an external terminal; it does not treat terminal launch as successful deployment.

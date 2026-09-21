@@ -1,4 +1,6 @@
 import {
+  getProjectTemplate,
+  getReviewedContractDigest,
   prepareDeployment,
   requestExecutionApproval,
   startAzdOperation
@@ -29,12 +31,14 @@ export async function materializeDeployment(
       : String(values.sourcePath || "") || undefined
     : String(values.sourcePath || "") || undefined;
   const binding = localSource ? sourceBinding : undefined;
+  const reviewedContractDigest = await getReviewedContractDigest(entry);
   const approval = await requestExecutionApproval({
     action: "prepare",
     projectPath,
     environment,
     templateId: entry.id,
     revision,
+    snapshotDigest: reviewedContractDigest,
     sourceBinding: binding
   });
   const project = await prepareDeployment({
@@ -44,6 +48,7 @@ export async function materializeDeployment(
     sourcePath,
     sourceRevision: revision,
     sourceBinding: binding,
+    reviewedContractDigest,
     destination: projectPath,
     environment,
     tenant: String(values.tenantId || "") || undefined,
@@ -57,16 +62,18 @@ export async function materializeDeployment(
 
 export async function startApprovedDeploymentOperation(
   action: "preview" | "up" | "provision" | "deploy",
-  entry: CatalogEntry,
   projectPath: string,
   environment: string
 ): Promise<string> {
+  const snapshot = await getProjectTemplate(projectPath);
+  if (!snapshot) throw new Error("This project needs a saved reviewed template contract before lifecycle actions.");
   const approval = await requestExecutionApproval({
     action,
     projectPath,
     environment,
-    templateId: entry.id,
-    revision: entry.commit === "local" ? undefined : entry.commit
+    templateId: snapshot.entry.id,
+    revision: snapshot.entry.commit === "local" ? undefined : snapshot.entry.commit,
+    snapshotDigest: snapshot.digest
   });
   return startAzdOperation(action, approval.projectPath, environment, approval.token);
 }

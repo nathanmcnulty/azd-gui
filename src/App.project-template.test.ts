@@ -38,5 +38,10 @@ describe("saved project template contract", () => {
     await fireEvent.click(screen.getByRole("button", { name: "environments" }));
     expect(await screen.findByLabelText(/Custom deployment region/)).toHaveValue("westus2");
     expect(screen.queryByText("No manifest-defined fields")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "overview" }));
+    expect(await screen.findByText("Current path")).toBeInTheDocument();
+    expect(screen.getByText("saved-contract-digest")).toBeInTheDocument();
+    expect(screen.getByText(/not a publisher signature or a hash of current files/i)).toBeInTheDocument();
+    expect(screen.getByText(/current files are not compared with the saved contract/i)).toBeInTheDocument();
   });
 });

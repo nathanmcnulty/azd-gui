@@ -36,7 +36,7 @@
 
 <dialog bind:this={dialog} use:trapFocus class="source-dialog" aria-label="Add catalog source" aria-modal="true" on:keydown={handleKeydown}>
   <header>
-    <div><span class="eyebrow">EXTERNAL CATALOG</span><h2>Add a catalog source</h2></div>
+    <div><span class="eyebrow">EXTERNAL CATALOG</span><h2>Review this catalog source</h2></div>
     <button class="icon-button" aria-label="Close" on:click={onClose}><Icon name="close" size={16} /></button>
   </header>
   <p>Enter a direct HTTPS catalog URL or a GitHub repository containing <code>azd-gui.catalog.json</code>.</p>
@@ -57,13 +57,13 @@
         <div><span>{entry.title}</span><code>{entry.commit.slice(0, 8)}</code></div>
       {/each}
     </div>
-    <div class="callout warning"><Icon name="warning" size={16} /><div><strong>Trust this publisher?</strong><p>Templates can run hooks during deployment. Verify the source and pinned revisions before adding it.</p></div></div>
+    <div class="callout warning"><Icon name="warning" size={16} /><div><strong>Review before adding</strong><p>Templates can run hooks during deployment. Verify the source and pinned revisions before adding it.</p></div></div>
   {/if}
   <footer>
     <button class="secondary" on:click={onClose}>Cancel</button>
     <div class="footer-spacer"></div>
     {#if preview}
-      <button class="primary" on:click={onTrust}>Trust and add</button>
+      <button class="primary" on:click={onTrust}>Review and add</button>
     {:else}
       <button class="primary" disabled={!sourceUrl.trim()} on:click={onPreview}>Preview source</button>
     {/if}

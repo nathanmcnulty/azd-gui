@@ -421,6 +421,7 @@ export interface PrepareDeploymentRequest {
   sourcePath?: string;
   sourceRevision?: string;
   sourceBinding?: LocalSourceBinding;
+  reviewedContractDigest: string;
   destination: string;
   environment: string;
   tenant?: string;
@@ -436,6 +437,7 @@ export interface ExecutionApprovalRequest {
   environment: string;
   templateId: string;
   revision?: string;
+  snapshotDigest?: string;
   sourceBinding?: LocalSourceBinding;
 }
 

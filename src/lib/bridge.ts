@@ -131,7 +131,7 @@ export async function inspectLocalTemplate(path: string): Promise<TemplateInspec
       manifestSource: "inferred",
       interactiveHooks: true,
       warnings: [
-        "Local templates are unvetted. Review hooks before deploying.",
+        "Local templates require review. Review hooks before deploying.",
         "Interactive hooks were detected. Use the external terminal if input is required."
       ]
     };
@@ -156,7 +156,7 @@ export async function inspectGitHubTemplate(url: string): Promise<TemplateInspec
       azureYamlFound: true,
       manifestSource: "inferred",
       interactiveHooks: false,
-      warnings: ["This repository is unvetted. Review the pinned revision before deployment."]
+      warnings: ["This repository requires review. Review the pinned revision before deployment."]
     };
   }
   return invoke<TemplateInspection>("inspect_github_template", { url });
@@ -383,6 +383,11 @@ export async function prepareDeployment(request: PrepareDeploymentRequest): Prom
     };
   }
   return invoke<ProjectSummary>("prepare_deployment", { request });
+}
+
+export async function getReviewedContractDigest(entry: CatalogEntry): Promise<string> {
+  if (!isTauri()) return "browser-preview";
+  return invoke<string>("reviewed_contract_digest", { entry });
 }
 
 export async function getProjectTemplate(projectPath: string): Promise<ProjectTemplateSnapshot | null> {

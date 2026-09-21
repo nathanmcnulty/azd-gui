@@ -399,9 +399,11 @@ async fn start_azd_operation(
         let project = state
             .database
             .project_by_path(&canonical.display().to_string())?;
-        if let Some(project) = &project {
-            if let Some(snapshot) = resolve_project_template(&state.database, project)? {
-                ensure_project_lifecycle_route(&action, &snapshot)?;
+        let snapshot = if let Some(project) = &project {
+            let snapshot = resolve_project_template(&state.database, project)?;
+            ensure_registered_project_lifecycle_contract(&action, snapshot.as_ref())?;
+            if let Some(snapshot) = &snapshot {
+                ensure_project_lifecycle_route(&action, snapshot)?;
                 if let Some(manifest) = &snapshot.entry.manifest {
                     let requirement_values = registered_requirement_environment_values(
                         manifest,
@@ -412,7 +414,10 @@ async fn start_azd_operation(
                     tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
                 }
             }
-        }
+            snapshot
+        } else {
+            None
+        };
         state.execution_approvals.consume(
             token,
             ExecutionApprovalRequest {
@@ -424,6 +429,7 @@ async fn start_azd_operation(
                     .and_then(|project| project.template_id.clone())
                     .unwrap_or_default(),
                 revision: project.and_then(|project| project.revision),
+                snapshot_digest: snapshot.map(|snapshot| snapshot.digest),
                 source_binding: None,
             },
         )?;
@@ -438,6 +444,41 @@ async fn start_azd_operation(
             canonical.display().to_string(),
         )),
     )
+}
+
+fn ensure_registered_project_lifecycle_contract(
+    action: &str,
+    snapshot: Option<&ProjectTemplateSnapshot>,
+) -> AppResult<()> {
+    if matches!(action, "preview" | "up" | "provision" | "deploy" | "down") && snapshot.is_none() {
+        return Err(AppError::Invalid(
+            "This registered project needs a saved reviewed template contract before lifecycle actions. Refresh and inspection remain available; for an external catalog, review and add the exact recorded revision first."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_registered_project_approval(
+    database: &Database,
+    request: ExecutionApprovalRequest,
+) -> AppResult<ExecutionApprovalRequest> {
+    if request.action == "prepare" {
+        return Ok(request);
+    }
+    let Some(project) = database.project_by_path(&request.project_path)? else {
+        return Ok(request);
+    };
+    let snapshot = resolve_project_template(database, &project)?;
+    ensure_registered_project_lifecycle_contract(&request.action, snapshot.as_ref())?;
+    let snapshot = snapshot.expect("registered lifecycle contract was required");
+    if request.snapshot_digest.as_deref() != Some(snapshot.digest.as_str()) {
+        return Err(AppError::Invalid(
+            "The saved template contract changed. Review and approve the lifecycle action again."
+                .into(),
+        ));
+    }
+    Ok(request)
 }
 
 fn ensure_project_lifecycle_route(
@@ -533,10 +574,22 @@ async fn prepare_deployment(
             environment: request.environment.clone(),
             template_id: request.template_id.clone(),
             revision: request.source_revision.clone(),
+            snapshot_digest: Some(request.reviewed_contract_digest.clone()),
             source_binding: request.source_binding.clone(),
         },
     )?;
     deployment::prepare(request, &state.template_cache, &state.database).await
+}
+
+#[tauri::command]
+fn reviewed_contract_digest(mut entry: CatalogEntry) -> AppResult<String> {
+    // Bootstrap marks accepted external entries as reviewed for presentation. The
+    // persisted contract retains the source document's false value, so exclude
+    // that UI-only state from the digest supplied for native preparation.
+    if entry.source.as_deref() == Some("external") {
+        entry.trusted = false;
+    }
+    Ok(ProjectTemplateSnapshot::new(entry)?.digest)
 }
 
 #[tauri::command]
@@ -548,6 +601,7 @@ fn request_execution_approval(
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
     let request = execution_approval::ExecutionApprovals::validate_request(request)?;
+    let request = validate_registered_project_approval(&state.database, request)?;
     let destructive = request.action == "down";
     let action = if destructive {
         "delete the environment's Azure resources with azd down --force"
@@ -729,18 +783,7 @@ pub(crate) fn resolve_project_template(
     if let Some(snapshot) = database.project_template(&project.path)? {
         return Ok(Some(snapshot));
     }
-    // Legacy catalog projects may use only the exact recorded revision, never a newer catalog contract.
-    let Some(template_id) = project.template_id.as_deref() else {
-        return Ok(None);
-    };
-    let entry = match catalog::entry_by_id(template_id) {
-        Ok(entry) => Some(entry),
-        Err(_) => database.accepted_catalog_entry(template_id)?,
-    };
-    entry
-        .filter(|entry| project.revision.as_deref() == Some(entry.commit.as_str()))
-        .map(ProjectTemplateSnapshot::new)
-        .transpose()
+    Ok(None)
 }
 
 #[tauri::command]
@@ -1099,6 +1142,7 @@ pub fn run() {
             preview_external_catalog,
             save_catalog_source,
             remove_catalog_source,
+            reviewed_contract_digest,
             prepare_deployment,
             request_execution_approval,
             get_project_state,
@@ -1137,7 +1181,7 @@ mod environment_value_tests {
 
 #[cfg(test)]
 mod catalog_review_tests {
-    use super::{catalog, CatalogReviews};
+    use super::{catalog, reviewed_contract_digest, CatalogReviews, ProjectTemplateSnapshot};
 
     fn external_catalog() -> crate::models::Catalog {
         let mut catalog = catalog::bundled_catalog().unwrap();
@@ -1170,11 +1214,74 @@ mod catalog_review_tests {
         assert_eq!(accepted.id, preview.catalog.id);
         assert!(reviews.accept(&preview.review_token, source).is_err());
     }
+
+    #[test]
+    fn reviewed_external_display_state_keeps_the_persisted_contract_digest() {
+        let mut catalog = external_catalog();
+        let mut persisted = catalog.entries.remove(0);
+        let expected = ProjectTemplateSnapshot::new(persisted.clone())
+            .unwrap()
+            .digest;
+        persisted.trusted = true;
+
+        assert_eq!(reviewed_contract_digest(persisted).unwrap(), expected);
+    }
 }
 
 #[cfg(test)]
 mod interactive_lifecycle_tests {
-    use super::{catalog, ensure_project_lifecycle_route, ProjectTemplateSnapshot};
+    use super::{
+        catalog, ensure_project_lifecycle_route, ensure_registered_project_lifecycle_contract,
+        validate_registered_project_approval, Database, ExecutionApprovalRequest, ProjectSummary,
+        ProjectTemplateSnapshot,
+    };
+    use tempfile::tempdir;
+
+    #[test]
+    fn registered_project_without_saved_contract_blocks_all_native_lifecycle_actions() {
+        for action in ["preview", "up", "provision", "deploy", "down"] {
+            assert!(ensure_registered_project_lifecycle_contract(action, None).is_err());
+        }
+        assert!(ensure_registered_project_lifecycle_contract("refresh", None).is_ok());
+        let snapshot =
+            ProjectTemplateSnapshot::new(catalog::entry_by_id("myworkid").unwrap()).unwrap();
+        assert!(ensure_registered_project_lifecycle_contract("up", Some(&snapshot)).is_ok());
+        assert!(ensure_project_lifecycle_route("refresh", &snapshot).is_ok());
+    }
+
+    #[test]
+    fn registered_project_approval_requires_the_current_saved_contract_digest() {
+        let directory = tempdir().unwrap();
+        std::fs::write(directory.path().join("azure.yaml"), "name: sample").unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let entry = catalog::entry_by_id("myworkid").unwrap();
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some(entry.id.clone()),
+            revision: Some(entry.commit.clone()),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        database.save_project_template(&project, &snapshot).unwrap();
+        let request = ExecutionApprovalRequest {
+            action: "preview".into(),
+            project_path: project.path.clone(),
+            environment: "dev".into(),
+            template_id: project.template_id.clone().unwrap(),
+            revision: project.revision.clone(),
+            snapshot_digest: Some(snapshot.digest.clone()),
+            source_binding: None,
+        };
+        assert!(validate_registered_project_approval(&database, request.clone()).is_ok());
+        let mut stale = request;
+        stale.snapshot_digest = Some("a".repeat(64));
+        assert!(validate_registered_project_approval(&database, stale).is_err());
+    }
 
     #[test]
     fn saved_interactive_contract_requires_terminal_for_all_template_actions() {

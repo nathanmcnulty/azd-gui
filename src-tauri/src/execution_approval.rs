@@ -59,6 +59,16 @@ impl ExecutionApprovals {
         }) {
             return Err(AppError::Invalid("Invalid template revision.".into()));
         }
+        if request.snapshot_digest.as_ref().is_some_and(|digest| {
+            digest.len() != 64
+                || !digest
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        }) {
+            return Err(AppError::Invalid(
+                "Invalid saved template contract digest.".into(),
+            ));
+        }
         if let Some(binding) = &request.source_binding {
             if request.action != "prepare" {
                 return Err(AppError::Invalid(
@@ -144,6 +154,7 @@ mod tests {
             environment: "dev".into(),
             template_id: "sample".into(),
             revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            snapshot_digest: Some("a".repeat(64)),
             source_binding: None,
         }
     }
@@ -177,11 +188,25 @@ mod tests {
             environment: "dev".into(),
             template_id: "local-sample".into(),
             revision: None,
+            snapshot_digest: None,
             source_binding: Some(binding),
         };
         let grant = approvals.issue(request.clone()).unwrap();
         std::fs::write(source.path().join("azure.yaml"), "name: changed").unwrap();
 
         assert!(approvals.consume(&grant.token, request).is_err());
+    }
+
+    #[test]
+    fn saved_contract_digest_changes_invalidate_a_pending_lifecycle_approval() {
+        let directory = tempdir().unwrap();
+        std::fs::write(directory.path().join("azure.yaml"), "name: sample").unwrap();
+        let approvals = ExecutionApprovals::default();
+        let request = request(directory.path().display().to_string(), "preview");
+        let grant = approvals.issue(request.clone()).unwrap();
+        let mut replaced = request;
+        replaced.snapshot_digest = Some("b".repeat(64));
+
+        assert!(approvals.consume(&grant.token, replaced).is_err());
     }
 }
