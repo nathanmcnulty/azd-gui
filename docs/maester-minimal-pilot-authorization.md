@@ -94,6 +94,43 @@ The interactive terminal is the final authority boundary. Device-code
 authentication is prohibited; use only the cached broker/WAM session or a normal
 browser sign-in.
 
+## Read-only preflight and dated estimate
+
+Read-only preflight on 21 September 2026 confirmed the cached Azure CLI and azd
+identity `nathan@sharemylabs.com`, tenant
+`847b5907-ca15-40f4-b171-eb18619dbfab`, and enabled subscription `sub-mvp`
+(`a80941e8-c2b9-4bc9-83ad-117cc40d0bea`). The identity has Owner on the
+subscription plus inherited Owner and User Access Administrator at `/`, which
+covers the proposed Azure resource, lock, and role-assignment boundary. Its
+active Entra role set includes Global Administrator, which is sufficient for the
+directory role requirement but is broader than the documented least-privileged
+Privileged Role Administrator role.
+
+The cached Microsoft Graph token has `Application.ReadWrite.All`,
+`AppRoleAssignment.ReadWrite.All`, and `Directory.AccessAsUser.All`; it does not
+currently list the hooks' exact `Application.Read.All` or `Directory.Read.All`
+scope strings. Broader effective access must not be guessed from those names.
+Before mutation, let the pinned hook use only its normal broker/browser flow,
+review any requested scopes or consent, and decode the resulting token claims.
+Stop if the exact checks still fail or the prompt asks for an unreviewed scope.
+
+The local tool baseline is Azure CLI 2.89.1, azd 1.34.1, PowerShell 7.6.6, and
+Microsoft.Graph.Authentication 2.38.0. The local Maester checkout is clean at the
+exact reviewed commit `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`.
+
+The [Azure Retail Prices API](https://learn.microsoft.com/rest/api/cost-management/retail-prices/azure-retail-prices)
+was queried at 22:17 UTC on 21 September 2026 for East US 2 consumption meters,
+and cross-checked against the [Automation pricing page](https://azure.microsoft.com/pricing/details/automation/).
+It listed paid Basic Automation runtime at
+US$0.002 per minute, Standard LRS block-blob capacity from US$0.024 per GB-month,
+Hot LRS writes at US$0.05 per 10,000 operations, and reads at US$0.004 per
+10,000 operations. A conservative one-run assumption of at most 60 paid runtime
+minutes, 1 GB retained for one day, and 10,000 reads plus 10,000 writes is under
+US$0.18 at those retail meters. The working pilot estimate is **under US$1** to
+allow for small unmodeled transactions, while the hard authorization request
+remains US$10 because free grants, negotiated billing, module acquisition, meter
+classification, and cost-reporting delay are not guaranteed by this estimate.
+
 ## Stop conditions
 
 Stop before mutation if any of these conditions occurs:
@@ -103,6 +140,8 @@ Stop before mutation if any of these conditions occurs:
   this packet;
 - preview adds an unlisted resource, role, permission, feature, or paid service;
 - the signed-in identity or effective write authority is uncertain;
+- the pinned Graph scope preflight requests an unreviewed scope or cannot prove
+  the effective permission set after normal broker/browser completion;
 - a runtime dependency resolves to unexpected content or cannot be recorded;
 - a dated estimate covering Basic Automation execution, the first runbook job,
   Standard LRS storage and retention, and module acquisition has not been recorded;
