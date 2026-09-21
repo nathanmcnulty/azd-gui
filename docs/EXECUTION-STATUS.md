@@ -98,6 +98,10 @@ creation, installed-payload verification, silent install/uninstall, and private
 artifact upload. A separate download check on Windows build 28000 verified both
 artifact hashes, version 0.1.1, the expected publisher and trusted timestamps,
 then repeated the custom-directory install, payload verification, and uninstall.
+A separate clean, network-disabled Windows Sandbox build 28000 run installed and
+verified the same payload, then stopped at the expected native missing-WebView2
+dialog without rendering simulated application state. The Sandbox account was
+elevated, so this closes only the fail-closed bootstrap gate.
 
 The release decision is **no-go** until the finite gates in
 [P7 Windows release decision](p7-release-decision-20260920.md) are owned and
