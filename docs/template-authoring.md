@@ -16,6 +16,11 @@ The GUI recalculates tools, connections, and read-only checks after edits or pro
 
 Keep requirements needed by baseline setup unconditional. The Maester contract gates its host `ExchangeOnlineManagement` module on Exchange coverage and a dashboard-specific Graph reachability check on the dashboard option. ARM and Graph baseline access remain required even for the Minimal pilot profile. Read-only checks do not prove write, role-assignment, or consent authority. Templates must implement the same feature choices themselves.
 
+The exact source-to-question review for the bundled candidate is recorded in
+[Maester Automation Account qualification](maester-automation-qualification.md).
+It includes baseline roles, optional tenant changes, cost drivers, redeployment
+behavior, evidence, cleanup, and the limits of the pinned source boundary.
+
 ## Security group input
 
 Set `"lookup": "securityGroup"` on a non-sensitive `entraObject` field to offer a name-prefix search alongside manual GUID entry. Maester's optional dashboard uses this for its allowed security group. Unknown lookup names and lookups on other field types are rejected.

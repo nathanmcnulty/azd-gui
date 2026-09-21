@@ -942,6 +942,37 @@ describe("desktop experience", () => {
     expect(screen.getByRole("checkbox", { name: /include secured web dashboard/i })).not.toBeChecked();
   });
 
+  it("clears execution approval when a Maester recommendation changes reviewed choices", async () => {
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(screen.getAllByRole("button", { name: /configure deployment/i })[1]);
+    await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), {
+      target: { value: "C:\\Deployments\\maester-profile-review" }
+    });
+    const next = async () => {
+      const button = screen.getByRole("button", { name: /^continue$/i });
+      await waitFor(() => expect(button).toBeEnabled());
+      await fireEvent.click(button);
+    };
+    await next();
+    await next();
+    // Avoid the unavailable local Exchange setup module while keeping Extended coverage.
+    await fireEvent.click(screen.getByRole("checkbox", { name: /include exchange checks/i }));
+    const reachReview = async () => {
+      for (let step = 0; step < 10 && !screen.queryByRole("heading", { name: /review deployment/i }); step += 1) await next();
+      expect(screen.getByRole("heading", { name: /review deployment/i })).toBeInTheDocument();
+    };
+    await reachReview();
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    expect(screen.getByRole("checkbox", { name: /approve pinned template code execution/i })).toBeChecked();
+    await fireEvent.click(screen.getByRole("button", { name: "Edit Maester coverage" }));
+    await fireEvent.click(screen.getByRole("button", { name: /apply minimal pilot/i }));
+    await reachReview();
+    expect(screen.getByRole("checkbox", { name: /approve pinned template code execution/i })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled();
+    expect(within(screen.getByRole("region", { name: /review advanced permissions/i })).getByText("Minimal")).toBeInTheDocument();
+  });
+
   it("shows azd credential expiration in the Connections center", async () => {
     render(App);
 

@@ -7,6 +7,25 @@ describe("optional requirements", () => {
   const entry = bundledCatalog.entries.find((entry) => entry.id === "maester-automation") ?? bundledCatalog.entries[1];
   const manifest = entry.manifest!;
 
+  it("preserves guided defaults while Minimal removes only optional feature gates", () => {
+    const defaults = Object.fromEntries(manifest.configuration.groups.flatMap((group) => group.fields)
+      .filter((field) => field.default !== undefined).map((field) => [field.id, field.default]));
+    expect(defaults).toMatchObject({ includeWebApp: false, includeExchange: true, includeTeams: true, includeAzure: true, permissionProfile: "Extended" });
+    const minimal = { ...defaults, ...manifest.recommendationProfiles!.find((profile) => profile.id === "minimalPilot")!.values };
+    expect(minimal).toMatchObject({ includeWebApp: false, includeExchange: false, includeTeams: false, includeAzure: false, permissionProfile: "Minimal", mailRecipient: "" });
+    const tools = (values: typeof minimal) => effectiveRequirements(manifest.prerequisites, manifest, values).map((item) => item.id);
+    const checks = (values: typeof minimal) => effectiveRequirements(manifest.permissionChecks!, manifest, values).map((item) => item.id);
+    expect(tools(minimal)).toEqual(["azd", "az-cli", "pwsh"]);
+    expect(checks(minimal)).toEqual(["entra-directory-access", "azure-subscription-access"]);
+    const expanded = { ...minimal, includeExchange: true, includeWebApp: true };
+    expect(tools(expanded)).toContain("exchange-online-management");
+    expect(checks(expanded)).toContain("graph-directory-read");
+    expect(calculateWizardPlan(entry, expanded).pages.some((page) => page.id === "configuration:webApp")).toBe(true);
+    expect(calculateWizardPlan(entry, minimal).pages.some((page) => page.id === "configuration:webApp")).toBe(false);
+    expect(tools(minimal)).not.toContain("exchange-online-management");
+    expect(checks(minimal)).not.toContain("graph-directory-read");
+  });
+
   it("resolves defaults, explicit choices, and invalid input without hiding requirements", () => {
     const ids = (values: Record<string, boolean | string>) => effectiveRequirements(manifest.prerequisites, manifest, values).map((item) => item.id);
     expect(ids({})).toContain("exchange-online-management");
