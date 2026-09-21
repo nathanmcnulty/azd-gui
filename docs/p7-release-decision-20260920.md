@@ -42,7 +42,9 @@ installer payload.
 2. **Maester pilot owner:** authorize the exact template revision, tenant,
    subscription, resource group/naming boundary, directory and service permissions,
    optional features, spending boundary, and cleanup owner. The prior empty-resource-
-   group pilot does not authorize or prove this solution lifecycle.
+   group pilot does not authorize or prove this solution lifecycle. The proposed
+   least-privilege boundary is recorded in the
+   [Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md).
 3. **Authentication operator:** supply a disposable identity, expected target, and
    controlled mismatched target, then complete normal browser/WAM prompts using the
    checklist in [Windows acceptance status](windows-acceptance-status.md). Device

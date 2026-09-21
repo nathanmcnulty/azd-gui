@@ -1,6 +1,6 @@
 # Execution status
 
-Updated 20 September 2026.
+Updated 21 September 2026.
 
 | Packet | Status | Baseline | Result |
 | --- | --- | --- | --- |
@@ -65,8 +65,12 @@ P5 validation:
 
 The published azd-reference `v0.2.0` receipt and `v1.1.0` validation tags were
 annotated but unsigned, so their release-attestation workflows failed. They must
-not be retargeted. A later signed patch release is required before a gallery
-template consumes those component tags as attested releases.
+not be retargeted. Reference merge `0c96cc89c554ffc3b3ca82ceda12da6591e816c1`
+prepares unchanged `deployment-receipt@0.2.1` and
+`deployment-validation@1.1.1` contracts for replacement releases. A maintainer
+with a GitHub-verifiable signing key must still publish their signed annotated
+tags and confirm both attestation workflows before a gallery template consumes
+them.
 
 P6 reused existing deterministic coverage for partial preparation, preview and
 deployment failure, cancellation, unsaved edits, environment switching, retry,
@@ -96,5 +100,10 @@ version 0.1.1, and is unsigned as expected; it is not a release artifact.
 
 The release decision is **no-go** until the finite gates in
 [P7 Windows release decision](p7-release-decision-20260920.md) are owned and
-completed. No live Maester deployment, Azure or directory mutation, signing run,
-tag, draft release, or publication was performed.
+completed. The exact proposed cloud boundary is now captured in the
+[Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md),
+including the eight baseline Graph application roles, a US$10 ceiling, stop
+conditions, evidence, and independent cleanup checks. Its source commit remains
+provisional until the required attested component patches are pinned and reviewed.
+No live Maester deployment, Azure or directory mutation, signing run, tag, draft
+release, or publication was performed.
