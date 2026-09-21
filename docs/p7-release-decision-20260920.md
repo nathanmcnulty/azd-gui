@@ -29,6 +29,7 @@ tag, draft release, or public release.
 | Downloaded NSIS installer | SHA-256 `366202e23131ca6051ac770ae8f83ba24d5a90180d42b037c58efd05bac72039` |
 | Installed executable | SHA-256 `f1df7ff009eaf0ef5face5ae546d36615b3e7c225905c463d2c6b12823e9e9d8`; runner and host verification passed |
 | Signature boundary | Both downloaded artifacts and the installed payload have valid trusted timestamps and signer `CN=Nathan McNulty, O=Nathan McNulty, L=Soldotna, S=Alaska, C=US` |
+| Missing-WebView2 boundary | A clean, network-disabled Windows Sandbox build 28000 installed the exact payload and stopped at the native missing-runtime dialog without simulated application state; its elevated account does not satisfy standard-user acceptance |
 | Independent review | final Sol high P6 review found no remaining P1 or P2 findings |
 
 The artifact remains private and expires with the workflow retention period. A

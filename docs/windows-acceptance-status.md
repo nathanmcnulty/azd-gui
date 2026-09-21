@@ -24,7 +24,7 @@ management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
-The matrix contains 26 gates: 14 Passed, 8 Not run, 3 Blocked, and 1 Failed.
+The matrix contains 26 gates: 15 Passed, 7 Not run, 3 Blocked, and 1 Failed.
 The counts describe the retained evidence across explicitly named 0.1.1 sources;
 they are not a release score. Each row states whether its evidence applies to the
 current candidate or an older revision.
@@ -48,7 +48,7 @@ current candidate or an older revision.
 | Interactive-template terminal handoff | Deterministic tests cover the saved interactive route; no signed clean-VM handoff was observed | **Not run** | Open one reviewed interactive fixture/template and confirm only the validated external-terminal route is offered. Do not deploy it. |
 | Non-sensitive persistence | Signed 0.1.1 retained theme, exact legacy draft/timestamp, and a new harmless draft across restart; SQLite integrity passed | **Passed** | None unless persistence schema or draft logic changes. |
 | Sensitive-value non-persistence | Native allowlisting and tests exist; no signed clean-VM before/after inspection with a harmless designated sensitive fixture was retained | **Not run** | Use a non-secret marker in a field declared sensitive, close/reopen, and independently confirm it is absent from SQLite and UI. Never use a real secret for this test. |
-| Missing-WebView2 fail-closed behavior | Verified portable 0.1.0 baseline stopped at the native runtime bootstrap error with no simulated operations; final 0.1.1 was not run without WebView2 | **Not run** | On a disposable snapshot, repeat with the exact tagged portable candidate, then restore the snapshot. |
+| Missing-WebView2 fail-closed behavior | Current source `3971cb1`; exact installed payload in a clean, network-disabled Windows Sandbox build `10.0.28000` stopped at the native “Could not find the WebView2 Runtime” bootstrap dialog with no simulated application state | **Passed** | Repeat only if bootstrap/runtime handling changes or against an eventual tagged artifact. The elevated `WDAGUtilityAccount` does not satisfy the separate standard-user gate. |
 | Target review, permission preflight, preview invalidation | Development GUI source `94f60f7`; approved tenant/subscription; changing the resource group cleared approval and required a fresh preview | **Passed** | Treat as host-pilot evidence. Repeat only if target/preflight logic changes, or as part of the eventual solution pilot. |
 | GUI deployment and resource view | Development GUI source `94f60f7`; reference `abc6e896620990e68360a63dd14efda66a3f75cd`; empty group `rg-gui-arm-pilot-20260919`; `azd up`, three checks, reopen, zero resources/endpoints | **Passed** | Do not repeat the empty-group pilot as solution proof. P7 must use the adopted solution and separate authorization. |
 | Retry/cancellation behavior | One preview cancelled and two previews succeeded before the successful host deployment; history persisted | **Passed** | Reuse regressions. Exercise a solution-specific safe retry/cancel path during P7. |
@@ -71,6 +71,7 @@ or private VM data.
 | --- | --- |
 | Workflow `35655808067`; `installed-artifact-verification.json` | Exact `3971cb1` build/test/signing success plus runner-side signed installer payload, version, publisher, and timestamp verification |
 | `downloaded-artifact-verification.json`; `host-installed-verification.json` | Independently downloaded current artifact hashes/signatures plus host custom-directory install, installed-payload verification, and uninstall |
+| `sandbox-install.json`; `sandbox-launch.json`; native computer-use capture | Current installed payload and signature in Windows Sandbox plus the observed missing-WebView2 native startup stop; Sandbox ran elevated and network-disabled |
 | `final-artifact-verification.json` | Downloaded portable/installer hashes, version, expected publisher, and timestamps |
 | `final-installed-verification.json` | Installed 0.1.1 hash, version, expected publisher, timestamp, and correspondence with the release receipt |
 | `output/final/upgrade-data-verification.json` | Schema/integrity plus exact legacy draft, timestamp, theme, and navigation retention |
