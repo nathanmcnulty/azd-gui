@@ -527,6 +527,8 @@ pub struct OperationEvent {
     pub progress: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<OperationOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_binding: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

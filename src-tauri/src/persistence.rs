@@ -8,10 +8,11 @@ use crate::{
     },
     redaction::redact,
 };
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> AppResult<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -70,7 +71,8 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
             completed_at TEXT,
             summary TEXT,
             outcome_json TEXT,
-            context_json TEXT
+            context_json TEXT,
+            interrupted INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS wizard_drafts (
             project_key TEXT PRIMARY KEY,
@@ -102,7 +104,43 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
             [],
         )?;
     }
+    if !column_exists(&transaction, "operation_history", "interrupted")? {
+        transaction.execute(
+            "ALTER TABLE operation_history ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn recover_interrupted_operations(connection: &mut Connection) -> AppResult<()> {
+    let timestamp = Utc::now().to_rfc3339();
+    let outcome = serde_json::to_string(&crate::models::OperationOutcome {
+        resource_state: "possiblyModified".into(),
+        summary: "The app closed before this operation reported completion.".into(),
+        guidance: "Refresh the environment and review the retained output before retrying.".into(),
+        retryable: true,
+    })?;
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "UPDATE projects
+         SET state = 'attention', last_operation = ?1
+         WHERE path IN (
+             SELECT project_path FROM operation_history WHERE state IN ('queued', 'running')
+         )",
+        [&timestamp],
+    )?;
+    transaction.execute(
+        "UPDATE operation_history
+         SET state = 'failed', completed_at = ?1,
+             summary = 'The app closed before this operation reported completion.',
+             outcome_json = ?2,
+             interrupted = 1
+         WHERE state IN ('queued', 'running')",
+        params![timestamp, outcome],
+    )?;
     transaction.commit()?;
     Ok(())
 }
@@ -119,6 +157,7 @@ impl Database {
         let mut connection = Connection::open(path)?;
         connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         migrate(&mut connection)?;
+        recover_interrupted_operations(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
         })
@@ -492,6 +531,45 @@ impl Database {
         self.record_operation_with_context(event, project_path, None)
     }
 
+    pub fn begin_operation(
+        &self,
+        operation_id: &str,
+        kind: &str,
+        project_path: &str,
+        context: Option<&OperationEvidenceContext>,
+    ) -> AppResult<()> {
+        if ![
+            "up",
+            "provision",
+            "preview",
+            "deploy",
+            "refresh",
+            "show",
+            "down",
+        ]
+        .contains(&kind)
+        {
+            return Err(AppError::Invalid(
+                "Only azd lifecycle operations are persisted.".into(),
+            ));
+        }
+        let project_path = self.stored_project_path(project_path)?;
+        let timestamp = Utc::now().to_rfc3339();
+        let context_json = context.map(serde_json::to_string).transpose()?;
+        let connection = self.lock()?;
+        connection.execute(
+            "INSERT INTO operation_history
+             (id, project_path, kind, state, started_at, summary, context_json)
+             VALUES (?1, ?2, ?3, 'running', ?4, 'Operation started.', ?5)",
+            params![operation_id, project_path, kind, timestamp, context_json],
+        )?;
+        connection.execute(
+            "UPDATE projects SET last_operation = ?1 WHERE path = ?2",
+            params![timestamp, project_path],
+        )?;
+        Ok(())
+    }
+
     pub fn record_operation_with_context(
         &self,
         event: &OperationEvent,
@@ -536,7 +614,8 @@ impl Database {
              ON CONFLICT(id) DO UPDATE SET
              state=excluded.state, completed_at=excluded.completed_at,
              summary=excluded.summary, outcome_json=excluded.outcome_json,
-             context_json=COALESCE(excluded.context_json, operation_history.context_json)",
+             context_json=COALESCE(excluded.context_json, operation_history.context_json),
+             interrupted=0",
             params![
                 event.operation_id,
                 project_path,
@@ -571,7 +650,7 @@ impl Database {
         let project_path = self.stored_project_path(project_path)?;
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id, kind, COALESCE(completed_at, started_at), context_json
+            "SELECT id, kind, COALESCE(completed_at, started_at), context_json, interrupted
              FROM operation_history
              WHERE project_path = ?1
              ORDER BY COALESCE(completed_at, started_at) DESC
@@ -579,7 +658,8 @@ impl Database {
         )?;
         let rows = statement.query_map([project_path], |row| {
             let context_json: Option<String> = row.get(3)?;
-            let context = context_json
+            let interrupted: bool = row.get(4)?;
+            let context = if interrupted { None } else { context_json }
                 .map(|value| {
                     serde_json::from_str(&value).map_err(|error| {
                         rusqlite::Error::FromSqlConversionFailure(
@@ -600,11 +680,20 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub fn operation_history(&self, project_path: &str) -> AppResult<Vec<OperationEvent>> {
+        self.operation_history_for_environment(project_path, None)
+    }
+
+    pub fn operation_history_for_environment(
+        &self,
+        project_path: &str,
+        environment: Option<&str>,
+    ) -> AppResult<Vec<OperationEvent>> {
         let project_path = self.stored_project_path(project_path)?;
         let connection = self.lock()?;
         let mut statement = connection.prepare(
-            "SELECT id, kind, state, COALESCE(completed_at, started_at), summary, outcome_json
+            "SELECT id, kind, state, COALESCE(completed_at, started_at), summary, outcome_json, context_json
              FROM operation_history
              WHERE project_path = ?1
              ORDER BY COALESCE(completed_at, started_at) DESC
@@ -613,6 +702,7 @@ impl Database {
         let rows = statement.query_map([project_path], |row| {
             let state: String = row.get(2)?;
             let outcome_json: Option<String> = row.get(5)?;
+            let context_json: Option<String> = row.get(6)?;
             let outcome = outcome_json
                 .map(|value| {
                     serde_json::from_str(&value).map_err(|error| {
@@ -624,6 +714,22 @@ impl Database {
                     })
                 })
                 .transpose()?;
+            let context = context_json
+                .map(|value| {
+                    serde_json::from_str::<OperationEvidenceContext>(&value).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?;
+            let environment_binding = environment.map(|expected| match context {
+                Some(context) if context.environment.eq_ignore_ascii_case(expected) => "current",
+                Some(_) => "other",
+                None => "unbound",
+            });
             Ok(OperationEvent {
                 operation_id: row.get(0)?,
                 kind: row.get(1)?,
@@ -640,6 +746,7 @@ impl Database {
                 message: row.get(4)?,
                 progress: None,
                 outcome,
+                environment_binding: environment_binding.map(str::to_string),
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -945,6 +1052,7 @@ mod tests {
                 guidance: "Review output before retrying.".into(),
                 retryable: true,
             }),
+            environment_binding: None,
         };
 
         database.record_operation(&event, &project.path).unwrap();
@@ -976,6 +1084,67 @@ mod tests {
     }
 
     #[test]
+    fn reopening_recovers_an_interrupted_operation_as_attention() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite");
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some("sample".into()),
+            revision: None,
+            last_operation: None,
+            state: "ready".into(),
+        };
+        let context = OperationEvidenceContext {
+            project_id: project.id.clone(),
+            environment: "dev".into(),
+            azure_cloud: Some("AzureCloud".into()),
+            tenant_id: None,
+            subscription_id: None,
+            resource_group: None,
+            template_id: "sample".into(),
+            revision: None,
+            contract_digest: None,
+        };
+        {
+            let database = Database::open(&path).unwrap();
+            database.upsert_project(&project).unwrap();
+            database
+                .begin_operation("operation-interrupted", "up", &project.path, Some(&context))
+                .unwrap();
+            assert_eq!(
+                database.operation_history(&project.path).unwrap()[0].state,
+                "running"
+            );
+        }
+
+        let reopened = Database::open(&path).unwrap();
+        let history = reopened.operation_history(&project.path).unwrap();
+        let recovered = &history[0];
+        assert_eq!(recovered.state, "failed");
+        assert_eq!(
+            recovered.outcome.as_ref().unwrap().resource_state,
+            "possiblyModified"
+        );
+        assert!(recovered.outcome.as_ref().unwrap().retryable);
+        assert_eq!(recovered.environment_binding.as_deref(), None);
+        assert_eq!(
+            reopened
+                .operation_history_for_environment(&project.path, Some("dev"))
+                .unwrap()[0]
+                .environment_binding
+                .as_deref(),
+            Some("current")
+        );
+        assert!(reopened.evidence_operations(&project.path).unwrap()[0]
+            .context
+            .is_none());
+        assert_eq!(reopened.projects().unwrap()[0].state, "attention");
+    }
+
+    #[test]
     fn operation_history_redacts_messages_at_the_storage_boundary() {
         let directory = tempdir().unwrap();
         let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
@@ -994,6 +1163,7 @@ mod tests {
                 guidance: "Retry without Authorization: Bearer abcdefghijklmnopqrstuvwxyz".into(),
                 retryable: true,
             }),
+            environment_binding: None,
         };
 
         database
@@ -1033,6 +1203,7 @@ mod tests {
             message: "complete".into(),
             progress: Some(100),
             outcome: None,
+            environment_binding: None,
         };
         let context = OperationEvidenceContext {
             project_id: project.id.clone(),
@@ -1048,6 +1219,22 @@ mod tests {
         database
             .record_operation_with_context(&event, &project.path, Some(&context))
             .unwrap();
+        assert_eq!(
+            database
+                .operation_history_for_environment(&project.path, Some("dev"))
+                .unwrap()[0]
+                .environment_binding
+                .as_deref(),
+            Some("current")
+        );
+        assert_eq!(
+            database
+                .operation_history_for_environment(&project.path, Some("staging"))
+                .unwrap()[0]
+                .environment_binding
+                .as_deref(),
+            Some("other")
+        );
         assert!(
             !serde_json::to_string(&database.operation_history(&project.path).unwrap())
                 .unwrap()
@@ -1067,6 +1254,18 @@ mod tests {
         let mut legacy = event;
         legacy.operation_id = "33333333-3333-3333-3333-333333333333".into();
         database.record_operation(&legacy, &project.path).unwrap();
+        let history = database
+            .operation_history_for_environment(&project.path, Some("dev"))
+            .unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .find(|item| item.operation_id == legacy.operation_id)
+                .unwrap()
+                .environment_binding
+                .as_deref(),
+            Some("unbound")
+        );
         assert!(database
             .evidence_operations(&project.path)
             .unwrap()

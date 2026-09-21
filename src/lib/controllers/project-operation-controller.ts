@@ -23,9 +23,8 @@ export type ProjectWorkspaceSnapshot = {
 };
 
 export async function loadProjectWorkspace(project: ProjectSummary): Promise<ProjectWorkspaceSnapshot> {
-  const [environmentsResult, historyResult, templateResult] = await Promise.allSettled([
+  const [environmentsResult, templateResult] = await Promise.allSettled([
     listProjectEnvironments(project.path),
-    getOperationHistory(project.path),
     getProjectTemplate(project.path)
   ]);
   const environments =
@@ -36,8 +35,9 @@ export async function loadProjectWorkspace(project: ProjectSummary): Promise<Pro
         : [];
   const currentEnvironment =
     environments.find((environment) => environment.isDefault)?.name ?? project.environment;
-  const [stateResult] = await Promise.allSettled([
-    getProjectState(project.path, currentEnvironment)
+  const [stateResult, historyResult] = await Promise.allSettled([
+    getProjectState(project.path, currentEnvironment),
+    getOperationHistory(project.path, currentEnvironment)
   ]);
   return {
     template: templateResult.status === "fulfilled" ? templateResult.value : null,

@@ -9,7 +9,8 @@ Updated 20 September 2026.
 | P3 — Explain external and existing-project trust accurately | **Complete** | `4284f0fff388a8da754b57a39b2fd9fd424fc701` | Source states, revision and digest limits, mutable working trees, re-review routes, and contract-bound preparation/lifecycle approvals are explicit and fail closed. |
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
-| P6–P7 | **Not started** | — | Follow [EXECUTION-PLAN.md](EXECUTION-PLAN.md) in order. |
+| P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
+| P7 — Controlled pilot and release decision | **Blocked on external gates** | — | Local release checks can proceed; a live Maester pilot, clean-account sign-in, signed reference component patch releases, and final signed candidate require their recorded authorization or operator input. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -67,6 +68,27 @@ annotated but unsigned, so their release-attestation workflows failed. They must
 not be retargeted. A later signed patch release is required before a gallery
 template consumes those component tags as attested releases.
 
-Next P6 step: exercise deterministic failure, restart, environment-switch,
-unsaved-edit, retry, cancellation, and teardown paths; fix only demonstrated
-management-state gaps.
+P6 reused existing deterministic coverage for partial preparation, preview and
+deployment failure, cancellation, unsaved edits, environment switching, retry,
+and teardown. It fixed the remaining identity and restart gaps: unknown events no
+longer fall back to the selected project, early terminal events are replayed only
+after their project and environment are registered, cancellation is reserved
+before an operation ID becomes visible, and app closure leaves a recoverable local
+attention record. Interrupted context stays private and usable for history scope,
+but cannot make producer evidence current. Retained operations are labeled as the
+current, another, or an unknown environment; only current-environment history can
+be retried.
+
+P6 validation:
+
+- `npm run verify`: 135 frontend tests and 153 native tests passed; 3 native
+  integration tests remained explicitly ignored;
+- focused operation, catalog recovery, controller, persistence, immediate-cancel,
+  and reopen recovery tests passed;
+- `npm run audit:dependencies` reported no npm or Rust advisories;
+- final Sol high review reported no remaining P1 or P2 findings.
+
+Next P7 step: select the exact merged GUI revision and complete every authorized
+local release gate. Do not start the live Maester solution deployment, component
+signing, clean-account authentication, or application signing without the input
+and authorization recorded in the Windows acceptance matrix.
