@@ -1,4 +1,10 @@
-use crate::validation_report::{read_fixed_report_bytes, ValidationReportState};
+use crate::{
+    evidence::{
+        correlate, parse_evidence, EvidenceBindingState, EvidenceNextAction, EvidenceParseError,
+        ExpectedEvidenceContext,
+    },
+    validation_report::{read_fixed_report_bytes, ValidationReportState},
+};
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
@@ -17,6 +23,7 @@ pub enum DeploymentReceiptState {
     Invalid,
     UnsafePath,
     TooLarge,
+    FutureVersion,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +51,8 @@ pub struct DeploymentReceipt {
     pub summary: ReceiptSummary,
     pub artifact_count: usize,
     pub outstanding_action_count: usize,
+    pub binding_state: EvidenceBindingState,
+    pub next_actions: Vec<EvidenceNextAction>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -77,8 +86,16 @@ struct RawDeploymentReceipt {
     details: Map<String, serde_json::Value>,
 }
 
+#[cfg(test)]
 pub fn read(project_root: &Path) -> DeploymentReceiptRead {
-    match read_inner(project_root) {
+    read_with_context(project_root, None)
+}
+
+pub fn read_with_context(
+    project_root: &Path,
+    expected: Option<&ExpectedEvidenceContext>,
+) -> DeploymentReceiptRead {
+    match read_inner(project_root, expected) {
         Ok(receipt) => DeploymentReceiptRead {
             state: DeploymentReceiptState::Available,
             receipt: Some(receipt),
@@ -87,15 +104,39 @@ pub fn read(project_root: &Path) -> DeploymentReceiptRead {
     }
 }
 
-fn read_inner(project_root: &Path) -> Result<DeploymentReceipt, DeploymentReceiptState> {
+fn read_inner(
+    project_root: &Path,
+    expected: Option<&ExpectedEvidenceContext>,
+) -> Result<DeploymentReceipt, DeploymentReceiptState> {
     let bytes = read_fixed_report_bytes(project_root, RECEIPT_FILE, MAX_RECEIPT_BYTES)
         .map_err(map_report_state)?;
-    let raw: RawDeploymentReceipt =
+    let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| DeploymentReceiptState::Invalid)?;
+    let schema = value
+        .get("schemaVersion")
+        .and_then(serde_json::Value::as_str)
+        .ok_or(DeploymentReceiptState::Invalid)?;
+    if schema != "1.0" && schema != "1.1" {
+        return Err(
+            if schema
+                .split_once('.')
+                .and_then(|(major, minor)| {
+                    Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
+                })
+                .is_some_and(|(major, minor)| major > 1 || major == 1 && minor > 1)
+            {
+                DeploymentReceiptState::FutureVersion
+            } else {
+                DeploymentReceiptState::Invalid
+            },
+        );
+    }
+    let raw: RawDeploymentReceipt =
+        serde_json::from_value(value).map_err(|_| DeploymentReceiptState::Invalid)?;
     let generated_at = DateTime::parse_from_rfc3339(&raw.generated_at)
         .map_err(|_| DeploymentReceiptState::Invalid)?;
 
-    if raw.schema_version != "1.0"
+    if !matches!(raw.schema_version.as_str(), "1.0" | "1.1")
         || raw.template.is_empty()
         || raw.template_version.is_empty()
         || raw.artifacts.len() > MAX_ARTIFACTS
@@ -109,13 +150,34 @@ fn read_inner(project_root: &Path) -> Result<DeploymentReceipt, DeploymentReceip
         return Err(DeploymentReceiptState::Invalid);
     }
 
-    let _ = raw.details;
+    let evidence_value = raw.details.get("azdManagementEvidence");
+    let (binding_state, next_actions) = if raw.schema_version == "1.0" {
+        if evidence_value.is_some() {
+            return Err(DeploymentReceiptState::Invalid);
+        }
+        (EvidenceBindingState::LegacyUnbound, Vec::new())
+    } else {
+        let value = evidence_value.ok_or(DeploymentReceiptState::Invalid)?;
+        let evidence = parse_evidence(
+            value,
+            &["resourceMutation", "cleanup"],
+            &["provision", "deploy", "up", "down", "cleanup"],
+        )
+        .map_err(|error| match error {
+            EvidenceParseError::Invalid => DeploymentReceiptState::Invalid,
+            EvidenceParseError::FutureVersion => DeploymentReceiptState::FutureVersion,
+        })?;
+        let binding_state = correlate(&evidence, expected);
+        (binding_state, evidence.next_actions)
+    };
     Ok(DeploymentReceipt {
         generated_at: generated_at.to_rfc3339(),
         mode: raw.mode,
         summary: raw.summary,
         artifact_count: raw.artifacts.len(),
         outstanding_action_count: raw.operational_actions.len(),
+        binding_state,
+        next_actions,
     })
 }
 
@@ -126,6 +188,7 @@ fn map_report_state(state: ValidationReportState) -> DeploymentReceiptState {
         ValidationReportState::Invalid => DeploymentReceiptState::Invalid,
         ValidationReportState::UnsafePath => DeploymentReceiptState::UnsafePath,
         ValidationReportState::TooLarge => DeploymentReceiptState::TooLarge,
+        ValidationReportState::FutureVersion => DeploymentReceiptState::FutureVersion,
     }
 }
 
@@ -144,7 +207,10 @@ fn is_safe_artifact_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{read, DeploymentReceiptState, MAX_RECEIPT_BYTES};
+    use super::{read, read_with_context, DeploymentReceiptState, MAX_RECEIPT_BYTES};
+    use crate::evidence::{
+        ExpectedEvidenceContext, OperationEvidenceContext, PersistedEvidenceOperation,
+    };
     use serde_json::json;
     use std::fs;
     use tempfile::tempdir;
@@ -161,6 +227,65 @@ mod tests {
             serde_json::to_vec(&value).unwrap(),
         )
         .unwrap();
+    }
+
+    fn expected() -> ExpectedEvidenceContext {
+        let context = OperationEvidenceContext {
+            project_id: "project-example".into(),
+            environment: "dev".into(),
+            azure_cloud: Some("AzureCloud".into()),
+            tenant_id: Some("00000000-0000-0000-0000-000000000000".into()),
+            subscription_id: Some("11111111-1111-1111-1111-111111111111".into()),
+            resource_group: Some("rg-example-dev".into()),
+            template_id: "example".into(),
+            revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            contract_digest: Some("a".repeat(64)),
+        };
+        ExpectedEvidenceContext {
+            current: context.clone(),
+            operations: vec![PersistedEvidenceOperation {
+                id: "22222222-2222-2222-2222-222222222222".into(),
+                kind: "up".into(),
+                timestamp: "2026-09-20T12:00:00Z".into(),
+                context: Some(context),
+            }],
+        }
+    }
+
+    #[test]
+    fn round_trips_the_pinned_bound_producer_fixture() {
+        let root = tempdir().unwrap();
+        let value = serde_json::from_str(include_str!(
+            "../tests/fixtures/deployment-receipt-bound-v1.1.json"
+        ))
+        .unwrap();
+        write_receipt(root.path(), value);
+        let result = read_with_context(root.path(), Some(&expected()));
+        assert_eq!(result.state, DeploymentReceiptState::Available);
+        let receipt = result.receipt.unwrap();
+        assert_eq!(
+            receipt.binding_state,
+            crate::evidence::EvidenceBindingState::Current
+        );
+        assert_eq!(receipt.next_actions.len(), 1);
+        let serialized = serde_json::to_string(&receipt).unwrap();
+        assert!(!serialized.contains("11111111-1111"));
+        assert!(!serialized.contains("rg-example-dev"));
+    }
+
+    #[test]
+    fn distinguishes_future_outer_contracts() {
+        let root = tempdir().unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/deployment-receipt-bound-v1.1.json"
+        ))
+        .unwrap();
+        value["schemaVersion"] = json!("2.0");
+        write_receipt(root.path(), value);
+        assert_eq!(
+            read(root.path()).state,
+            DeploymentReceiptState::FutureVersion
+        );
     }
 
     #[test]

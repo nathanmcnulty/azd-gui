@@ -1,0 +1,52 @@
+{
+  "schemaVersion": "1.1",
+  "generatedAt": "2026-09-20T12:00:00.0000000Z",
+  "template": "example",
+  "templateVersion": "0.2.0",
+  "mode": "enforce",
+  "summary": {
+    "applied": 1,
+    "unchanged": 0,
+    "skipped": 0,
+    "warnings": 0,
+    "failed": 0
+  },
+  "artifacts": [
+    "reports/deployment-validation.json"
+  ],
+  "operationalActions": [],
+  "details": {
+    "azdManagementEvidence": {
+      "version": "1",
+      "evidenceClass": "resourceMutation",
+      "binding": {
+        "target": {
+          "tenantId": "00000000-0000-0000-0000-000000000000",
+          "resourceGroup": "rg-example-dev",
+          "azureCloud": "AzureCloud",
+          "subscriptionId": "11111111-1111-1111-1111-111111111111"
+        },
+        "operation": {
+          "kind": "up",
+          "id": "22222222-2222-2222-2222-222222222222"
+        },
+        "project": {
+          "environment": "dev",
+          "id": "project-example"
+        },
+        "source": {
+          "revision": "0123456789abcdef0123456789abcdef01234567",
+          "templateId": "example",
+          "contractDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "nextActions": [
+        {
+          "code": "verifyResources",
+          "owner": "subscriptionOwner",
+          "priority": "required"
+        }
+      ]
+    }
+  }
+}

@@ -6,6 +6,7 @@ mod connections;
 mod deployment;
 mod deployment_receipt;
 mod error;
+mod evidence;
 mod execution_approval;
 mod local_source;
 mod manifest;
@@ -21,6 +22,7 @@ mod validation_report;
 use crate::{
     command_runner::{spawn_operation, OperationManager, OperationPersistence},
     error::{AppError, AppResult},
+    evidence::{read_target_values, ExpectedEvidenceContext, OperationEvidenceContext},
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogEntry, CatalogSource,
         ConnectionStatus, ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest,
@@ -386,6 +388,7 @@ async fn start_azd_operation(
         )));
     }
     let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
+    let mut persistence_context = None;
     if matches!(
         action.as_str(),
         "preview" | "up" | "provision" | "deploy" | "down"
@@ -418,6 +421,9 @@ async fn start_azd_operation(
         } else {
             None
         };
+        if let (Some(project), Some(snapshot)) = (project.as_ref(), snapshot.as_ref()) {
+            persistence_context = Some(operation_evidence_context(project, snapshot, environment));
+        }
         state.execution_approvals.consume(
             token,
             ExecutionApprovalRequest {
@@ -428,8 +434,10 @@ async fn start_azd_operation(
                     .as_ref()
                     .and_then(|project| project.template_id.clone())
                     .unwrap_or_default(),
-                revision: project.and_then(|project| project.revision),
-                snapshot_digest: snapshot.map(|snapshot| snapshot.digest),
+                revision: project
+                    .as_ref()
+                    .and_then(|project| project.revision.clone()),
+                snapshot_digest: snapshot.as_ref().map(|snapshot| snapshot.digest.clone()),
                 source_binding: None,
             },
         )?;
@@ -439,10 +447,16 @@ async fn start_azd_operation(
         state.operations.clone(),
         action,
         spec,
-        Some(OperationPersistence::new(
-            state.database.clone(),
-            canonical.display().to_string(),
-        )),
+        Some(match persistence_context {
+            Some(context) => OperationPersistence::with_context(
+                state.database.clone(),
+                canonical.display().to_string(),
+                context,
+            ),
+            None => {
+                OperationPersistence::new(state.database.clone(), canonical.display().to_string())
+            }
+        }),
     )
 }
 
@@ -671,9 +685,11 @@ fn get_project_validation_report(
         .database
         .project_by_path(&canonical)?
         .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
-    Ok(validation_report::read(
+    let expected = expected_evidence_context(&state.database, &project)?;
+    Ok(validation_report::read_with_context(
         &root,
         project.environment.as_deref(),
+        Some(&expected),
     ))
 }
 
@@ -688,7 +704,58 @@ fn get_project_deployment_receipt(
         .database
         .project_by_path(&canonical)?
         .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
-    Ok(deployment_receipt::read(Path::new(&project.path)))
+    let expected = expected_evidence_context(&state.database, &project)?;
+    Ok(deployment_receipt::read_with_context(
+        Path::new(&project.path),
+        Some(&expected),
+    ))
+}
+
+fn operation_evidence_context(
+    project: &ProjectSummary,
+    snapshot: &ProjectTemplateSnapshot,
+    environment: &str,
+) -> OperationEvidenceContext {
+    let target = read_target_values(Path::new(&project.path), environment);
+    OperationEvidenceContext {
+        project_id: project.id.clone(),
+        environment: environment.to_string(),
+        azure_cloud: target.azure_cloud,
+        tenant_id: target.tenant_id,
+        subscription_id: target.subscription_id,
+        resource_group: target.resource_group,
+        template_id: snapshot.entry.id.clone(),
+        revision: (snapshot.entry.commit != "local").then(|| snapshot.entry.commit.clone()),
+        contract_digest: Some(snapshot.digest.clone()),
+    }
+}
+
+fn expected_evidence_context(
+    database: &Database,
+    project: &ProjectSummary,
+) -> AppResult<ExpectedEvidenceContext> {
+    let snapshot = database.project_template(&project.path)?;
+    let environment = project.environment.clone().unwrap_or_default();
+    let current = if let Some(snapshot) = snapshot {
+        operation_evidence_context(project, &snapshot, &environment)
+    } else {
+        let target = read_target_values(Path::new(&project.path), &environment);
+        OperationEvidenceContext {
+            project_id: project.id.clone(),
+            environment,
+            azure_cloud: target.azure_cloud,
+            tenant_id: target.tenant_id,
+            subscription_id: target.subscription_id,
+            resource_group: target.resource_group,
+            template_id: project.template_id.clone().unwrap_or_default(),
+            revision: project.revision.clone(),
+            contract_digest: None,
+        }
+    };
+    Ok(ExpectedEvidenceContext {
+        current,
+        operations: database.evidence_operations(&project.path)?,
+    })
 }
 
 #[tauri::command]
@@ -1232,8 +1299,8 @@ mod catalog_review_tests {
 mod interactive_lifecycle_tests {
     use super::{
         catalog, ensure_project_lifecycle_route, ensure_registered_project_lifecycle_contract,
-        validate_registered_project_approval, Database, ExecutionApprovalRequest, ProjectSummary,
-        ProjectTemplateSnapshot,
+        operation_evidence_context, validate_registered_project_approval, Database,
+        ExecutionApprovalRequest, ProjectSummary, ProjectTemplateSnapshot,
     };
     use tempfile::tempdir;
 
@@ -1281,6 +1348,43 @@ mod interactive_lifecycle_tests {
         let mut stale = request;
         stale.snapshot_digest = Some("a".repeat(64));
         assert!(validate_registered_project_approval(&database, stale).is_err());
+    }
+
+    #[test]
+    fn operation_evidence_uses_the_approved_environment_not_the_saved_selection() {
+        let directory = tempdir().unwrap();
+        for (environment, subscription) in [
+            ("dev", "11111111-1111-1111-1111-111111111111"),
+            ("staging", "22222222-2222-2222-2222-222222222222"),
+        ] {
+            let environment_dir = directory.path().join(".azure").join(environment);
+            std::fs::create_dir_all(&environment_dir).unwrap();
+            std::fs::write(
+                environment_dir.join(".env"),
+                format!("AZURE_SUBSCRIPTION_ID={subscription}\n"),
+            )
+            .unwrap();
+        }
+        let entry = catalog::entry_by_id("myworkid").unwrap();
+        let snapshot = ProjectTemplateSnapshot::new(entry.clone()).unwrap();
+        let project = ProjectSummary {
+            id: "sample-dev".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some(entry.id),
+            revision: Some(entry.commit),
+            last_operation: None,
+            state: "ready".into(),
+        };
+
+        let context = operation_evidence_context(&project, &snapshot, "staging");
+
+        assert_eq!(context.environment, "staging");
+        assert_eq!(
+            context.subscription_id.as_deref(),
+            Some("22222222-2222-2222-2222-222222222222")
+        );
     }
 
     #[test]
