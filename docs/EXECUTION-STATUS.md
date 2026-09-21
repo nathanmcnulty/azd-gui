@@ -10,7 +10,7 @@ Updated 21 September 2026.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Component gate complete; no-go** | `b008e2e27060098db14dd1388ba6b9995469ad73` | Signed component patches are published and adopted by the exact Maester source. Live Maester, clean-account auth, application signing/clean-VM acceptance, and historical-installer decision remain external gates. |
+| P7 — Controlled pilot and release decision | **Signing gate complete; no-go** | `3971cb1f685eae93c48c0fa37972b226d29e286f` | Signed component patches are adopted by the exact Maester source, and the exact GUI candidate is signed and privately verified. Live Maester, clean-account auth, affected clean-VM acceptance, and the historical-installer decision remain external gates. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -90,11 +90,14 @@ P6 validation:
 - `npm run audit:dependencies` reported no npm or Rust advisories;
 - final Sol high review reported no remaining P1 or P2 findings.
 
-P7 selected GUI main `b008e2e` and completed the authorized local release gates:
-clean dependency installation, version agreement at 0.1.1, integrated validation,
-dependency audits, and a Windows release-profile compile without bundling. The
-resulting local executable has SHA-256 `b6f44c3...148d9c`, reports product/file
-version 0.1.1, and is unsigned as expected; it is not a release artifact.
+P7 selected GUI source `3971cb1` and completed the authorized private signing
+gate in [workflow 35655808067](https://github.com/nathanmcnulty/azd-gui/actions/runs/35655808067).
+The workflow passed dependency audits, 135 frontend tests, Rust formatting and
+Clippy, 153 native tests, release build, Azure OIDC, Trusted Signing, checksum
+creation, installed-payload verification, silent install/uninstall, and private
+artifact upload. A separate download check on Windows build 28000 verified both
+artifact hashes, version 0.1.1, the expected publisher and trusted timestamps,
+then repeated the custom-directory install, payload verification, and uninstall.
 
 The release decision is **no-go** until the finite gates in
 [P7 Windows release decision](p7-release-decision-20260920.md) are owned and
@@ -104,5 +107,4 @@ including the eight baseline Graph application roles, a US$10 ceiling, stop
 conditions, evidence, and independent cleanup checks. Its source commit is now
 fixed at `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` with the attested component
 patches pinned and reviewed. No live Maester deployment, Azure or directory
-mutation, application signing run, application tag, draft release, or
-publication was performed.
+mutation, application tag, draft release, or publication was performed.

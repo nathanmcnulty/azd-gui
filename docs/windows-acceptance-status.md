@@ -14,28 +14,31 @@ Status meanings:
 - **Failed** — a qualifying attempt found a defect or invalid artifact.
 
 The current signed application candidate is version 0.1.1 from source
-`179b89e32b7d2990127f489bf25f4c230d164db6`, built by
-[workflow 35497506640](https://github.com/nathanmcnulty/azd-gui/actions/runs/35497506640).
-The current locally qualified source is
-`b008e2e27060098db14dd1388ba6b9995469ad73`; it contains application and
-persistence changes through P6 and therefore requires a new signed candidate and
-affected acceptance gates. See the [P7 release decision](p7-release-decision-20260920.md).
+`3971cb1f685eae93c48c0fa37972b226d29e286f`, built by
+[workflow 35655808067](https://github.com/nathanmcnulty/azd-gui/actions/runs/35655808067).
+It contains the application and persistence changes through P6 plus the exact
+Maester evidence-consumer adoption. The workflow and a separate host download
+check verified the signatures, checksums, version, installer payload, silent
+install, and uninstall. Clean-profile authentication and affected visual and
+management gates remain open. See the
+[P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
 The matrix contains 26 gates: 14 Passed, 8 Not run, 3 Blocked, and 1 Failed.
-The counts describe the retained signed-0.1.1 evidence snapshot; they are not a
-release score and do not transfer unchanged to local candidate `b008e2e`.
+The counts describe the retained evidence across explicitly named 0.1.1 sources;
+they are not a release score. Each row states whether its evidence applies to the
+current candidate or an older revision.
 
 ## Current gate matrix
 
 | Gate | Exact artifact/source and evidence | Status | Next owner action |
 | --- | --- | --- | --- |
-| Application validation and signing | Source `179b89e`; workflow `35497506640`; dependency audits, frontend/native checks, release build, signing, installed-payload verification | **Passed** | Release owner selects the final application revision. Repeat only if application, dependencies, packaging, or workflow behavior changes. |
-| Downloaded release artifacts | Portable `a8dfe371685f39340d871af0418cd019ecf1dae24d4ebca3a11b091f39e3e2e0`; NSIS `a5e906f69bff52f299b7d5f230cffa965ac6dee46fafd73a10d5a4b49c5c9820`; expected publisher and timestamps valid | **Passed** | Rerun `verify-release-artifacts.ps1` against artifacts downloaded from the eventual tagged draft, using its exact source and version. |
-| Installed payload | 0.1.1 installed executable `34d92922abf4734206c2af75ef059cf5a8a9a0bfb0f8e25fff2fc2da10ed7c24`; receipt/hash/version/publisher verified before launch | **Passed** | Repeat for an eventual tagged draft because release assets are a new evidence boundary. |
-| Clean standard-user Windows 11 installation and startup | Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Retain as exact-image evidence. Record a supported production Windows build when selecting the beta release image. |
+| Application validation and signing | Source `3971cb1`; workflow `35655808067`; dependency audits, 135 frontend tests, Rust format/Clippy, 153 native tests, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
+| Downloaded release artifacts | Current portable `8770f927399b1dc74492961831c2f0380607fc09e7a9e5154215a060aa2a870c`; NSIS `366202e23131ca6051ac770ae8f83ba24d5a90180d42b037c58efd05bac72039`; host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
+| Installed payload | Current installed executable `f1df7ff009eaf0ef5face5ae546d36615b3e7c225905c463d2c6b12823e9e9d8`; runner and host checks verified version, signature, publisher, timestamp, install, and uninstall | **Passed** | Repeat on the clean acceptance image and for an eventual tagged draft. |
+| Clean standard-user Windows 11 installation and startup | Older source `179b89e`; Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Repeat startup and affected surfaces for current source `3971cb1`; record a supported production Windows build when selecting the beta release image. |
 | Windows 10 coverage | No retained Windows 10 native acceptance for 0.1.1 | **Not run** | Release owner decides whether Windows 11 evidence is sufficient for the beta claim or runs the affected gates on a supported Windows 10 x64 image. |
-| Native shell and admin surfaces | Signed 0.1.1 Home, Catalog, Wizard, Connections, Tools, and Settings; dark theme; new draft save/reopen | **Passed** | Repeat only surfaces affected after `179b89e`, then repeat the full visual pass for the tagged draft. |
+| Native shell and admin surfaces | Older source `179b89e`; signed 0.1.1 Home, Catalog, Wizard, Connections, Tools, and Settings; dark theme; new draft save/reopen | **Passed** | Repeat surfaces affected after `179b89e` against current source `3971cb1`, then repeat the full visual pass for the tagged draft. |
 | Missing prerequisites | Signed 0.1.1 clean profile reported six missing tools and no connected accounts without installation, elevation, or simulated success | **Passed** | None unless tool detection or empty-state guidance changes. |
 | Install prerequisites and refresh versions | Installed tools refreshed correctly in the host development build; they were not installed in the signed clean VM | **Not run** | Clean-VM operator installs supported prerequisites from official sources, restarts signed candidate, and records detected versions. |
 | Clean-machine interactive authentication | Signed clean VM remained offline/disconnected; cached host authentication is separate evidence | **Blocked** | User supplies the disposable identity/tenant and completes normal browser/WAM prompts. Follow the checklist below; never use device code. |
@@ -57,14 +60,17 @@ release score and do not transfer unchanged to local candidate `b008e2e`.
 | Standard-user uninstall | Signed 0.1.1 uninstaller returned zero and installed executable was absent | **Passed** | Repeat for the eventual tagged draft. |
 | Tag, draft release, and publication | No 0.1.1 tag/draft; interactive auth and several exact-candidate gates remain open; historical upgrade failed | **Blocked** | User authorizes tag/signing/publication only after the matrix is reconciled for the selected release revision and accepts or resolves the historical migration limitation. |
 
-Private receipts and snapshots remain under
-`E:\azd-gui-acceptance-remaining`; they are evidence inputs, not repository
-content. Do not commit credentials, raw CLI environments, or private VM data.
+Private receipts and snapshots remain outside the repository under the existing
+acceptance store and the run-specific private artifact store. They are evidence
+inputs, not repository content. Do not commit credentials, raw CLI environments,
+or private VM data.
 
 ### Evidence ledger
 
 | Retained evidence | Establishes |
 | --- | --- |
+| Workflow `35655808067`; `installed-artifact-verification.json` | Exact `3971cb1` build/test/signing success plus runner-side signed installer payload, version, publisher, and timestamp verification |
+| `downloaded-artifact-verification.json`; `host-installed-verification.json` | Independently downloaded current artifact hashes/signatures plus host custom-directory install, installed-payload verification, and uninstall |
 | `final-artifact-verification.json` | Downloaded portable/installer hashes, version, expected publisher, and timestamps |
 | `final-installed-verification.json` | Installed 0.1.1 hash, version, expected publisher, timestamp, and correspondence with the release receipt |
 | `output/final/upgrade-data-verification.json` | Schema/integrity plus exact legacy draft, timestamp, theme, and navigation retention |
