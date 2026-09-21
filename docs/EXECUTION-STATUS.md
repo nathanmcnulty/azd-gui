@@ -10,7 +10,7 @@ Updated 21 September 2026.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Local gates complete; no-go** | `b008e2e27060098db14dd1388ba6b9995469ad73` | Exact-source local validation and Windows release compile passed. Live Maester, clean-account auth, signed component patches, application signing/clean-VM acceptance, and historical-installer decision remain external gates. |
+| P7 — Controlled pilot and release decision | **Component gate complete; no-go** | `b008e2e27060098db14dd1388ba6b9995469ad73` | Signed component patches are published and adopted by the exact Maester source. Live Maester, clean-account auth, application signing/clean-VM acceptance, and historical-installer decision remain external gates. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -63,14 +63,12 @@ P5 validation:
 - `npm run audit:dependencies` reported no npm or Rust advisories;
 - final Sol high review reported no remaining P1 or P2 findings.
 
-The published azd-reference `v0.2.0` receipt and `v1.1.0` validation tags were
-annotated but unsigned, so their release-attestation workflows failed. They must
-not be retargeted. Reference merge `0c96cc89c554ffc3b3ca82ceda12da6591e816c1`
-prepares unchanged `deployment-receipt@0.2.1` and
-`deployment-validation@1.1.1` contracts for replacement releases. A maintainer
-with a GitHub-verifiable signing key must still publish their signed annotated
-tags and confirm both attestation workflows before a gallery template consumes
-them.
+The published azd-reference `v0.2.0` receipt and `v1.1.0` validation tags remain
+unsigned historical releases and were not retargeted. Their replacements,
+`deployment-receipt@0.2.1` and `deployment-validation@1.1.1`, are signed GitHub-
+verified tags at reference merge `0c96cc89c554ffc3b3ca82ceda12da6591e816c1`.
+Both release-attestation workflows passed, and Maester commit
+`45f839bc2c335cd1c7fa4c40ffe9c6978f715362` now vendors their exact locked bytes.
 
 P6 reused existing deterministic coverage for partial preparation, preview and
 deployment failure, cancellation, unsaved edits, environment switching, retry,
@@ -103,7 +101,8 @@ The release decision is **no-go** until the finite gates in
 completed. The exact proposed cloud boundary is now captured in the
 [Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md),
 including the eight baseline Graph application roles, a US$10 ceiling, stop
-conditions, evidence, and independent cleanup checks. Its source commit remains
-provisional until the required attested component patches are pinned and reviewed.
-No live Maester deployment, Azure or directory mutation, signing run, tag, draft
-release, or publication was performed.
+conditions, evidence, and independent cleanup checks. Its source commit is now
+fixed at `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` with the attested component
+patches pinned and reviewed. No live Maester deployment, Azure or directory
+mutation, application signing run, application tag, draft release, or
+publication was performed.

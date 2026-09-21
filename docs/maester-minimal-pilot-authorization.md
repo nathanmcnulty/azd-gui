@@ -8,7 +8,7 @@ authorize or start authentication, deployment, directory mutation, or cleanup.
 
 | Boundary | Exact proposal |
 | --- | --- |
-| Template | `nathanmcnulty/azd-maester`, `automation-account`, commit `34f4bac7b69ea2a6746705a91f35ef89ab346034` |
+| Template | `nathanmcnulty/azd-maester`, `automation-account`, commit `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` |
 | GUI contract | Bundled `maester-automation` manifest and the **Minimal pilot** recommendation |
 | Tenant | `847b5907-ca15-40f4-b171-eb18619dbfab` |
 | Subscription | `sub-mvp` (`a80941e8-c2b9-4bc9-83ad-117cc40d0bea`) |
@@ -18,16 +18,14 @@ authorize or start authentication, deployment, directory mutation, or cleanup.
 | Duration | One supervised same-day lifecycle: preview, deploy once, inspect, reopen, then down and independent cleanup verification |
 | Spending boundary | Proposed authorization limit: **US$10** of incremental pilot spend. Azure cost data can be delayed, so this is not a guaranteed real-time stop. A dated pre-run estimate and same-day teardown are required. No price or free-tier claim is made. |
 
-The source revision is the one already qualified by
+The source revision is the immutable revision reviewed in
 [Maester Automation Account qualification](maester-automation-qualification.md).
-It remains a proposal until its required attested reference-component pins are
-available and a final source revision containing those pins is reviewed. Before
-execution, one focused adoption change must add and verify the signed
-`deployment-receipt` and `deployment-validation` patch versions and SHA-256 locks,
-update the bundled catalog to the resulting immutable commit, update this packet
-and the exact-source qualification to that commit, and rerun the catalog/manifest
-and qualification checks. Editing only the commit shown in this document is
-insufficient. No branch name or mutable reference is acceptable.
+It pins the signed and attested `deployment-receipt@0.2.1` and
+`deployment-validation@1.1.1` components from azd-reference merge
+`0c96cc89c554ffc3b3ca82ceda12da6591e816c1`, including exact SHA-256 locks.
+The bundled catalog, source qualification, component drift check, and hosted
+Maester validation all agree on this revision. No branch name or mutable
+reference is acceptable.
 
 ## Selected choices
 
@@ -110,7 +108,9 @@ Stop before mutation if any of these conditions occurs:
   Standard LRS storage and retention, and module acquisition has not been recorded;
 - the US$10 authorization limit or same-day teardown window cannot be maintained,
   accounting for delayed Azure cost reporting;
-- the GUI loses project, environment, target, source, or operation correlation.
+- the GUI loses the reviewed project, environment, target, or source identity;
+- the unbound receipt or validation report is missing, malformed, or shown as
+  stronger than a producer assertion after the external-terminal run.
 
 This first pilot authorizes one deployment only. Stop before any second `azd up`
 or provision attempt. The pinned preprovision hook can remove the Automation
@@ -126,8 +126,8 @@ choose an explicit resume or cleanup action.
 
 Before deployment, retain the final commit, prepared-source digest, manifest
 digest, selected values, target IDs, preview, tool versions, and signed-in account
-context. After deployment, retain the GUI operation and environment identity,
-deployment receipt, validation report, setup summary, ARM deployment result,
+context. After deployment, retain the external-terminal handoff and environment
+identity, deployment receipt, validation report, setup summary, ARM deployment result,
 resource inventory, Automation identity object ID, its Graph app-role assignment
 IDs, storage role-assignment IDs, lock and schedule state, runbook job result, and
 observed report blobs. Immediately query and capture the randomly named Storage
@@ -174,8 +174,8 @@ action and repeat the independent checks.
 The live pilot can proceed only after the owner explicitly approves this complete
 boundary, including:
 
-- the final immutable replacement for the provisional template commit;
-- its bundled catalog revision, exact-source qualification, and signed component
+- template commit `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`,
+  its bundled catalog revision, exact-source qualification, and signed component
   version/hash locks;
 - tenant, subscription, resource group, environment, and `eastus2` location;
 - the Minimal profile and its eight Graph application roles;

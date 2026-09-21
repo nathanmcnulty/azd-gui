@@ -21,7 +21,7 @@
       "summary": "Schedule Maester security tests with Azure Automation.",
       "description": "A pinned deployment choice from the automation-account subdirectory.",
       "repository": "https://github.com/nathanmcnulty/azd-maester",
-      "commit": "34f4bac7b69ea2a6746705a91f35ef89ab346034",
+      "commit": "45f839bc2c335cd1c7fa4c40ffe9c6978f715362",
       "subdirectory": "automation-account",
       "tags": ["Maester", "Security", "Automation"],
       "platforms": ["windows", "macos", "linux"],

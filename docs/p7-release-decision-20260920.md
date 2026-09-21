@@ -19,7 +19,7 @@ while reaching it.
 | Item | Result |
 | --- | --- |
 | GUI source | `b008e2e27060098db14dd1388ba6b9995469ad73` |
-| Reference evidence producer | merged `08e60886a8efc2c274f7ed9e2c2527e1771c1603`; first version tags are unsigned and untrusted for gallery consumption |
+| Reference evidence producer | signed patch releases `deployment-receipt@0.2.1` and `deployment-validation@1.1.1` at `0c96cc89c554ffc3b3ca82ceda12da6591e816c1`; both attestations passed and Maester `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` pins their exact bytes |
 | Version alignment | `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` all report `0.1.1` |
 | Dependency install | clean `npm ci`; 141 packages audited, no npm vulnerabilities |
 | Integrated checks | 135 frontend tests and 153 native tests passed; 3 native integration tests remained explicitly ignored |
@@ -35,35 +35,31 @@ installer payload.
 
 ## Gates that require an owner
 
-1. **Reference component release owner:** create new signed patch-version tags for
-   the deployment-receipt and deployment-validation components. Do not move or
-   replace the published unsigned tags. Update consuming template locks only after
-   their release-attestation workflows pass.
-2. **Maester pilot owner:** authorize the exact template revision, tenant,
+1. **Maester pilot owner:** authorize the exact template revision, tenant,
    subscription, resource group/naming boundary, directory and service permissions,
    optional features, spending boundary, and cleanup owner. The prior empty-resource-
    group pilot does not authorize or prove this solution lifecycle. The proposed
    least-privilege boundary is recorded in the
    [Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md).
-3. **Authentication operator:** supply a disposable identity, expected target, and
+2. **Authentication operator:** supply a disposable identity, expected target, and
    controlled mismatched target, then complete normal browser/WAM prompts using the
    checklist in [Windows acceptance status](windows-acceptance-status.md). Device
    code remains prohibited.
-4. **Signing owner:** explicitly confirm the metered Windows runner and Azure
+3. **Signing owner:** explicitly confirm the metered Windows runner and Azure
    signing operation for this exact source. A manual signing run may produce private
    workflow artifacts; a tag and draft release remain separate decisions.
-5. **Windows acceptance owner:** verify the downloaded signer identity, checksums,
+4. **Windows acceptance owner:** verify the downloaded signer identity, checksums,
    installed payload, affected admin surfaces, persistence schema 4, interruption
    recovery, output/history redaction, uninstall, and the supported Windows build.
    Decide whether Windows 11 evidence is sufficient for beta or run Windows 10.
-6. **Maintainer:** accept the documented clean-install migration for the invalid
+5. **Maintainer:** accept the documented clean-install migration for the invalid
    historical public installer or choose another reviewed remediation before
    publication.
 
 ## Next authorized sequence
 
-After the component patch releases and Maester pilot authorization exist, pin the
-attested component versions in the exact solution revision and run its complete
+The component patch releases are now pinned in the exact solution revision. After
+Maester pilot authorization, run its complete
 preview, deploy, reopen, evidence, safe retry/cancel, down, and independent ARM plus
 non-ARM cleanup path. Settle the resulting GUI source, then run one explicitly
 confirmed signing workflow. Verify and install its private artifacts before any tag
