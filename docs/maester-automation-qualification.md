@@ -3,8 +3,9 @@
 This qualification covers the bundled `maester-automation` entry at
 `nathanmcnulty/azd-maester` commit
 `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`, subdirectory
-`automation-account`. It is a source review for the guided contract. It is not a
-deployment approval or live-pilot result.
+`automation-account`. It is the source review for the guided contract that
+preceded deployment. The separately authorized outcome is recorded in the
+[Maester Minimal live pilot](maester-minimal-pilot-20260921.md).
 
 The template uses interactive `preup`, `preprovision`, `postprovision`, and
 `predown` PowerShell hooks. Azure Deployment Studio therefore prepares the

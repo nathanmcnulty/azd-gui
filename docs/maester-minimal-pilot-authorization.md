@@ -1,5 +1,10 @@
 # Maester Minimal pilot authorization packet
 
+This boundary was approved and executed on 21 September 2026. The deployment,
+validation, evidence, and independent cleanup result is recorded in the
+[Maester Minimal live pilot](maester-minimal-pilot-20260921.md). This file remains
+the immutable authorization boundary rather than being rewritten as an outcome.
+
 Prepared 21 September 2026 (America/Los_Angeles). This packet makes the
 remaining P7 cloud decision concrete. It records a proposed scope; it does not
 authorize or start authentication, deployment, directory mutation, or cleanup.
