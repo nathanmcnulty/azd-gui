@@ -47,6 +47,11 @@
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
   import { effectiveRequirements, requirementEnvironmentValues } from "./lib/requirements";
+  import {
+    connectionBlockingGuidance,
+    hasKnownTargetMismatch,
+    toolBlockingGuidance
+  } from "./lib/admin-guidance";
   import type {
     AzureDiscovery,
     AzdProjectState,
@@ -426,7 +431,12 @@
     connectionTarget &&
       requiredConnections
         .filter((connection) => connection.required)
-        .some((connection) => !connectionMeetsTarget(connection, connectionTarget!))
+        .some((connection) => hasKnownTargetMismatch(connection, connectionTarget!))
+  );
+  $: requiredConnectionsMatchTarget = Boolean(
+    connectionTarget && requiredConnections
+      .filter((connection) => connection.required)
+      .every((connection) => connectionMeetsTarget(connection, connectionTarget!))
   );
   $: {
     const page = activePage;
@@ -442,15 +452,15 @@
         : !wizardValues.tenantId ? "Choose an Azure tenant to continue."
         : !wizardValues.subscriptionId ? "Choose an Azure subscription to continue."
         : !wizardValues.location ? "Choose an Azure region to continue."
-        : selectedTenantMismatch ? "Return to Connect accounts and connect the required tools to this Azure tenant and subscription." : "";
+        : !requiredConnectionsMatchTarget ? connectionBlockingGuidance(requiredConnections, connectionTarget) : "";
     } else if (page.kind === "overview") {
       stepBlockingReason = !selectedPlatformSupported ? "This template does not support the current operating system. Choose a compatible template."
         : !(selectedEntry?.trusted || sourceTrustAccepted) ? "Review the source and accept the trust acknowledgement to continue." : "";
     } else if (page.kind === "prerequisites") {
-      stepBlockingReason = requiredToolsReady ? "" : "Install or update the required tools shown above, then select Check again.";
+      stepBlockingReason = requiredToolsReady ? "" : toolBlockingGuidance(requiredTools);
     } else if (page.kind === "connections") {
       stepBlockingReason = requiredTenantMismatch ? "Reconnect the required accounts to the same Azure tenant."
-        : !requiredConnectionsReady ? "Connect the required accounts shown above to continue." : "";
+        : !requiredConnectionsReady ? connectionBlockingGuidance(requiredConnections) : "";
     } else if (page.kind === "configuration") {
       stepBlockingReason = page.blockingIssues[0] ?? "";
     } else if (page.kind === "preflight") {
@@ -1100,8 +1110,8 @@
       addSystemLog("Select an Azure tenant and subscription before preflight.", "error");
       return;
     }
-    if (selectedTenantMismatch) {
-      addSystemLog("The selected subscription tenant does not match every required connection.", "error");
+    if (!requiredConnectionsMatchTarget) {
+      addSystemLog(connectionBlockingGuidance(requiredConnections, connectionTarget), "error");
       return;
     }
     const configurationIssues =
@@ -1320,7 +1330,7 @@
             connection.tenantId.toLowerCase() !== permissionTenantId.toLowerCase()
         )
     );
-    if (!permissionTenantId || !permissionSubscriptionId || selectedTenantMismatch || permissionTargetMismatch) {
+    if (!permissionTenantId || !permissionSubscriptionId || !requiredConnectionsMatchTarget || permissionTargetMismatch) {
       addSystemLog("Select an Azure tenant and subscription that match the connected tools before opening the terminal.", "error");
       outputOpen = true;
       return;
