@@ -10,7 +10,7 @@ Updated 21 September 2026.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Signing gate complete; no-go** | `3971cb1f685eae93c48c0fa37972b226d29e286f` | Signed component patches are adopted by the exact Maester source, and the exact GUI candidate is signed and privately verified. Live Maester, clean-account auth, affected clean-VM acceptance, and the historical-installer decision remain external gates. |
+| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `3971cb1f685eae93c48c0fa37972b226d29e286f` | The exact GUI candidate is signed and privately verified, and Maester commit `45f839bc` completed an authorized Minimal deploy, validation, evidence, and independently verified teardown. Clean-account auth, affected clean-VM acceptance, and the historical-installer decision remain external gates. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -103,12 +103,20 @@ verified the same payload, then stopped at the expected native missing-WebView2
 dialog without rendering simulated application state. The Sandbox account was
 elevated, so this closes only the fail-closed bootstrap gate.
 
-The release decision is **no-go** until the finite gates in
+The Maester Minimal pilot subsequently completed in `westus2`; see the
+[live pilot record](maester-minimal-pilot-20260921.md). It proved the authorized
+resource, identity, report, evidence, and cleanup lifecycle without enabling any
+optional component. Minimal permissions also exposed expected missing-permission
+and `Forbidden` test output from the broader Maester suite, so the four passing
+template checks are lifecycle evidence rather than a claim that every Maester
+test passed.
+
+The release decision remains **no-go** until the finite gates in
 [P7 Windows release decision](p7-release-decision-20260920.md) are owned and
 completed. The exact proposed cloud boundary is now captured in the
 [Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md),
 including the eight baseline Graph application roles, a US$10 ceiling, stop
 conditions, evidence, and independent cleanup checks. Its source commit is now
 fixed at `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` with the attested component
-patches pinned and reviewed. No live Maester deployment, Azure or directory
-mutation, application tag, draft release, or publication was performed.
+patches pinned and reviewed. The authorized live deployment and cleanup are now
+complete. No application tag, draft release, or publication was performed.

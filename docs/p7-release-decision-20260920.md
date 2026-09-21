@@ -7,8 +7,10 @@ Decision date: 20 September 2026 (America/Los_Angeles).
 **No-go for tag, draft release, or publication.** The exact application source
 `3971cb1f685eae93c48c0fa37972b226d29e286f` has passed private Windows signing,
 download, installation, payload, and uninstall verification. The adopted Maester
-solution has not completed an authorized live lifecycle, and the candidate has
-not completed its affected clean-profile authentication and UI acceptance.
+solution subsequently completed its authorized Minimal lifecycle at commit
+`45f839bc2c335cd1c7fa4c40ffe9c6978f715362`; see the
+[live pilot record](maester-minimal-pilot-20260921.md). The candidate has not
+completed its affected clean-profile authentication and UI acceptance.
 
 This is a finite external-gate decision, not a code-quality failure. The signing
 operation produced a private 14-day workflow artifact only; it created no app
@@ -37,12 +39,10 @@ future tagged build is a new artifact boundary and must repeat verification.
 
 ## Gates that require an owner
 
-1. **Maester pilot owner:** authorize the exact template revision, tenant,
-   subscription, resource group/naming boundary, directory and service permissions,
-   optional features, spending boundary, and cleanup owner. The prior empty-resource-
-   group pilot does not authorize or prove this solution lifecycle. The proposed
-   least-privilege boundary is recorded in the
-   [Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md).
+1. **Maester pilot:** **complete.** The owner authorized the exact boundary in the
+   [Maester Minimal pilot authorization packet](maester-minimal-pilot-authorization.md),
+   and the [live pilot](maester-minimal-pilot-20260921.md) completed deployment,
+   validation, evidence capture, teardown, and independent ARM plus Graph cleanup.
 2. **Authentication operator:** supply a disposable identity, expected target, and
    controlled mismatched target, then complete normal browser/WAM prompts using the
    checklist in [Windows acceptance status](windows-acceptance-status.md). Device
@@ -58,10 +58,8 @@ future tagged build is a new artifact boundary and must repeat verification.
 
 ## Next authorized sequence
 
-The component patch releases are pinned in the exact solution revision. After
-Maester pilot authorization, run its complete preview, deploy, reopen, evidence,
-safe retry/cancel, down, and independent ARM plus non-ARM cleanup path. Complete
-clean-profile authentication and the affected UI checks against the private
-candidate. If either path changes application code, select the resulting source
-and repeat signing. Reconcile every changed row in the acceptance matrix before
-any tag or public draft decision.
+The component patch releases are pinned in the exact solution revision, and the
+authorized Maester lifecycle is complete. Complete clean-profile authentication
+and the affected UI checks against the private candidate. If that path changes
+application code, select the resulting source and repeat signing. Reconcile every
+changed row in the acceptance matrix before any tag or public draft decision.

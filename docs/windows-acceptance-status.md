@@ -24,7 +24,7 @@ management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
-The matrix contains 26 gates: 15 Passed, 7 Not run, 3 Blocked, and 1 Failed.
+The matrix contains 27 gates: 16 Passed, 7 Not run, 3 Blocked, and 1 Failed.
 The counts describe the retained evidence across explicitly named 0.1.1 sources;
 they are not a release score. Each row states whether its evidence applies to the
 current candidate or an older revision.
@@ -51,6 +51,7 @@ current candidate or an older revision.
 | Missing-WebView2 fail-closed behavior | Current source `3971cb1`; exact installed payload in a clean, network-disabled Windows Sandbox build `10.0.28000` stopped at the native “Could not find the WebView2 Runtime” bootstrap dialog with no simulated application state | **Passed** | Repeat only if bootstrap/runtime handling changes or against an eventual tagged artifact. The elevated `WDAGUtilityAccount` does not satisfy the separate standard-user gate. |
 | Target review, permission preflight, preview invalidation | Development GUI source `94f60f7`; approved tenant/subscription; changing the resource group cleared approval and required a fresh preview | **Passed** | Treat as host-pilot evidence. Repeat only if target/preflight logic changes, or as part of the eventual solution pilot. |
 | GUI deployment and resource view | Development GUI source `94f60f7`; reference `abc6e896620990e68360a63dd14efda66a3f75cd`; empty group `rg-gui-arm-pilot-20260919`; `azd up`, three checks, reopen, zero resources/endpoints | **Passed** | Do not repeat the empty-group pilot as solution proof. P7 must use the adopted solution and separate authorization. |
+| Adopted Maester lifecycle | Exact Maester source `45f839bc`; authorized Minimal profile in `westus2`; Automation and Storage provisioned; eight approved Graph roles; completed runbook; archive and latest report written; four lifecycle checks passed; independent Azure and Graph cleanup clean | **Passed** | Treat missing-permission and `Forbidden` output as reduced Minimal-profile test coverage. See the [live pilot record](maester-minimal-pilot-20260921.md). |
 | Retry/cancellation behavior | One preview cancelled and two previews succeeded before the successful host deployment; history persisted | **Passed** | Reuse regressions. Exercise a solution-specific safe retry/cancel path during P7. |
 | Cleanup | GUI `azd down` succeeded; independent `az group exists` returned `false`; Azure CLI default subscription was unchanged | **Passed** | For P7, independently verify ARM and any directory/service objects owned by that solution. |
 | Output/history secret review | Redaction and non-persistence tests passed, but no formal retained manual review of every signed-candidate output/history surface exists | **Not run** | During the next signed live path, inspect output/history for bearer values, JWTs, authorization headers, and sensitive environment values. |
@@ -79,6 +80,7 @@ or private VM data.
 | `output/final/clear-preservation-after.json` | Harmless project and Azure CLI directory markers preserved; no real credentials tested |
 | `output/final/final-uninstall.json` | Non-elevated uninstall exit and installed-executable absence |
 | `gui-pilot-before.json`, `gui-pilot-provisioned.json`, `gui-pilot-after.json` | Approved target boundary, empty-group deployment/validation, and independent absence after cleanup |
+| Private `azd-gui-maester-pilot-20260921` evidence store | Exact Maester source and values, East US 2 quota stop, West US 2 preview/deployment, eight Graph roles, RBAC and lock inventory, completed runbook and report blobs, template evidence, and independent Azure plus Graph cleanup |
 | Native computer-use captures referenced by the acceptance record | Observed UI states; not a substitute for artifact or Azure receipts |
 
 The ledger names files without publishing their private contents. A future operator
