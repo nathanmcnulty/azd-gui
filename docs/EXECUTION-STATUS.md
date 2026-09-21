@@ -10,7 +10,7 @@ Updated 20 September 2026.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Blocked on external gates** | — | Local release checks can proceed; a live Maester pilot, clean-account sign-in, signed reference component patch releases, and final signed candidate require their recorded authorization or operator input. |
+| P7 — Controlled pilot and release decision | **Local gates complete; no-go** | `b008e2e27060098db14dd1388ba6b9995469ad73` | Exact-source local validation and Windows release compile passed. Live Maester, clean-account auth, signed component patches, application signing/clean-VM acceptance, and historical-installer decision remain external gates. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -88,7 +88,13 @@ P6 validation:
 - `npm run audit:dependencies` reported no npm or Rust advisories;
 - final Sol high review reported no remaining P1 or P2 findings.
 
-Next P7 step: select the exact merged GUI revision and complete every authorized
-local release gate. Do not start the live Maester solution deployment, component
-signing, clean-account authentication, or application signing without the input
-and authorization recorded in the Windows acceptance matrix.
+P7 selected GUI main `b008e2e` and completed the authorized local release gates:
+clean dependency installation, version agreement at 0.1.1, integrated validation,
+dependency audits, and a Windows release-profile compile without bundling. The
+resulting local executable has SHA-256 `b6f44c3...148d9c`, reports product/file
+version 0.1.1, and is unsigned as expected; it is not a release artifact.
+
+The release decision is **no-go** until the finite gates in
+[P7 Windows release decision](p7-release-decision-20260920.md) are owned and
+completed. No live Maester deployment, Azure or directory mutation, signing run,
+tag, draft release, or publication was performed.

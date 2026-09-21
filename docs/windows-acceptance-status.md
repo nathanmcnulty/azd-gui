@@ -16,11 +16,15 @@ Status meanings:
 The current signed application candidate is version 0.1.1 from source
 `179b89e32b7d2990127f489bf25f4c230d164db6`, built by
 [workflow 35497506640](https://github.com/nathanmcnulty/azd-gui/actions/runs/35497506640).
-Later main commits through `8d238405643c62bbdb667e157ec3ad0799a08963`
-change documentation only. No tag or draft/public 0.1.1 release exists.
+The current locally qualified source is
+`b008e2e27060098db14dd1388ba6b9995469ad73`; it contains application and
+persistence changes through P6 and therefore requires a new signed candidate and
+affected acceptance gates. See the [P7 release decision](p7-release-decision-20260920.md).
+No tag or draft/public 0.1.1 release exists.
 
 The matrix contains 26 gates: 14 Passed, 8 Not run, 3 Blocked, and 1 Failed.
-The counts describe this evidence snapshot; they are not a release score.
+The counts describe the retained signed-0.1.1 evidence snapshot; they are not a
+release score and do not transfer unchanged to local candidate `b008e2e`.
 
 ## Current gate matrix
 
