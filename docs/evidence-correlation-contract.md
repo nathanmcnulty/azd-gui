@@ -1,7 +1,8 @@
 # Management evidence correlation contract
 
-Status: accepted design for P5 producer and reader work. This document does not
-claim that a template currently emits correlated evidence.
+Status: implemented by the azd-reference producer at merge
+`08e60886a8efc2c274f7ed9e2c2527e1771c1603` and the azd-gui reader. A template
+must still adopt the producer inputs before it emits correlated evidence.
 
 Deployment receipts and validation reports are local, producer-written records.
 They can help an administrator understand a deployment only when the app can

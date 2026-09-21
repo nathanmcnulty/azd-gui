@@ -11,7 +11,8 @@ const project = { id: "sample", name: "Sample", path: "C:\\Projects\\sample", en
 const receipt: NonNullable<DeploymentReceiptRead["receipt"]> = {
   generatedAt: "2026-09-13T12:00:00Z", mode: "enforce",
   summary: { applied: 2, unchanged: 1, skipped: 0, warnings: 1, failed: 0 },
-  artifactCount: 1, outstandingActionCount: 3
+  artifactCount: 1, outstandingActionCount: 3,
+  bindingState: "legacyUnbound", nextActions: []
 };
 
 describe("project deployment receipt", () => {
@@ -21,7 +22,7 @@ describe("project deployment receipt", () => {
     expect(await screen.findByText("Needs review")).toBeInTheDocument();
     expect(screen.getByText("Follow-up actions", { selector: "dt" }).nextElementSibling).toHaveTextContent("3");
     expect(screen.getByText(/do not establish deployment or verification success/)).toBeInTheDocument();
-    expect(screen.getByText(/not bound to the selected environment/)).toBeInTheDocument();
+    expect(screen.getByText(/older record has no management binding/)).toBeInTheDocument();
   });
 
   it("labels plans without presenting them as completed deployments", async () => {
@@ -32,6 +33,18 @@ describe("project deployment receipt", () => {
     expect(await screen.findByText("Plan recorded")).toBeInTheDocument();
     expect(screen.getByText(/This is a plan. No applied actions/)).toBeInTheDocument();
     expect(screen.queryByText(/successful|verified/i)).not.toBeInTheDocument();
+  });
+
+  it("renders only app-owned text for structured next actions", async () => {
+    readReceipt.mockResolvedValue({ state: "available", receipt: {
+      ...receipt, bindingState: "current", outstandingActionCount: 0,
+      summary: { ...receipt.summary, warnings: 0 },
+      nextActions: [{ code: "verifyResources", owner: "subscriptionOwner", priority: "required" }]
+    } });
+    render(ProjectDeploymentReceipt, { project });
+    expect(await screen.findByText(/Verify the resulting Azure resources/)).toBeInTheDocument();
+    expect(screen.getByText(/Subscription owner/)).toBeInTheDocument();
+    expect(screen.getByText(/project, environment, Azure target/)).toBeInTheDocument();
   });
 
   it("ignores a late receipt from the previous project", async () => {

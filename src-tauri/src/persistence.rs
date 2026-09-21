@@ -1,6 +1,7 @@
 use crate::{
     catalog,
     error::{AppError, AppResult},
+    evidence::{OperationEvidenceContext, PersistedEvidenceOperation},
     models::{
         AppSettings, CatalogSource, CatalogSourceSummary, OperationEvent, ProjectSummary,
         ProjectTemplateSnapshot,
@@ -10,7 +11,7 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> AppResult<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -68,7 +69,8 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
             started_at TEXT NOT NULL,
             completed_at TEXT,
             summary TEXT,
-            outcome_json TEXT
+            outcome_json TEXT,
+            context_json TEXT
         );
         CREATE TABLE IF NOT EXISTS wizard_drafts (
             project_key TEXT PRIMARY KEY,
@@ -91,6 +93,12 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
     if !column_exists(&transaction, "operation_history", "outcome_json")? {
         transaction.execute(
             "ALTER TABLE operation_history ADD COLUMN outcome_json TEXT",
+            [],
+        )?;
+    }
+    if !column_exists(&transaction, "operation_history", "context_json")? {
+        transaction.execute(
+            "ALTER TABLE operation_history ADD COLUMN context_json TEXT",
             [],
         )?;
     }
@@ -479,7 +487,17 @@ impl Database {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
+        self.record_operation_with_context(event, project_path, None)
+    }
+
+    pub fn record_operation_with_context(
+        &self,
+        event: &OperationEvent,
+        project_path: &str,
+        context: Option<&OperationEvidenceContext>,
+    ) -> AppResult<()> {
         let project_path = self.stored_project_path(project_path)?;
         if ![
             "up",
@@ -508,15 +526,17 @@ impl Database {
                 serde_json::to_string(&outcome)
             })
             .transpose()?;
+        let context_json = context.map(serde_json::to_string).transpose()?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction()?;
         transaction.execute(
             "INSERT INTO operation_history
-             (id, project_path, kind, state, started_at, completed_at, summary, outcome_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)
+             (id, project_path, kind, state, started_at, completed_at, summary, outcome_json, context_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
              state=excluded.state, completed_at=excluded.completed_at,
-             summary=excluded.summary, outcome_json=excluded.outcome_json",
+             summary=excluded.summary, outcome_json=excluded.outcome_json,
+             context_json=COALESCE(excluded.context_json, operation_history.context_json)",
             params![
                 event.operation_id,
                 project_path,
@@ -524,7 +544,8 @@ impl Database {
                 event.state,
                 event.timestamp,
                 message,
-                outcome_json
+                outcome_json,
+                context_json
             ],
         )?;
         transaction.execute(
@@ -541,6 +562,42 @@ impl Database {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    pub fn evidence_operations(
+        &self,
+        project_path: &str,
+    ) -> AppResult<Vec<PersistedEvidenceOperation>> {
+        let project_path = self.stored_project_path(project_path)?;
+        let connection = self.lock()?;
+        let mut statement = connection.prepare(
+            "SELECT id, kind, COALESCE(completed_at, started_at), context_json
+             FROM operation_history
+             WHERE project_path = ?1
+             ORDER BY COALESCE(completed_at, started_at) DESC
+             LIMIT 100",
+        )?;
+        let rows = statement.query_map([project_path], |row| {
+            let context_json: Option<String> = row.get(3)?;
+            let context = context_json
+                .map(|value| {
+                    serde_json::from_str(&value).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            3,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })
+                })
+                .transpose()?;
+            Ok(PersistedEvidenceOperation {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                timestamp: row.get(2)?,
+                context,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn operation_history(&self, project_path: &str) -> AppResult<Vec<OperationEvent>> {
@@ -592,6 +649,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::{column_exists, Database, SCHEMA_VERSION};
+    use crate::evidence::OperationEvidenceContext;
     use crate::models::{
         AppSettings, CatalogSource, OperationEvent, OperationOutcome, ProjectSummary,
         ThemePreference,
@@ -636,6 +694,7 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
         assert!(column_exists(&connection, "catalog_sources", "accepted_catalog_json").unwrap());
         assert!(column_exists(&connection, "operation_history", "outcome_json").unwrap());
+        assert!(column_exists(&connection, "operation_history", "context_json").unwrap());
     }
 
     #[test]
@@ -947,6 +1006,72 @@ mod tests {
         assert!(!serialized.contains("super-secret-value"));
         assert!(!serialized.contains("abcdefghijklmnopqrstuvwxyz"));
         assert!(serialized.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn evidence_context_is_private_and_legacy_rows_remain_contextless() {
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let project = ProjectSummary {
+            id: "project-example".into(),
+            name: "sample".into(),
+            path: directory.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some("example".into()),
+            revision: Some("0".repeat(40)),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        let event = OperationEvent {
+            operation_id: "22222222-2222-2222-2222-222222222222".into(),
+            kind: "up".into(),
+            state: "succeeded".into(),
+            timestamp: "2026-09-20T12:00:00Z".into(),
+            stream: "system".into(),
+            level: "success".into(),
+            message: "complete".into(),
+            progress: Some(100),
+            outcome: None,
+        };
+        let context = OperationEvidenceContext {
+            project_id: project.id.clone(),
+            environment: "dev".into(),
+            azure_cloud: Some("AzureCloud".into()),
+            tenant_id: Some("00000000-0000-0000-0000-000000000000".into()),
+            subscription_id: Some("11111111-1111-1111-1111-111111111111".into()),
+            resource_group: Some("rg-example-dev".into()),
+            template_id: "example".into(),
+            revision: Some("0".repeat(40)),
+            contract_digest: Some("a".repeat(64)),
+        };
+        database
+            .record_operation_with_context(&event, &project.path, Some(&context))
+            .unwrap();
+        assert!(
+            !serde_json::to_string(&database.operation_history(&project.path).unwrap())
+                .unwrap()
+                .contains("rg-example-dev")
+        );
+        let evidence = database.evidence_operations(&project.path).unwrap();
+        assert_eq!(
+            evidence[0]
+                .context
+                .as_ref()
+                .unwrap()
+                .resource_group
+                .as_deref(),
+            Some("rg-example-dev")
+        );
+
+        let mut legacy = event;
+        legacy.operation_id = "33333333-3333-3333-3333-333333333333".into();
+        database.record_operation(&legacy, &project.path).unwrap();
+        assert!(database
+            .evidence_operations(&project.path)
+            .unwrap()
+            .iter()
+            .any(|item| item.id == legacy.operation_id && item.context.is_none()));
     }
 
     #[test]

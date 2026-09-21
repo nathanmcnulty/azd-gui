@@ -1,5 +1,6 @@
 use crate::{
     error::{AppError, AppResult},
+    evidence::OperationEvidenceContext,
     models::{OperationEvent, OperationOutcome},
     persistence::Database,
     redaction::redact,
@@ -381,6 +382,7 @@ pub struct OperationManager {
 pub struct OperationPersistence {
     database: Arc<Database>,
     project_path: String,
+    context: Option<OperationEvidenceContext>,
 }
 
 impl OperationPersistence {
@@ -388,15 +390,56 @@ impl OperationPersistence {
         Self {
             database,
             project_path,
+            context: None,
+        }
+    }
+
+    pub fn with_context(
+        database: Arc<Database>,
+        project_path: String,
+        context: OperationEvidenceContext,
+    ) -> Self {
+        Self {
+            database,
+            project_path,
+            context: Some(context),
         }
     }
 
     fn record(&self, event: &OperationEvent) {
-        if let Err(error) = self.database.record_operation(event, &self.project_path) {
+        if let Err(error) = self.database.record_operation_with_context(
+            event,
+            &self.project_path,
+            self.context.as_ref(),
+        ) {
             eprintln!(
                 "Could not persist operation {}: {error}",
                 event.operation_id
             );
+        }
+    }
+
+    fn apply_environment(&self, spec: &mut CommandSpec, operation_id: &str, kind: &str) {
+        spec.environment
+            .push(("AZD_GUI_OPERATION_ID".into(), operation_id.into()));
+        spec.environment
+            .push(("AZD_GUI_OPERATION_KIND".into(), kind.into()));
+        if let Some(context) = &self.context {
+            for (key, value) in [
+                ("AZD_GUI_PROJECT_ID", Some(context.project_id.as_str())),
+                ("AZD_GUI_ENVIRONMENT", Some(context.environment.as_str())),
+                ("AZD_GUI_AZURE_CLOUD", context.azure_cloud.as_deref()),
+                ("AZD_GUI_TEMPLATE_ID", Some(context.template_id.as_str())),
+                ("AZD_GUI_SOURCE_REVISION", context.revision.as_deref()),
+                (
+                    "AZD_GUI_CONTRACT_DIGEST",
+                    context.contract_digest.as_deref(),
+                ),
+            ] {
+                if let Some(value) = value {
+                    spec.environment.push((key.into(), value.into()));
+                }
+            }
         }
     }
 }
@@ -709,12 +752,15 @@ pub fn spawn_operation(
     app: AppHandle,
     operations: OperationManager,
     kind: impl Into<String>,
-    spec: CommandSpec,
+    mut spec: CommandSpec,
     persistence: Option<OperationPersistence>,
 ) -> AppResult<String> {
-    spec.validate()?;
     let operation_id = Uuid::new_v4().to_string();
     let kind = kind.into();
+    if let Some(persistence) = persistence.as_ref() {
+        persistence.apply_environment(&mut spec, &operation_id, &kind);
+    }
+    spec.validate()?;
     emit_event(
         &app,
         &operation_id,
@@ -1029,9 +1075,10 @@ mod tests {
 
     use super::{
         capture, operation_timeout, read_bounded_output, terminal_outcome, BoundedLineBuffer,
-        CommandSpec, Executable, OUTPUT_TRUNCATED_MARKER,
+        CommandSpec, Executable, OperationPersistence, OUTPUT_TRUNCATED_MARKER,
     };
-    use crate::error::AppError;
+    use crate::{error::AppError, evidence::OperationEvidenceContext, persistence::Database};
+    use std::sync::Arc;
     use std::{path::PathBuf, time::Duration};
     use tokio::io::AsyncWriteExt;
 
@@ -1047,6 +1094,40 @@ mod tests {
 
         assert_eq!(output.len(), 64);
         assert!(String::from_utf8_lossy(&output).ends_with(OUTPUT_TRUNCATED_MARKER));
+    }
+
+    #[test]
+    fn operation_identity_is_injected_without_target_identifiers() {
+        let directory = tempfile::tempdir().unwrap();
+        let persistence = OperationPersistence::with_context(
+            Arc::new(Database::open(&directory.path().join("state.sqlite")).unwrap()),
+            directory.path().display().to_string(),
+            OperationEvidenceContext {
+                project_id: "project-example".into(),
+                environment: "dev".into(),
+                azure_cloud: Some("AzureCloud".into()),
+                tenant_id: Some("00000000-0000-0000-0000-000000000000".into()),
+                subscription_id: Some("11111111-1111-1111-1111-111111111111".into()),
+                resource_group: Some("rg-example-dev".into()),
+                template_id: "example".into(),
+                revision: Some("0".repeat(40)),
+                contract_digest: Some("a".repeat(64)),
+            },
+        );
+        let mut spec = CommandSpec::new(Executable::Test("test"), std::iter::empty::<String>());
+        persistence.apply_environment(&mut spec, "22222222-2222-2222-2222-222222222222", "up");
+        let values = spec
+            .environment
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(values["AZD_GUI_OPERATION_KIND"], "up");
+        assert_eq!(values["AZD_GUI_PROJECT_ID"], "project-example");
+        assert_eq!(
+            values["AZD_GUI_SOURCE_REVISION"],
+            "0000000000000000000000000000000000000000"
+        );
+        assert!(!values.contains_key("AZURE_TENANT_ID"));
+        assert!(!values.contains_key("AZURE_RESOURCE_GROUP"));
     }
 
     #[test]

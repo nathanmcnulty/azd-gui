@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import StatusPill from "./StatusPill.svelte";
   import { getProjectDeploymentReceipt } from "../lib/bridge";
+  import { evidenceActionText, evidenceBindingDetail } from "../lib/evidence-presentation";
   import type { DeploymentReceiptRead, ProjectSummary } from "../lib/types";
 
   export let project: ProjectSummary;
@@ -26,7 +27,7 @@
   $: projectKey = `${project.path}\u0000${project.environment ?? ""}`;
   $: if (projectKey) void refresh();
   $: receipt = result.receipt;
-  $: needsReview = Boolean(receipt && (receipt.summary.failed || receipt.summary.warnings || receipt.outstandingActionCount));
+  $: needsReview = Boolean(receipt && (receipt.bindingState !== "current" || receipt.summary.failed || receipt.summary.warnings || receipt.outstandingActionCount || receipt.nextActions.length));
   onDestroy(() => { request += 1; });
 </script>
 
@@ -36,7 +37,7 @@
     {#if loading}
       <StatusPill tone="accent" label="Reading" />
     {:else if result.state === "available" && receipt}
-      <StatusPill tone={needsReview ? "warning" : "neutral"} label={needsReview ? "Needs review" : receipt.mode === "plan" ? "Plan recorded" : "Actions recorded"} />
+      <StatusPill tone={needsReview ? "warning" : "neutral"} label={receipt.mode === "plan" ? "Plan recorded" : needsReview ? "Needs review" : "Actions recorded"} />
     {/if}
   </div>
 
@@ -53,15 +54,24 @@
       <div><dt>Failed</dt><dd>{receipt.summary.failed}</dd></div>
       <div><dt>Follow-up actions</dt><dd>{receipt.outstandingActionCount}</dd></div>
       <div><dt>Referenced reports</dt><dd>{receipt.artifactCount}</dd></div>
+      <div><dt>Correlation</dt><dd>{receipt.bindingState}</dd></div>
     </dl>
     {#if receipt.outstandingActionCount > 0}
       <p>Review the template's reports for the outstanding actions before considering this deployment complete.</p>
     {/if}
-    <p class="muted-copy">This local receipt is not bound to the selected environment, Azure target, or template revision. Confirm those details in the project's records.</p>
+    <p class="muted-copy">{evidenceBindingDetail[receipt.bindingState]}</p>
+    {#if receipt.nextActions.length > 0}
+      <ul aria-label="Receipt next actions">
+        {#each receipt.nextActions as action}
+          <li>{evidenceActionText(action)}</li>
+        {/each}
+      </ul>
+    {/if}
+    <p class="muted-copy">This local receipt is not independently authenticated and does not itself prove Azure state, delivery, or cleanup.</p>
   {:else if result.state === "notFound"}
     <p class="muted-copy">No receipt yet. Templates that support receipts write <code>reports/deployment-receipt.json</code>.</p>
   {:else}
-    <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Receipt unavailable</strong><p>{result.state === "tooLarge" ? "The receipt exceeds the 1 MiB read limit." : result.state === "unsafePath" ? "The receipt path contains a link or reparse point and was not read." : "The file is not a supported version 1.0 receipt."}</p></div></div>
+    <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Receipt unavailable</strong><p>{result.state === "tooLarge" ? "The receipt exceeds the 1 MiB read limit." : result.state === "unsafePath" ? "The receipt path contains a link or reparse point and was not read." : result.state === "futureVersion" ? "The receipt uses a newer contract than this app supports." : "The file is not a supported receipt."}</p></div></div>
   {/if}
   <div class="project-deployment-actions">
     <button class="secondary compact" disabled={loading} on:click={refresh}><Icon name="refresh" size={14} /> Refresh receipt</button>

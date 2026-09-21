@@ -2,8 +2,10 @@
   import Icon from "./Icon.svelte";
   import StatusPill from "./StatusPill.svelte";
   import { getProjectValidationReport } from "../lib/bridge";
+  import { evidenceActionText, evidenceBindingDetail } from "../lib/evidence-presentation";
   import type {
     ProjectSummary,
+    EvidenceBindingState,
     ValidationCheck,
     ValidationMode,
     ValidationOutcome,
@@ -29,11 +31,21 @@
     environmentUnbound: "The report does not establish an environment binding or report provenance."
   } as const;
 
-  function tone(outcome: ValidationOutcome): "success" | "warning" | "danger" | "neutral" {
+  function tone(outcome: ValidationOutcome, binding: EvidenceBindingState): "success" | "warning" | "danger" | "neutral" {
+    if (outcome === "failed") return "danger";
+    if (binding !== "current") return binding === "mismatch" ? "danger" : "warning";
     if (outcome === "passed") return "success";
     if (outcome === "passedWithWarnings") return "warning";
-    if (outcome === "failed") return "danger";
     return "neutral";
+  }
+
+  function outcomeLabel(outcome: ValidationOutcome, binding: EvidenceBindingState): string {
+    if (outcome === "failed") return "failed";
+    if (binding === "current") return outcome;
+    if (binding === "mismatch") return "Context mismatch";
+    if (binding === "stale") return "Stale record";
+    if (binding === "legacyUnbound") return "Legacy record";
+    return "Context incomplete";
   }
 
   function statusTone(status: ValidationStatus): "success" | "warning" | "danger" | "neutral" {
@@ -73,7 +85,7 @@
     {#if loading}
       <StatusPill tone="accent" label="Reading" />
     {:else if result.state === "available" && result.report}
-      <StatusPill tone={tone(result.report.outcome)} label={result.report.outcome} />
+      <StatusPill tone={tone(result.report.outcome, result.report.bindingState)} label={outcomeLabel(result.report.outcome, result.report.bindingState)} />
     {:else if result.state === "notFound"}
       <StatusPill tone="neutral" label="Not found" />
     {:else}
@@ -95,9 +107,18 @@
       <div><dt>Skipped</dt><dd>{result.report.summary.skipped}</dd></div>
       <div><dt>Planned</dt><dd>{result.report.summary.planned}</dd></div>
       <div><dt>Informational</dt><dd>{result.report.summary.info}</dd></div>
+      <div><dt>Correlation</dt><dd>{result.report.bindingState}</dd></div>
     </dl>
     <p class="muted-copy">{modeDetail[result.report.mode]}</p>
     <p class="muted-copy">{bindingDetail[result.report.environmentBinding]}</p>
+    <p class="muted-copy">{evidenceBindingDetail[result.report.bindingState]}</p>
+    {#if result.report.nextActions.length > 0}
+      <ul aria-label="Validation next actions">
+        {#each result.report.nextActions as action}
+          <li>{evidenceActionText(action)}</li>
+        {/each}
+      </ul>
+    {/if}
     <p class="muted-copy">This local report is not independently authenticated and does not prove provisioning, delivery, or cleanup.</p>
     {#if result.report.checks.length > 0}
       <div class="validation-check-list" aria-label="Validation checks">
@@ -117,8 +138,10 @@
     <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Validation report is too large</strong><p>The app reads reports up to 1 MiB.</p></div></div>
   {:else if result.state === "unsafePath"}
     <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Validation report path is unsafe</strong><p>The report path contains a link or reparse point and was not read.</p></div></div>
+  {:else if result.state === "futureVersion"}
+    <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Validation report is newer than this app</strong><p>Update the app before relying on this report.</p></div></div>
   {:else}
-    <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Validation report is unavailable</strong><p>The file is not a supported version 1.0 report.</p></div></div>
+    <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Validation report is unavailable</strong><p>The file is not a supported report.</p></div></div>
   {/if}
 
   <div class="project-deployment-actions">

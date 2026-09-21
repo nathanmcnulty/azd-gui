@@ -318,7 +318,17 @@ export interface ProjectTemplateSnapshot {
   digest: string;
 }
 
-export type ValidationReportState = "available" | "notFound" | "invalid" | "unsafePath" | "tooLarge";
+export type ValidationReportState = "available" | "notFound" | "invalid" | "futureVersion" | "unsafePath" | "tooLarge";
+export type EvidenceBindingState = "current" | "stale" | "mismatch" | "legacyUnbound" | "insufficientContext";
+export type EvidenceActionCode = "reviewWarnings" | "retryOperation" | "verifyResources" | "verifyPermissions" | "proveDelivery" | "completeCleanup";
+export type EvidenceActionOwner = "operator" | "subscriptionOwner" | "identityAdmin" | "messagingAdmin" | "applicationOwner" | "templateMaintainer";
+export type EvidenceActionPriority = "required" | "recommended";
+
+export interface EvidenceNextAction {
+  code: EvidenceActionCode;
+  owner: EvidenceActionOwner;
+  priority: EvidenceActionPriority;
+}
 
 export interface DeploymentReceiptRead {
   state: ValidationReportState;
@@ -328,6 +338,8 @@ export interface DeploymentReceiptRead {
     summary: { applied: number; unchanged: number; skipped: number; warnings: number; failed: number };
     artifactCount: number;
     outstandingActionCount: number;
+    bindingState: EvidenceBindingState;
+    nextActions: EvidenceNextAction[];
   };
 }
 export type ValidationMode = "plan" | "verify" | "delivery";
@@ -361,6 +373,8 @@ export interface ValidationReport {
   outcome: ValidationOutcome;
   summary: ValidationSummary;
   environmentBinding: ValidationEnvironmentBinding;
+  bindingState: EvidenceBindingState;
+  nextActions: EvidenceNextAction[];
   checks: ValidationCheck[];
 }
 

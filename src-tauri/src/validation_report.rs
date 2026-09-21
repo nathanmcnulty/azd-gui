@@ -1,3 +1,7 @@
+use crate::evidence::{
+    correlate, parse_evidence, EvidenceBindingState, EvidenceNextAction, EvidenceParseError,
+    ExpectedEvidenceContext,
+};
 use chrono::{DateTime, FixedOffset};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -22,6 +26,7 @@ pub enum ValidationReportState {
     Invalid,
     UnsafePath,
     TooLarge,
+    FutureVersion,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +57,8 @@ pub struct ValidationReport {
     pub summary: ValidationSummary,
     pub environment_binding: EnvironmentBinding,
     pub checks: Vec<ValidationCheck>,
+    pub binding_state: EvidenceBindingState,
+    pub next_actions: Vec<EvidenceNextAction>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,8 +202,17 @@ struct RawValidationCheck {
     side_effect: ValidationSideEffect,
 }
 
+#[cfg(test)]
 pub fn read(project_root: &Path, selected_environment: Option<&str>) -> ValidationReportRead {
-    match read_inner(project_root, selected_environment) {
+    read_with_context(project_root, selected_environment, None)
+}
+
+pub fn read_with_context(
+    project_root: &Path,
+    selected_environment: Option<&str>,
+    expected: Option<&ExpectedEvidenceContext>,
+) -> ValidationReportRead {
+    match read_inner(project_root, selected_environment, expected) {
         Ok(report) => ValidationReportRead {
             state: ValidationReportState::Available,
             report: Some(report),
@@ -208,12 +224,33 @@ pub fn read(project_root: &Path, selected_environment: Option<&str>) -> Validati
 fn read_inner(
     project_root: &Path,
     selected_environment: Option<&str>,
+    expected: Option<&ExpectedEvidenceContext>,
 ) -> Result<ValidationReport, ValidationReportState> {
     let bytes = read_fixed_report_bytes(project_root, REPORT_FILE, MAX_REPORT_BYTES)?;
-
-    let raw: RawValidationReport =
+    let value: Value =
         serde_json::from_slice(&bytes).map_err(|_| ValidationReportState::Invalid)?;
-    project_report(raw, selected_environment).ok_or(ValidationReportState::Invalid)
+    let schema = value
+        .get("schemaVersion")
+        .and_then(Value::as_str)
+        .ok_or(ValidationReportState::Invalid)?;
+    if schema != "1.0" && schema != "1.1" {
+        return Err(
+            if schema
+                .split_once('.')
+                .and_then(|(major, minor)| {
+                    Some((major.parse::<u32>().ok()?, minor.parse::<u32>().ok()?))
+                })
+                .is_some_and(|(major, minor)| major > 1 || major == 1 && minor > 1)
+            {
+                ValidationReportState::FutureVersion
+            } else {
+                ValidationReportState::Invalid
+            },
+        );
+    }
+    let raw: RawValidationReport =
+        serde_json::from_value(value).map_err(|_| ValidationReportState::Invalid)?;
+    project_report(raw, selected_environment, expected)
 }
 
 pub(crate) fn read_fixed_report_bytes(
@@ -318,20 +355,21 @@ fn is_link_or_reparse(path: &Path) -> std::io::Result<bool> {
 fn project_report(
     raw: RawValidationReport,
     selected_environment: Option<&str>,
-) -> Option<ValidationReport> {
-    if raw.schema_version != "1.0"
+    expected: Option<&ExpectedEvidenceContext>,
+) -> Result<ValidationReport, ValidationReportState> {
+    if !matches!(raw.schema_version.as_str(), "1.0" | "1.1")
         || raw.report_type != "azdDeploymentValidation"
         || raw.template.name.is_empty()
         || raw.template.version.is_empty()
         || raw.checks.len() > MAX_CHECKS
     {
-        return None;
+        return Err(ValidationReportState::Invalid);
     }
     let started_at = DateTime::<FixedOffset>::parse_from_rfc3339(&raw.started_at)
-        .ok()?
+        .map_err(|_| ValidationReportState::Invalid)?
         .to_rfc3339();
     let completed_at = DateTime::<FixedOffset>::parse_from_rfc3339(&raw.completed_at)
-        .ok()?
+        .map_err(|_| ValidationReportState::Invalid)?
         .to_rfc3339();
 
     let mut summary = ValidationSummary::default();
@@ -368,7 +406,8 @@ fn project_report(
                 duration_ms: check.duration_ms,
             })
         })
-        .collect::<Option<Vec<_>>>()?;
+        .collect::<Option<Vec<_>>>()
+        .ok_or(ValidationReportState::Invalid)?;
 
     // Match the reference producer's precedence; never display contradictory totals or success.
     let outcome = if summary.fail > 0 {
@@ -381,7 +420,7 @@ fn project_report(
         ValidationOutcome::Passed
     };
     if summary != raw.summary || outcome != raw.outcome {
-        return None;
+        return Err(ValidationReportState::Invalid);
     }
 
     // Parsing these fields validates the envelope but deliberately does not disclose them.
@@ -393,16 +432,11 @@ fn project_report(
     );
     let environment_binding = match (
         selected_environment.filter(|value| !value.is_empty()),
-        raw.environment.and_then(|environment| {
-            let _ = (
-                environment.tenant_id,
-                environment.subscription_id,
-                environment.resource_group,
-                environment.azure_cloud,
-                environment.graph_environment,
-                environment.metadata,
-            );
-            environment.name.filter(|value| !value.is_empty())
+        raw.environment.as_ref().and_then(|environment| {
+            environment
+                .name
+                .as_deref()
+                .filter(|value| !value.is_empty())
         }),
     ) {
         (Some(selected), Some(report_environment)) if selected == report_environment => {
@@ -411,8 +445,42 @@ fn project_report(
         (Some(_), Some(_)) => EnvironmentBinding::Mismatch,
         _ => EnvironmentBinding::Unbound,
     };
+    if let Some(environment) = raw.environment.as_ref() {
+        let _ = (
+            &environment.tenant_id,
+            &environment.subscription_id,
+            &environment.resource_group,
+            &environment.azure_cloud,
+            &environment.graph_environment,
+        );
+    }
 
-    Some(ValidationReport {
+    let evidence_value = raw
+        .environment
+        .as_ref()
+        .and_then(|environment| environment.metadata.as_ref())
+        .and_then(|metadata| metadata.get("azdManagementEvidence"));
+    let (binding_state, next_actions) = if raw.schema_version == "1.0" {
+        if evidence_value.is_some() {
+            return Err(ValidationReportState::Invalid);
+        }
+        (EvidenceBindingState::LegacyUnbound, Vec::new())
+    } else {
+        let value = evidence_value.ok_or(ValidationReportState::Invalid)?;
+        let (classes, operations): (&[&str], &[&str]) =
+            if matches!(raw.mode, ValidationMode::Delivery) {
+                (&["delivery"], &["delivery"])
+            } else {
+                (&["validation"], &["validate"])
+            };
+        let evidence = parse_evidence(value, classes, operations).map_err(|error| match error {
+            EvidenceParseError::Invalid => ValidationReportState::Invalid,
+            EvidenceParseError::FutureVersion => ValidationReportState::FutureVersion,
+        })?;
+        let binding_state = correlate(&evidence, expected);
+        (binding_state, evidence.next_actions)
+    };
+    Ok(ValidationReport {
         started_at,
         completed_at,
         duration_ms: raw.duration_ms,
@@ -421,12 +489,17 @@ fn project_report(
         summary,
         environment_binding,
         checks,
+        binding_state,
+        next_actions,
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{read, ValidationReportState, MAX_REPORT_BYTES};
+    use super::{read, read_with_context, ValidationReportState, MAX_REPORT_BYTES};
+    use crate::evidence::{
+        ExpectedEvidenceContext, OperationEvidenceContext, PersistedEvidenceOperation,
+    };
     use serde_json::json;
     use std::fs;
     use tempfile::tempdir;
@@ -469,6 +542,65 @@ mod tests {
             serde_json::to_vec(&value).unwrap(),
         )
         .unwrap();
+    }
+
+    fn expected() -> ExpectedEvidenceContext {
+        let context = OperationEvidenceContext {
+            project_id: "project-example".into(),
+            environment: "dev".into(),
+            azure_cloud: Some("AzureCloud".into()),
+            tenant_id: Some("00000000-0000-0000-0000-000000000000".into()),
+            subscription_id: Some("11111111-1111-1111-1111-111111111111".into()),
+            resource_group: Some("rg-example-dev".into()),
+            template_id: "example".into(),
+            revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            contract_digest: Some("a".repeat(64)),
+        };
+        ExpectedEvidenceContext {
+            current: context.clone(),
+            operations: vec![PersistedEvidenceOperation {
+                id: "22222222-2222-2222-2222-222222222222".into(),
+                kind: "validate".into(),
+                timestamp: "2026-09-21T04:53:46Z".into(),
+                context: Some(context),
+            }],
+        }
+    }
+
+    #[test]
+    fn round_trips_the_pinned_bound_producer_fixture() {
+        let root = tempdir().unwrap();
+        let value = serde_json::from_str(include_str!(
+            "../tests/fixtures/deployment-validation-bound-v1.1.json"
+        ))
+        .unwrap();
+        write_report(root.path(), value);
+        let result = read_with_context(root.path(), Some("dev"), Some(&expected()));
+        assert_eq!(result.state, ValidationReportState::Available);
+        let report = result.report.unwrap();
+        assert_eq!(
+            report.binding_state,
+            crate::evidence::EvidenceBindingState::Current
+        );
+        assert_eq!(report.next_actions.len(), 1);
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("11111111-1111"));
+        assert!(!serialized.contains("rg-example-dev"));
+    }
+
+    #[test]
+    fn distinguishes_future_outer_contracts() {
+        let root = tempdir().unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/deployment-validation-bound-v1.1.json"
+        ))
+        .unwrap();
+        value["schemaVersion"] = json!("1.2");
+        write_report(root.path(), value);
+        assert_eq!(
+            read(root.path(), Some("dev")).state,
+            ValidationReportState::FutureVersion
+        );
     }
 
     #[test]

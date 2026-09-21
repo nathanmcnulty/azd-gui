@@ -152,6 +152,9 @@ fn environment_assignments(
     });
     let mut assignments = BTreeMap::new();
     assignments.insert("AZURE_LOCATION".into(), request.location.clone());
+    // The current product targets the public Azure cloud. Persist the app-owned
+    // comparator explicitly so evidence never infers a cloud from tenant IDs.
+    assignments.insert("AZD_GUI_AZURE_CLOUD".into(), "AzureCloud".into());
     if let Some(tenant) = request.tenant.as_deref().filter(|value| !value.is_empty()) {
         assignments.insert("AZURE_TENANT_ID".into(), tenant.into());
     }
@@ -951,6 +954,7 @@ mod tests {
         let assignments = assignments.into_iter().collect::<HashMap<_, _>>();
 
         assert_eq!(assignments["AZURE_LOCATION"], "westus2");
+        assert_eq!(assignments["AZD_GUI_AZURE_CLOUD"], "AzureCloud");
         assert_eq!(
             assignments["AZURE_TENANT_ID"],
             "11111111-1111-1111-1111-111111111111"
