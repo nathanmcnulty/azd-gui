@@ -87,3 +87,14 @@ Private raw evidence is retained outside the repository under
 `C:\Users\NathanMcNulty\.codex\artifacts\azd-gui-maester-pilot-20260921`.
 The repository records only bounded identifiers and conclusions; it does not
 publish tenant reports, tokens, or CLI caches.
+
+## Adopted follow-up
+
+The live timing and output findings produced
+`nathanmcnulty/azd-maester#22`, merged as
+`1692b2e5a69c414b1e204c2714281ba0085c3560`. That commit removes per-record REST
+lookups for non-actionable progress/debug streams, preserves actionable stream
+text, and warns that completed jobs with error records still require Maester
+report review. Repository validation, dependency review, and CodeQL passed. The
+GUI catalog adopts that bounded follow-up, while this live evidence remains
+bound to deployed commit `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`.
