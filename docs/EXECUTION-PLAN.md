@@ -105,8 +105,9 @@ gates when changing those behaviors or selecting a final release candidate.
 
 ## Ordered task packets
 
-All packets below are **not started by this plan**. “Ready” means local work can
-begin after the user resumes execution, not that its live actions are approved.
+Packet progress is recorded in [EXECUTION-STATUS.md](EXECUTION-STATUS.md). “Ready”
+means local work can begin after the user resumes execution, not that its live
+actions are approved.
 
 ### P1 — Make Windows acceptance finite and reproducible
 
