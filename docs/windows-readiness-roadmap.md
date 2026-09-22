@@ -101,7 +101,7 @@ Browser preview is simulated. Passing offline tests or opening a development exe
 
 ## Maester adoption
 
-The bundled entry targets `1692b2e5a69c414b1e204c2714281ba0085c3560`, `automation-account`. Its variables and feature defaults agree with that revision's interactive wizard, and it pins the signed deployment receipt and validation components. The authorized live lifecycle ran against predecessor `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`; the adopted commit only makes validation streams concise and labels permission-limited error output honestly. Preserve the guided defaults in the catalog and use explicit choices for a least-privilege deployment.
+The bundled entry targets `1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`, `automation-account`. Its variables and feature defaults agree with that revision's interactive wizard, and it pins the signed deployment receipt and validation components. The authorized live lifecycle ran against predecessor `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`; the adopted commits make validation streams concise and mark the passing evidence as lifecycle-only rather than an all-tests-passed claim. Preserve the guided defaults in the catalog and use explicit choices for a least-privilege deployment.
 
 1. Use an explicitly authorized disposable subscription/environment and a new resource group with no existing Automation Account. Redeploying an existing account can remove its delete lock and all job schedules.
 2. Select Minimal, dashboard off, Exchange/Teams/Azure off, and an empty mail recipient. Review the eight baseline managed-identity Graph application roles, which still apply.
@@ -111,7 +111,6 @@ The bundled entry targets `1692b2e5a69c414b1e204c2714281ba0085c3560`, `automatio
 
 The first pilot completed in `westus2`, including independent Azure and Graph
 cleanup. See the [live pilot record](maester-minimal-pilot-20260921.md). Commit
-`1692b2e5a69c414b1e204c2714281ba0085c3560` passed repository validation,
-dependency review, and CodeQL after applying the bounded stream-output fix; it
-has not been redeployed, so live resource evidence remains bound to the exact
-predecessor.
+The bounded follow-ups through `1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`
+passed repository validation, dependency review, and CodeQL. They have not been
+redeployed, so live resource evidence remains bound to the exact predecessor.
