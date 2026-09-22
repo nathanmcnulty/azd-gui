@@ -95,6 +95,9 @@ The live timing and output findings produced
 `1692b2e5a69c414b1e204c2714281ba0085c3560`. That commit removes per-record REST
 lookups for non-actionable progress/debug streams, preserves actionable stream
 text, and warns that completed jobs with error records still require Maester
-report review. Repository validation, dependency review, and CodeQL passed. The
-GUI catalog adopts that bounded follow-up, while this live evidence remains
-bound to deployed commit `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`.
+report review. A second bounded follow-up, `nathanmcnulty/azd-maester#23` at
+`1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`, makes the generated evidence call
+this a report lifecycle check and records that Maester test outcomes were not
+evaluated. Repository validation, dependency review, and CodeQL passed for both.
+The GUI catalog adopts the latter commit, while this live evidence remains bound
+to deployed commit `45f839bc2c335cd1c7fa4c40ffe9c6978f715362`.

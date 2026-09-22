@@ -2,15 +2,17 @@
 
 This qualification covers the bundled `maester-automation` entry at
 `nathanmcnulty/azd-maester` commit
-`1692b2e5a69c414b1e204c2714281ba0085c3560`, subdirectory
+`1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`, subdirectory
 `automation-account`. Its deployed predecessor
 `45f839bc2c335cd1c7fa4c40ffe9c6978f715362` completed the separately authorized
 [Maester Minimal live pilot](maester-minimal-pilot-20260921.md). The adopted
 commit changes only validation-stream presentation: it retains actionable
 output, warnings, and errors, summarizes omitted progress/debug noise, and
 labels completed jobs with error streams as lifecycle success requiring report
-review. It does not change infrastructure, permissions, feature choices,
-component locks, or cleanup.
+review. Its evidence report also records `validationScope: lifecycle` and
+`testOutcomesEvaluated: false` instead of implying that job completion means all
+Maester tests passed. It does not change infrastructure, permissions, feature
+choices, component locks, or cleanup.
 
 The template uses interactive `preup`, `preprovision`, `postprovision`, and
 `predown` PowerShell hooks. Azure Deployment Studio therefore prepares the
