@@ -1,6 +1,6 @@
 # Windows acceptance status
 
-Current as of 20 September 2026. This is the operator-facing index for the next
+Current as of 21 September 2026. This is the operator-facing index for the next
 Windows candidate. It reconciles the reusable checklist in
 [Windows beta acceptance](windows-beta-acceptance.md) with the evidence in the
 [20 September acceptance record](windows-acceptance-20260920.md).
@@ -14,8 +14,8 @@ Status meanings:
 - **Failed** — a qualifying attempt found a defect or invalid artifact.
 
 The current signed application candidate is version 0.1.1 from source
-`3971cb1f685eae93c48c0fa37972b226d29e286f`, built by
-[workflow 35655808067](https://github.com/nathanmcnulty/azd-gui/actions/runs/35655808067).
+`a769ae68b7db8c4b118374026412bab54dc73796`, built by
+[workflow 35670536219](https://github.com/nathanmcnulty/azd-gui/actions/runs/35670536219).
 It contains the application and persistence changes through P6 plus the exact
 Maester evidence-consumer adoption. The workflow and a separate host download
 check verified the signatures, checksums, version, installer payload, silent
@@ -33,12 +33,12 @@ current candidate or an older revision.
 
 | Gate | Exact artifact/source and evidence | Status | Next owner action |
 | --- | --- | --- | --- |
-| Application validation and signing | Source `3971cb1`; workflow `35655808067`; dependency audits, 135 frontend tests, Rust format/Clippy, 153 native tests, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
-| Downloaded release artifacts | Current portable `8770f927399b1dc74492961831c2f0380607fc09e7a9e5154215a060aa2a870c`; NSIS `366202e23131ca6051ac770ae8f83ba24d5a90180d42b037c58efd05bac72039`; host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
-| Installed payload | Current installed executable `f1df7ff009eaf0ef5face5ae546d36615b3e7c225905c463d2c6b12823e9e9d8`; runner and host checks verified version, signature, publisher, timestamp, install, and uninstall | **Passed** | Repeat on the clean acceptance image and for an eventual tagged draft. |
-| Clean standard-user Windows 11 installation and startup | Older source `179b89e`; Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Repeat startup and affected surfaces for current source `3971cb1`; record a supported production Windows build when selecting the beta release image. |
+| Application validation and signing | Source `a769ae6`; workflow `35670536219`; dependency audits, 135 frontend tests, Rust format/Clippy, 153 native tests, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
+| Downloaded release artifacts | Current portable `06dc34656e9be603e00e8f8744053ec0b9ae1a265fd9fe1a66be7e30c11cc861`; NSIS `5d227600c82827af65a0640c13b810bca076c7c7b35424a8d007bd62173a80dd`; host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
+| Installed payload | Current installed executable `70923c1dcd524d0e97fac80664aefad5674abf6586ebe61b19f870accfdf1ed8`; runner and host checks verified version, signature, publisher, timestamp, install, and uninstall | **Passed** | Repeat on the clean acceptance image and for an eventual tagged draft. |
+| Clean standard-user Windows 11 installation and startup | Older source `179b89e`; Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Repeat startup and affected surfaces for current source `a769ae6`; record a supported production Windows build when selecting the beta release image. |
 | Windows 10 coverage | No retained Windows 10 native acceptance for 0.1.1 | **Not run** | Release owner decides whether Windows 11 evidence is sufficient for the beta claim or runs the affected gates on a supported Windows 10 x64 image. |
-| Native shell and admin surfaces | Older source `179b89e`; signed 0.1.1 Home, Catalog, Wizard, Connections, Tools, and Settings; dark theme; new draft save/reopen | **Passed** | Repeat surfaces affected after `179b89e` against current source `3971cb1`, then repeat the full visual pass for the tagged draft. |
+| Native shell and admin surfaces | Older source `179b89e`; signed 0.1.1 Home, Catalog, Wizard, Connections, Tools, and Settings; dark theme; new draft save/reopen | **Passed** | Repeat surfaces affected after `179b89e` against current source `a769ae6`, then repeat the full visual pass for the tagged draft. |
 | Missing prerequisites | Signed 0.1.1 clean profile reported six missing tools and no connected accounts without installation, elevation, or simulated success | **Passed** | None unless tool detection or empty-state guidance changes. |
 | Install prerequisites and refresh versions | Installed tools refreshed correctly in the host development build; they were not installed in the signed clean VM | **Not run** | Clean-VM operator installs supported prerequisites from official sources, restarts signed candidate, and records detected versions. |
 | Clean-machine interactive authentication | Signed clean VM remained offline/disconnected; cached host authentication is separate evidence | **Blocked** | User supplies the disposable identity/tenant and completes normal browser/WAM prompts. Follow the checklist below; never use device code. |
@@ -48,7 +48,7 @@ current candidate or an older revision.
 | Interactive-template terminal handoff | Deterministic tests cover the saved interactive route; no signed clean-VM handoff was observed | **Not run** | Open one reviewed interactive fixture/template and confirm only the validated external-terminal route is offered. Do not deploy it. |
 | Non-sensitive persistence | Signed 0.1.1 retained theme, exact legacy draft/timestamp, and a new harmless draft across restart; SQLite integrity passed | **Passed** | None unless persistence schema or draft logic changes. |
 | Sensitive-value non-persistence | Native allowlisting and tests exist; no signed clean-VM before/after inspection with a harmless designated sensitive fixture was retained | **Not run** | Use a non-secret marker in a field declared sensitive, close/reopen, and independently confirm it is absent from SQLite and UI. Never use a real secret for this test. |
-| Missing-WebView2 fail-closed behavior | Current source `3971cb1`; exact installed payload in a clean, network-disabled Windows Sandbox build `10.0.28000` stopped at the native “Could not find the WebView2 Runtime” bootstrap dialog with no simulated application state | **Passed** | Repeat only if bootstrap/runtime handling changes or against an eventual tagged artifact. The elevated `WDAGUtilityAccount` does not satisfy the separate standard-user gate. |
+| Missing-WebView2 fail-closed behavior | Predecessor `3971cb1`; exact installed payload in a clean, network-disabled Windows Sandbox build `10.0.28000` stopped at the native “Could not find the WebView2 Runtime” bootstrap dialog with no simulated application state. The delta to current source `a769ae6` changes catalog and documentation only | **Passed** | Repeat against an eventual tagged artifact. The elevated `WDAGUtilityAccount` does not satisfy the separate standard-user gate. |
 | Target review, permission preflight, preview invalidation | Development GUI source `94f60f7`; approved tenant/subscription; changing the resource group cleared approval and required a fresh preview | **Passed** | Treat as host-pilot evidence. Repeat only if target/preflight logic changes, or as part of the eventual solution pilot. |
 | GUI deployment and resource view | Development GUI source `94f60f7`; reference `abc6e896620990e68360a63dd14efda66a3f75cd`; empty group `rg-gui-arm-pilot-20260919`; `azd up`, three checks, reopen, zero resources/endpoints | **Passed** | Do not repeat the empty-group pilot as solution proof. P7 must use the adopted solution and separate authorization. |
 | Adopted Maester lifecycle | Exact Maester source `45f839bc`; authorized Minimal profile in `westus2`; Automation and Storage provisioned; eight approved Graph roles; completed runbook; archive and latest report written; four lifecycle checks passed; independent Azure and Graph cleanup clean | **Passed** | Treat missing-permission and `Forbidden` output as reduced Minimal-profile test coverage. See the [live pilot record](maester-minimal-pilot-20260921.md). |
@@ -70,9 +70,9 @@ or private VM data.
 
 | Retained evidence | Establishes |
 | --- | --- |
-| Workflow `35655808067`; `installed-artifact-verification.json` | Exact `3971cb1` build/test/signing success plus runner-side signed installer payload, version, publisher, and timestamp verification |
-| `downloaded-artifact-verification.json`; `host-installed-verification.json` | Independently downloaded current artifact hashes/signatures plus host custom-directory install, installed-payload verification, and uninstall |
-| `sandbox-install.json`; `sandbox-launch.json`; native computer-use capture | Current installed payload and signature in Windows Sandbox plus the observed missing-WebView2 native startup stop; Sandbox ran elevated and network-disabled |
+| Workflow `35670536219`; `installed-artifact-verification.json` | Exact `a769ae6` build/test/signing success plus runner-side signed installer payload, version, publisher, and timestamp verification |
+| `host-artifact-verification.json`; `host-installed-verification.json` | Independently downloaded current artifact hashes/signatures plus host custom-directory install, installed-payload verification, and uninstall |
+| `sandbox-install.json`; `sandbox-launch.json`; native computer-use capture | Predecessor `3971cb1` installed payload and signature in Windows Sandbox plus the observed missing-WebView2 native startup stop; Sandbox ran elevated and network-disabled |
 | `final-artifact-verification.json` | Downloaded portable/installer hashes, version, expected publisher, and timestamps |
 | `final-installed-verification.json` | Installed 0.1.1 hash, version, expected publisher, timestamp, and correspondence with the release receipt |
 | `output/final/upgrade-data-verification.json` | Schema/integrity plus exact legacy draft, timestamp, theme, and navigation retention |

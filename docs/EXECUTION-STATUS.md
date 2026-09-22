@@ -10,7 +10,7 @@ Updated 21 September 2026.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `3971cb1f685eae93c48c0fa37972b226d29e286f` | The exact GUI candidate is signed and privately verified, and Maester commit `45f839bc` completed an authorized Minimal deploy, validation, evidence, and independently verified teardown. Clean-account auth, affected clean-VM acceptance, and the historical-installer decision remain external gates. |
+| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `a769ae68b7db8c4b118374026412bab54dc73796` | The exact GUI candidate is signed and privately verified, and Maester commit `45f839bc` completed an authorized Minimal deploy, validation, evidence, and independently verified teardown. Clean-account auth, affected clean-VM acceptance, and the historical-installer decision remain external gates. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -90,18 +90,21 @@ P6 validation:
 - `npm run audit:dependencies` reported no npm or Rust advisories;
 - final Sol high review reported no remaining P1 or P2 findings.
 
-P7 selected GUI source `3971cb1` and completed the authorized private signing
-gate in [workflow 35655808067](https://github.com/nathanmcnulty/azd-gui/actions/runs/35655808067).
+P7 selected GUI source `a769ae6` and completed the authorized private signing
+gate in [workflow 35670536219](https://github.com/nathanmcnulty/azd-gui/actions/runs/35670536219).
 The workflow passed dependency audits, 135 frontend tests, Rust formatting and
 Clippy, 153 native tests, release build, Azure OIDC, Trusted Signing, checksum
 creation, installed-payload verification, silent install/uninstall, and private
 artifact upload. A separate download check on Windows build 28000 verified both
 artifact hashes, version 0.1.1, the expected publisher and trusted timestamps,
 then repeated the custom-directory install, payload verification, and uninstall.
-A separate clean, network-disabled Windows Sandbox build 28000 run installed and
-verified the same payload, then stopped at the expected native missing-WebView2
-dialog without rendering simulated application state. The Sandbox account was
-elevated, so this closes only the fail-closed bootstrap gate.
+A clean, network-disabled Windows Sandbox build 28000 run against predecessor
+`3971cb1` installed and verified its payload, then stopped at the expected native
+missing-WebView2 dialog without rendering simulated application state. The delta
+to `a769ae6` changes catalog and documentation only, so the evidence still covers
+the unchanged bootstrap behavior; it does not replace exact-candidate or tagged-
+artifact acceptance. The Sandbox account was elevated, so this closes only the
+fail-closed bootstrap gate.
 
 The Maester Minimal pilot subsequently completed in `westus2`; see the
 [live pilot record](maester-minimal-pilot-20260921.md). It proved the authorized
@@ -126,5 +129,5 @@ completed-job error output. Maester PRs 22 and 23 fixed the bounded presentation
 and evidence language through `1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`;
 repository validation, dependency review, and CodeQL passed. The bundled catalog
 now targets that commit. The live resource evidence remains bound to predecessor
-`45f839bc`, and adopting the new catalog pin means a future signed GUI candidate
-must use the resulting GUI source.
+`45f839bc`; private signed candidate `a769ae6` contains the new catalog pin, but
+its Maester lifecycle has not been redeployed.
