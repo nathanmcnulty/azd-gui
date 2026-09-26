@@ -18,6 +18,20 @@ afterEach(() => {
 });
 
 describe("desktop experience", () => {
+  it("keeps optional modules out of the home CLI count", async () => {
+    const data = await bridge.bootstrap();
+    data.tools = data.tools.map((tool) =>
+      tool.kind === "powershellModule"
+        ? { ...tool, state: "missing", installedVersion: undefined }
+        : { ...tool, state: "ready" }
+    );
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+
+    render(App);
+
+    expect((await screen.findByText("CLI tools")).parentElement).toHaveTextContent("3/3");
+  });
+
   it("keeps preview success separate from the current wizard deployment", async () => {
     const data = await bridge.bootstrap();
     data.isNative = true;

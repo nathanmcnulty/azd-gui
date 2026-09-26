@@ -214,7 +214,10 @@ async fn powershell_module_version(name: &str) -> ToolProbe {
         return ToolProbe::default();
     };
     ToolProbe {
-        version: output.success.then(|| output.stdout.trim().to_string()),
+        version: output
+            .success
+            .then(|| output.stdout.trim().to_string())
+            .filter(|version| !version.is_empty()),
         executable_path: Some(output.executable_path),
     }
 }
@@ -495,25 +498,20 @@ fn tool(
     provider: &str,
     install_id: Option<&str>,
 ) -> ToolStatus {
-    let installed_version = probe
+    let reported_version = probe
         .version
         .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let installed_version = reported_version
         .and_then(|value| semver::Version::parse(value.trim_start_matches('v')).ok());
     let required_version = minimum.and_then(|minimum| semver::Version::parse(minimum).ok());
-    let state = installed_version
-        .zip(required_version)
-        .map(|(installed, required)| {
-            if installed >= required {
-                "ready"
-            } else {
-                "outdated"
-            }
-        })
-        .unwrap_or(if probe.version.is_some() {
-            "ready"
-        } else {
-            "missing"
-        });
+    let state = match (reported_version, installed_version, required_version) {
+        (None, _, _) => "missing",
+        (Some(_), None, _) => "unknown",
+        (Some(_), Some(installed), Some(required)) if installed < required => "outdated",
+        (Some(_), Some(_), _) => "ready",
+    };
     let can_install = approved_install(id).is_some();
     let install_command = match provider {
         "azdTool" => install_id.map(|name| format!("azd tool install {name} --no-prompt")),
@@ -531,7 +529,7 @@ fn tool(
         minimum_version: minimum.map(Into::into),
         required: id == "azd",
         state: state.into(),
-        installed_version: probe.version.filter(|value| !value.is_empty()),
+        installed_version: reported_version.map(str::to_string),
         executable_path: probe.executable_path,
         latest_version: None,
         update_available: false,
@@ -788,6 +786,30 @@ mod tests {
         assert_eq!(status.minimum_version, None);
         assert!(!status.can_install);
         assert_eq!(status.install_provider.as_deref(), Some("manual"));
+    }
+
+    #[test]
+    fn empty_or_unparseable_module_output_never_reports_ready() {
+        for (version, expected_state) in [
+            ("", "missing"),
+            ("  ", "missing"),
+            ("bad output", "unknown"),
+        ] {
+            let status = tool(
+                "Az.Accounts",
+                "Azure PowerShell",
+                "powershellModule",
+                Some("3.0.0"),
+                ToolProbe {
+                    version: Some(version.into()),
+                    executable_path: Some("pwsh.exe".into()),
+                },
+                "psResource",
+                Some("Az.Accounts"),
+            );
+            assert_eq!(status.state, expected_state, "version: {version:?}");
+            assert_ne!(status.state, "ready");
+        }
     }
 
     #[test]

@@ -133,6 +133,7 @@
   const nativeRuntime = isTauri();
 
   let data: BootstrapData = structuredClone(mockBootstrap);
+  $: cliTools = data.tools.filter((tool) => tool.kind === "tool");
   let loading = true;
   let bootstrapFailure = "";
   let activeNav: NavId = "home";
@@ -2853,9 +2854,9 @@
             </div>
           </div>
           <div class="readiness-card">
-            <div class="readiness-heading"><span>Local readiness</span><strong>{data.tools.filter((t) => t.state === "ready").length}/{data.tools.length}</strong></div>
-            <div class="readiness-track"><span style={`width:${(data.tools.filter((t) => t.state === "ready").length / Math.max(1, data.tools.length)) * 100}%`}></span></div>
-            {#each data.tools.slice(0, 3) as tool}
+            <div class="readiness-heading"><span>CLI tools</span><strong>{cliTools.filter((tool) => tool.state === "ready").length}/{cliTools.length}</strong></div>
+            <div class="readiness-track"><span style={`width:${(cliTools.filter((tool) => tool.state === "ready").length / Math.max(1, cliTools.length)) * 100}%`}></span></div>
+            {#each cliTools as tool}
               <div class="mini-status"><span class={`dot ${tool.state}`}></span><span>{tool.name}</span><small>{tool.installedVersion ?? "Needs attention"}</small></div>
             {/each}
           </div>
