@@ -270,7 +270,7 @@ insufficient. Do not repeat the empty-group pilot as a substitute for solution p
 Select one application revision after local fixes settle. Dispatch signing only
 with applicable authorization; verify downloaded and installed payloads before
 launch. Repeat affected native/upgrade/runtime gates, record the exact Windows
-build, and determine coverage for the claimed Windows 10/11 x64 support. Keep the
+build, and determine coverage for the approved Windows 11 x64 beta support. Keep the
 historical installer limitation explicit. A draft/tag/publication is a separate
 user decision after remaining acceptance is met; this plan does not authorize it.
 

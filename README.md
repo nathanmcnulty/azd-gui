@@ -6,7 +6,7 @@ The application uses Tauri 2, Svelte 5, TypeScript, and Rust. It does not bundle
 
 ## Windows beta
 
-The supported beta is Windows 10/11 on x64. macOS and Linux source builds are experimental development targets; they are not release-supported or included in beta acceptance yet.
+The planned beta supports Windows 11 on x64. Windows 10, macOS, and Linux are outside beta acceptance.
 
 - Compact VS Code-inspired shell with one persistent, collapsible navigation tree for Catalog, Projects, Connections, Tools, and Settings.
 - System, light, and dark appearance preferences persisted with the navigation state.

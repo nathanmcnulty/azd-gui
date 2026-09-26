@@ -1,6 +1,6 @@
 # Architecture
 
-The supported beta release target is Windows 10/11 on x64. macOS and Linux remain experimental source-build targets until they have their own packaging, signing, and acceptance gates.
+The planned beta release target is Windows 11 on x64. Windows 10 is outside beta acceptance. macOS and Linux remain experimental source-build targets until they have their own packaging, signing, and acceptance gates.
 
 ## Runtime boundary
 

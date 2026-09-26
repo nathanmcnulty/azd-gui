@@ -42,10 +42,12 @@ P3 validation:
   recovery, and the interactive-terminal boundary;
 - final Sol high review reported no remaining P1 or P2 findings.
 
-Pending input is finite and recorded in
-[Windows acceptance status](windows-acceptance-status.md): a disposable identity,
-expected and mismatched targets, human browser/broker completion, exact final
-candidate, and the maintainer decision for the historical installer limitation.
+Pending work is finite and recorded in
+[Windows acceptance status](windows-acceptance-status.md): Nora's human
+browser/broker completion, a controlled target mismatch, affected clean-profile
+UI checks, and an exact final tagged candidate. The maintainer has accepted
+Windows 11 x64 beta scope and clean installation after the invalid historical
+installer.
 
 P5 changed the azd-reference producer contract in PR 44 and the local GUI reader.
 Bound evidence is current only when project, selected environment, target, saved

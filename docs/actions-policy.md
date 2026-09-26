@@ -35,7 +35,7 @@ The release workflow can be dispatched manually only after selecting its explici
 
 The draft is a publication boundary, not a finished release. A maintainer must complete [Windows beta acceptance](windows-beta-acceptance.md), retain its evidence, and explicitly publish the draft. Failed or incomplete acceptance leaves the release private.
 
-The supported beta release target is Windows 10/11 on x64. macOS and Linux packaging remain experimental and local/manual until those release artifacts have dedicated packaging, signing, and acceptance gates. Do not add them to the tagged release workflow merely to prove that compilation is possible.
+The planned beta release target is Windows 11 on x64. Windows 10, macOS, and Linux are outside beta acceptance. macOS and Linux packaging remain experimental and local/manual until those release artifacts have dedicated packaging, signing, and acceptance gates. Do not add them to the tagged release workflow merely to prove that compilation is possible.
 
 ## Repository settings
 
