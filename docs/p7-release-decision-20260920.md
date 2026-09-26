@@ -49,12 +49,13 @@ future tagged build is a new artifact boundary and must repeat verification.
    code remains prohibited.
 3. **Windows acceptance owner:** exercise the affected admin surfaces,
    persistence schema 4, interruption recovery, and output/history redaction on
-   a clean profile using this exact candidate. Decide whether Windows 11 evidence
-   is sufficient for beta or run Windows 10. The artifact and host installation
-   checks are complete.
-4. **Maintainer:** accept the documented clean-install migration for the invalid
-   historical public installer or choose another reviewed remediation before
-   publication.
+   a clean Windows 11 profile using this exact candidate. The artifact and host
+   installation checks are complete. Windows 10 is outside the beta scope by
+   maintainer decision on 21 September 2026.
+4. **Historical installer:** the maintainer accepted the documented clean-install
+   path on 21 September 2026; the public prerelease notes now warn about the
+   installed payload. The invalid payload remains a failed historical result;
+   in-place upgrade from `v0.1.0-alpha` is unsupported.
 
 ## Next authorized sequence
 

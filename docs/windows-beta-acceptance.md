@@ -1,9 +1,9 @@
 # Windows beta acceptance
 
-A tagged build stages signed artifacts in a draft GitHub Release. The draft must remain private until this checklist passes on a clean Windows 10 or Windows 11 x64 virtual machine. Do not substitute a developer workstation or a profile that already contains Azure tool state.
+A tagged build stages signed artifacts in a draft GitHub Release. The draft must remain private until this checklist passes on a clean Windows 11 x64 virtual machine. Do not substitute a developer workstation or a profile that already contains Azure tool state. Windows 10 is outside the beta scope.
 
 For the current candidate, use the reconciled gate state, remaining inputs, and
-migration proposal in [Windows acceptance status](windows-acceptance-status.md).
+accepted clean-install handling in [Windows acceptance status](windows-acceptance-status.md).
 This checklist remains the reusable procedure; a result from another source,
 artifact, Windows image, or authentication context transfers only when the status
 record says so explicitly.
@@ -59,7 +59,7 @@ Do not perform this section without explicit authorization for the tenant, subsc
 
 ## Upgrade, uninstall, and publish
 
-- From a fresh snapshot, install the previous public signed version, create only non-sensitive local state, then install the candidate. Confirm the app starts and retained state remains usable.
+- The historical `v0.1.0-alpha` installer has a verified invalid installed payload and is excluded from in-place upgrade support. Follow the accepted clean-install procedure in [Windows acceptance status](windows-acceptance-status.md), without launching that payload. Preserve the corrected 0.1.0 baseline upgrade result as separate compatibility evidence.
 - Use **Settings → Clear local data** and confirm project references, history, drafts, catalog trust, preferences, and cached templates are removed while project folders and external CLI credentials remain. Then uninstall the candidate, confirm installed binaries are removed, and discard the VM or manually remove the intentionally retained test folders and credentials.
 - Attach the artifact evidence and completed checklist to the private release record. Document failures; never work around a failed signature, checksum, version, bootstrap, deployment, cleanup, upgrade, or uninstall check.
 - Publish the draft only after every required item passes: `gh release edit v<version> --draft=false`.

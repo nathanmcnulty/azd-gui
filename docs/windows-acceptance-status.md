@@ -1,6 +1,6 @@
 # Windows acceptance status
 
-Current as of 21 September 2026. This is the operator-facing index for the next
+Current as of 26 September 2026. This is the operator-facing index for the next
 Windows candidate. It reconciles the reusable checklist in
 [Windows beta acceptance](windows-beta-acceptance.md) with the evidence in the
 [20 September acceptance record](windows-acceptance-20260920.md).
@@ -24,10 +24,11 @@ management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
-The matrix contains 27 gates: 16 Passed, 7 Not run, 3 Blocked, and 1 Failed.
+The matrix contains 26 beta gates: 16 Passed, 6 Not run, 3 Blocked, and 1 Failed.
 The counts describe the retained evidence across explicitly named 0.1.1 sources;
 they are not a release score. Each row states whether its evidence applies to the
-current candidate or an older revision.
+current candidate or an older revision. The maintainer selected Windows 11 x64
+for beta; Windows 10 coverage is outside this matrix.
 
 ## Current gate matrix
 
@@ -37,12 +38,11 @@ current candidate or an older revision.
 | Downloaded release artifacts | Current portable `06dc34656e9be603e00e8f8744053ec0b9ae1a265fd9fe1a66be7e30c11cc861`; NSIS `5d227600c82827af65a0640c13b810bca076c7c7b35424a8d007bd62173a80dd`; host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
 | Installed payload | Current installed executable `70923c1dcd524d0e97fac80664aefad5674abf6586ebe61b19f870accfdf1ed8`; runner and host checks verified version, signature, publisher, timestamp, install, and uninstall | **Passed** | Repeat on the clean acceptance image and for an eventual tagged draft. |
 | Clean standard-user Windows 11 installation and startup | Older source `179b89e`; Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Repeat startup and affected surfaces for current source `a769ae6`; record a supported production Windows build when selecting the beta release image. |
-| Windows 10 coverage | No retained Windows 10 native acceptance for 0.1.1 | **Not run** | Release owner decides whether Windows 11 evidence is sufficient for the beta claim or runs the affected gates on a supported Windows 10 x64 image. |
 | Native shell and admin surfaces | Older source `179b89e`; signed 0.1.1 Home, Catalog, Wizard, Connections, Tools, and Settings; dark theme; new draft save/reopen | **Passed** | Repeat surfaces affected after `179b89e` against current source `a769ae6`, then repeat the full visual pass for the tagged draft. |
 | Missing prerequisites | Signed 0.1.1 clean profile reported six missing tools and no connected accounts without installation, elevation, or simulated success | **Passed** | None unless tool detection or empty-state guidance changes. |
-| Install prerequisites and refresh versions | Installed tools refreshed correctly in the host development build; they were not installed in the signed clean VM | **Not run** | Clean-VM operator installs supported prerequisites from official sources, restarts signed candidate, and records detected versions. |
-| Clean-machine interactive authentication | Signed clean VM remained offline/disconnected; cached host authentication is separate evidence | **Blocked** | User supplies the disposable identity/tenant and completes normal browser/WAM prompts. Follow the checklist below; never use device code. |
-| Wrong-tenant/target rejection after interactive sign-in | Automated and cached-host checks passed, including the tenant-scoped azd probe; no clean-profile live mismatch was exercised | **Blocked** | The authentication operator supplies a controlled second tenant/target and confirms Continue remains blocked. No resource mutation is needed. |
+| Install prerequisites and refresh versions | In the 21 September disposable Sandbox, Microsoft-signed WebView2 installed with exit 0; locally copied PowerShell 7.6.6 and Azure CLI 2.89.1 ran. The app was relaunched from signed source `a769ae6`, but no retained UI refresh observation exists | **Not run** | Confirm the signed app reports the installed versions on a clean Windows 11 profile. The Sandbox setup receipt alone does not establish UI detection. |
+| Clean-machine interactive authentication | Nora `nora@sharemylabs.com` exists in the expected tenant and has temporary Reader on the expected subscription; no retained clean-profile browser/WAM sign-in exists | **Blocked** | A human completes the normal browser/WAM prompts as Nora in the disposable profile. Follow the checklist below; never use device code. |
+| Wrong-tenant/target rejection after interactive sign-in | Automated and cached-host checks passed, including the tenant-scoped azd probe; no clean-profile live mismatch was exercised | **Blocked** | After Nora signs in, enter an unavailable subscription UUID as a read-only negative target and confirm Continue remains blocked. This tests an unavailable target, not access to a second real tenant. |
 | Pinned source review and preparation in signed app | Signed app rendered the bundled catalog and restored drafts. Full pinned preparation ran in development source `94f60f7`, not signed 0.1.1 | **Not run** | After clean-VM tools/auth pass, prepare the named starter and retain the approval showing project, environment, template, and revision. |
 | Preparation cancellation and partial-project recovery | Preview cancellation/retry passed in the host pilot. Cancellation during preparation was not exercised in signed 0.1.1 | **Not run** | Cancel one signed-candidate preparation and verify the partial project remains inspectable with explicit recovery/removal guidance. Do not delete it automatically. |
 | Interactive-template terminal handoff | Deterministic tests cover the saved interactive route; no signed clean-VM handoff was observed | **Not run** | Open one reviewed interactive fixture/template and confirm only the validated external-terminal route is offered. Do not deploy it. |
@@ -56,10 +56,10 @@ current candidate or an older revision.
 | Cleanup | GUI `azd down` succeeded; independent `az group exists` returned `false`; Azure CLI default subscription was unchanged | **Passed** | For P7, independently verify ARM and any directory/service objects owned by that solution. |
 | Output/history secret review | Redaction and non-persistence tests passed, but no formal retained manual review of every signed-candidate output/history surface exists | **Not run** | During the next signed live path, inspect output/history for bearer values, JWTs, authorization headers, and sensitive environment values. |
 | Corrected 0.1.0 → signed 0.1.1 upgrade | Corrected signed baseline `cc3d954` upgraded without elevation; exact draft/timestamp and settings retained | **Passed** | Preserve as corrected-baseline evidence; do not call it previous-public-version acceptance. |
-| Previous public installer → candidate upgrade | Public `v0.1.0-alpha` outer installer is valid, but its installed executable is `HashMismatch` and was never launched | **Failed** | Maintainer chooses the clean-install migration proposal below or another reviewed remediation. Never waive or relabel this failure. |
+| Previous public installer → candidate upgrade | Public `v0.1.0-alpha` outer installer is valid, but its installed executable is `HashMismatch` and was never launched | **Failed** | Maintainer accepted clean installation and excluded in-place upgrade from this historical package. Preserve the failure and follow the procedure below. |
 | Clear local data | Signed 0.1.1 emptied five app-owned tables with SQLite integrity intact; test project file and Azure CLI directory marker retained identical hashes | **Passed** | Real credential caches were absent, so repeat credential-cache preservation only with an explicitly disposable signed-in profile. |
 | Standard-user uninstall | Signed 0.1.1 uninstaller returned zero and installed executable was absent | **Passed** | Repeat for the eventual tagged draft. |
-| Tag, draft release, and publication | No 0.1.1 tag/draft; interactive auth and several exact-candidate gates remain open; historical upgrade failed | **Blocked** | User authorizes tag/signing/publication only after the matrix is reconciled for the selected release revision and accepts or resolves the historical migration limitation. |
+| Tag, draft release, and publication | No 0.1.1 tag/draft; interactive auth and several exact-candidate gates remain open; historical upgrade remains a documented failure with accepted clean-install handling | **Blocked** | Reconcile the remaining Windows 11 gates for the selected source and verify the eventual tagged artifact before deciding on publication. |
 
 Private receipts and snapshots remain outside the repository under the existing
 acceptance store and the run-specific private artifact store. They are evidence
@@ -73,6 +73,7 @@ or private VM data.
 | Workflow `35670536219`; `installed-artifact-verification.json` | Exact `a769ae6` build/test/signing success plus runner-side signed installer payload, version, publisher, and timestamp verification |
 | `host-artifact-verification.json`; `host-installed-verification.json` | Independently downloaded current artifact hashes/signatures plus host custom-directory install, installed-payload verification, and uninstall |
 | `sandbox-install.json`; `sandbox-launch.json`; native computer-use capture | Predecessor `3971cb1` installed payload and signature in Windows Sandbox plus the observed missing-WebView2 native startup stop; Sandbox ran elevated and network-disabled |
+| `azd-gui-a769ae6-clean-profile/prerequisites-local.json`; `medium-candidate-token.json` | On 21 September, a disposable Windows 11 Sandbox installed signed WebView2, ran local PowerShell 7.6.6 and Azure CLI 2.89.1, and launched source `a769ae6` with a filtered, medium-integrity token. The WDAG account was originally an administrator; this is prerequisite and process-token evidence, not a separate standard-user profile or completed GUI/authentication acceptance |
 | `final-artifact-verification.json` | Downloaded portable/installer hashes, version, expected publisher, and timestamps |
 | `final-installed-verification.json` | Installed 0.1.1 hash, version, expected publisher, timestamp, and correspondence with the release receipt |
 | `output/final/upgrade-data-verification.json` | Schema/integrity plus exact legacy draft, timestamp, theme, and navigation retention |
@@ -94,9 +95,12 @@ directory changes.
 1. Start with a new standard-user Windows profile that has no Azure CLI, azd,
    PowerShell, or application credential cache. Do not simulate this by deleting
    a real user's cache.
-2. Record the Windows build, signed app source/version, disposable identity,
-   expected tenant, and expected subscription. The user must also identify a
-   controlled mismatched tenant/target for the negative check.
+2. Record the Windows build, signed app source/version, disposable identity
+   `nora@sharemylabs.com`, expected tenant
+   `847b5907-ca15-40f4-b171-eb18619dbfab`, and expected subscription
+   `a80941e8-c2b9-4bc9-83ad-117cc40d0bea`. Use a valid but unavailable
+   subscription UUID for the negative target check; do not probe another
+   person's subscription.
 3. Launch the installed signed app. Confirm Connections shows no active account
    and neither the UI nor output contains tokens.
 4. Use the app's **Connect** action. Allow azd/Azure CLI to use their normal
@@ -109,7 +113,7 @@ directory changes.
    subscription. Confirm both required connections are shown as connected for
    that target and the wizard can reach target review. Stop before preparation;
    sign-in proof does not require project initialization or cloud mutation.
-7. Change to the controlled mismatched tenant/target. Confirm the relevant
+7. Change to the controlled unavailable subscription target. Confirm the relevant
    connection becomes disconnected/unknown and Continue remains blocked. Return
    to the approved target and confirm a fresh check is required; a stale result
    must not unlock the wizard.
@@ -118,20 +122,22 @@ directory changes.
    according to the acceptance owner. Do not sign out or delete caches on a
    non-disposable profile as part of this check.
 
-Inputs still required: disposable identity, expected tenant/subscription,
-controlled mismatched target, a human to complete broker/browser prompts, and the
-exact signed candidate. No Azure resource group or application is required.
+Remaining live input: a human must complete Nora's broker/browser prompts in a
+clean standard-user Windows 11 profile. The identity, expected tenant and
+subscription, negative-target method, and exact private signed candidate are
+already selected. No Azure resource group or application is required.
 
-## Proposed clean-install migration for `v0.1.0-alpha`
+## Accepted clean-install handling for `v0.1.0-alpha`
 
-This proposal does not remediate the already-published installer and does not
-authorize editing or deleting its release assets.
+The maintainer accepted this path on 21 September 2026. A warning was added to
+the [historical prerelease notes](https://github.com/nathanmcnulty/azd-gui/releases/tag/v0.1.0-alpha)
+on 26 September 2026. This does not remediate the already-published installer or
+change its release assets. In-place upgrade from that installed package is unsupported.
 
-1. Preserve the public assets and hashes as historical evidence. Add a prominent
-   warning to the prerelease notes only after maintainer approval: the installer
-   has a valid outer signature, but its installed application payload fails
-   Authenticode and must not be launched. Do not silently replace an asset under
-   the existing tag.
+1. Preserve the public assets and hashes as historical evidence. The prerelease
+   notes must warn that the installer has a valid outer signature, but its
+   installed application payload fails Authenticode and must not be launched.
+   Do not silently replace an asset under the existing tag.
 2. On an affected machine, close the old app without launching it. Record the
    installed path, file hash, version, and signature result. Back up the app-owned
    SQLite files (`azd-gui.sqlite`, `-wal`, and `-shm` together while the process is
@@ -153,8 +159,8 @@ authorize editing or deleting its release assets.
    executable, credential cache, or unknown file from the old install directory.
 6. Record one of three outcomes: clean profile/no state restored; verified
    migration succeeded; or migration stopped before executing an unverified
-   component. A maintainer must decide whether this documented clean-install path
-   is acceptable for beta publication or whether a tested cleanup tool is required.
+   component. Do not call this an in-place upgrade or change the failed matrix
+   result.
 
 The valid historical portable executable may remain useful as retained data-format
 evidence, but it does not make the installed payload valid and is not a substitute
