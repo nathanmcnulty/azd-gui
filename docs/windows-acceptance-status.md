@@ -3,7 +3,8 @@
 Current as of 26 September 2026. This is the operator-facing index for the next
 Windows candidate. It reconciles the reusable checklist in
 [Windows beta acceptance](windows-beta-acceptance.md) with the evidence in the
-[20 September acceptance record](windows-acceptance-20260920.md).
+[20 September acceptance record](windows-acceptance-20260920.md) and the
+[26 September native follow-up](windows-acceptance-20260926.md).
 
 Status meanings:
 
@@ -38,7 +39,7 @@ for beta; Windows 10 coverage is outside this matrix.
 | Downloaded release artifacts | Current portable `06dc34656e9be603e00e8f8744053ec0b9ae1a265fd9fe1a66be7e30c11cc861`; NSIS `5d227600c82827af65a0640c13b810bca076c7c7b35424a8d007bd62173a80dd`; host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
 | Installed payload | Current installed executable `70923c1dcd524d0e97fac80664aefad5674abf6586ebe61b19f870accfdf1ed8`; runner and host checks verified version, signature, publisher, timestamp, install, and uninstall | **Passed** | Repeat on the clean acceptance image and for an eventual tagged draft. |
 | Clean standard-user Windows 11 installation and startup | Older source `179b89e`; Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Repeat startup and affected surfaces for current source `a769ae6`; record a supported production Windows build when selecting the beta release image. |
-| Native shell and admin surfaces | Older source `179b89e`; signed 0.1.1 Home, Catalog, Wizard, Connections, Tools, and Settings; dark theme; new draft save/reopen | **Passed** | Repeat surfaces affected after `179b89e` against current source `a769ae6`, then repeat the full visual pass for the tagged draft. |
+| Native shell and admin surfaces | Signed source `a769ae6` rendered Home, Catalog, Projects, Connections, Tools, Settings, and the pinned starter wizard; dark appearance switched and the saved destination restored on reopen | **Passed** | The Tools readiness failure is tracked separately below. Repeat affected surfaces for the final signed/tagged source and on a separate standard-user profile. |
 | Missing prerequisites | Signed 0.1.1 clean profile reported six missing tools and no connected accounts without installation, elevation, or simulated success | **Passed** | None unless tool detection or empty-state guidance changes. |
 | Install prerequisites and refresh versions | On 26 September, source `a769ae6` rendered in a disposable Sandbox after signed WebView2 installation. The GUI detected azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6. It also incorrectly showed three absent PowerShell modules as **Ready** and reported 6/6 local readiness | **Failed** | Fix empty module-output handling and retest the exact signed candidate. The observed GUI ran as the Sandbox WDAG account; it does not satisfy the separate standard-user gate. |
 | Clean-machine interactive authentication | Nora `nora@sharemylabs.com` exists in the expected tenant and has temporary Reader on the expected subscription; no retained clean-profile browser/WAM sign-in exists | **Blocked** | A human completes the normal browser/WAM prompts as Nora in the disposable profile. Follow the checklist below; never use device code. |
