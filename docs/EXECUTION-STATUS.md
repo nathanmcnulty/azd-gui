@@ -1,6 +1,6 @@
 # Execution status
 
-Updated 21 September 2026.
+Updated 26 September 2026.
 
 | Packet | Status | Baseline | Result |
 | --- | --- | --- | --- |
@@ -10,7 +10,7 @@ Updated 21 September 2026.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `a769ae68b7db8c4b118374026412bab54dc73796` | The exact GUI candidate is signed and privately verified, and Maester commit `45f839bc` completed an authorized Minimal deploy, validation, evidence, and independently verified teardown. Clean-account auth, affected clean-VM acceptance, and the historical-installer decision remain external gates. |
+| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `a769ae68b7db8c4b118374026412bab54dc73796` | The private GUI candidate is signed, and Maester commit `45f839bc` completed an authorized Minimal deploy, validation, and teardown. Windows 11 beta scope and historical clean-install handling are accepted. Native Sandbox testing found false optional-module readiness; PR #118 fixes it, but the corrected signed artifact, clean-account auth, and remaining clean-profile gates still need acceptance. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
@@ -47,7 +47,8 @@ Pending work is finite and recorded in
 browser/broker completion, a controlled target mismatch, affected clean-profile
 UI checks, and an exact final tagged candidate. The maintainer has accepted
 Windows 11 x64 beta scope and clean installation after the invalid historical
-installer.
+installer. The [26 September native follow-up](windows-acceptance-20260926.md)
+records the prerequisite-display failure and its fix.
 
 P5 changed the azd-reference producer contract in PR 44 and the local GUI reader.
 Bound evidence is current only when project, selected environment, target, saved

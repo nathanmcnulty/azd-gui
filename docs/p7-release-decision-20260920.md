@@ -12,9 +12,11 @@ solution subsequently completed its authorized Minimal lifecycle at commit
 [live pilot record](maester-minimal-pilot-20260921.md). The candidate has not
 completed its affected clean-profile authentication and UI acceptance.
 
-This is a finite external-gate decision, not a code-quality failure. The signing
-operation produced a private 14-day workflow artifact only; it created no app
-tag, draft release, or public release.
+The [26 September native follow-up](windows-acceptance-20260926.md) found false
+readiness for absent optional modules in this signed candidate. PR #118 fixed
+the code, but the corrected signed artifact still needs native retesting. The
+original signing operation produced a private 14-day workflow artifact only; it
+created no app tag, draft release, or public release.
 
 ## Exact signed candidate
 
