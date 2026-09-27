@@ -26,6 +26,13 @@ management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
+Application code on main is now `da0a55f`, which includes the Graph identity,
+native Azure-target approval, preparation/clear, and environment-edit race fixes.
+The signed `cc67ad9` rows below are historical candidate evidence until this
+new source is privately signed, downloaded, and independently verified. The
+first signing attempt for predecessor `3988712` was cancelled before Azure
+signing after review found the environment-edit race.
+
 The matrix contains 26 beta gates: 17 Passed, 5 Not run, 3 Blocked, and 1 Failed.
 The counts describe the retained evidence across explicitly named 0.1.1 sources;
 they are not a release score. Each row states whether its evidence applies to the
