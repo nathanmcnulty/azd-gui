@@ -1045,6 +1045,8 @@
   }
 
   async function connect(provider: ConnectionStatus, target?: ConnectionTarget) {
+    const session = wizardSession;
+    const targetGeneration = azureTargetGeneration;
     connectionCheckRequest += 1;
     verifiedConnectionTargetKey = "";
     data = { ...data, connections: data.connections.map((connection) => ({ ...connection, state: "checking", grantedScopes: [] })) };
@@ -1059,14 +1061,17 @@
       const operationId = await login(provider.id, provider.scopes ?? [], target);
       if (data.isNative) {
         await waitForOperation(operationId);
+        if (session !== wizardSession || targetGeneration !== azureTargetGeneration) return;
         await verifyConnection(provider, target);
       } else {
+        if (session !== wizardSession || targetGeneration !== azureTargetGeneration) return;
         data = {
           ...data,
           connections: previewConnectedProvider(data.connections, provider, target)
         };
       }
     } catch (error) {
+      if (session !== wizardSession || targetGeneration !== azureTargetGeneration) return;
       data = { ...data, connections: data.connections.map((connection) => ({ ...connection, state: "unknown", grantedScopes: [] })) };
       addSystemLog(`Sign-in failed: ${String(error)}`, "error");
     }
