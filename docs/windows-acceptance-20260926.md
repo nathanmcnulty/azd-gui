@@ -79,7 +79,7 @@ The installed GUI detected azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6.
 The Tools page now marked the three absent PowerShell modules **Missing** and
 offered installation review only where supported. Home showed **CLI tools 3/3**
 for the three tools it lists. The clean profile's Connections page had no active
-account. No authentication or Azure mutation occurred, and the new candidate
+account. At this stage no authentication or Azure mutation occurred, and the new candidate
 has no tag or draft release.
 
 The downloaded binaries and receipts are retained privately under
@@ -96,3 +96,24 @@ installation was started. The tool path was restored after observation; the
 private `missing-tools-launch.json` and `path-restored.json` receipts preserve
 the setup boundary. This was a second clean profile in the same Sandbox, not a
 second Windows installation.
+
+## Browser handoff in the disposable profile
+
+The corrected signed app's Azure Developer CLI **Connect** action started azd
+1.34.1 under `AzdAcceptance2`. Windows then showed an access-denied dialog for
+the Microsoft authorization URL. azd reported that it could not open the next
+URL and offered a manual browser URL in the app's transient output. No account
+connected and no credentials were entered. Microsoft Edge launched successfully
+as the same standard user when started by executable path, so the browser is
+present. Azure CLI **Connect** also started, but no completed sign-in was
+observed. The attempt has not established whether the URL handoff failure is
+caused by this secondary user's profile or by the app/CLI path; Windows Sandbox
+normally logs into `WDAGUtilityAccount`, while this test launches the other
+user's GUI on that desktop. Do not infer that an ordinary logged-in standard
+user would encounter the same error.
+
+Continue acceptance through a normal browser/WAM flow in a full standard-user
+session, or use azd's displayed manual authorization URL in a browser running
+as the same disposable user. A human must still complete Nora's sign-in. Never
+use device-code authentication. Do not retain the one-time authorization URL
+or token/cache material in repository or evidence files.
