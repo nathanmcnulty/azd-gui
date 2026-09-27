@@ -51,6 +51,12 @@ installer. The [26 September native follow-up](windows-acceptance-20260926.md)
 records the prerequisite-display failure and verifies its fix in a corrected
 signed build under fresh standard-user accounts.
 
+The [26 September architecture and security checkpoint](architecture-security-checkpoint-20260926.md)
+found no established P0 or P1 issue and retained the current architecture.
+Three P2 repair packets now precede release-source selection: Graph scope
+identity binding, native Azure-target approval binding, and preparation
+activity coordination.
+
 P5 changed the azd-reference producer contract in PR 44 and the local GUI reader.
 Bound evidence is current only when project, selected environment, target, saved
 source contract, and exact persisted operation all agree. Legacy 1.0 evidence
