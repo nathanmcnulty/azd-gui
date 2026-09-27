@@ -173,12 +173,7 @@ async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> App
     if !approved {
         return Ok(false);
     }
-    if !state.operations.is_idle().await {
-        return Err(AppError::Invalid(
-            "A command started while confirmation was open. Cancel it before clearing local data."
-                .into(),
-        ));
-    }
+    let _clear_guard = state.operations.begin_clear()?;
 
     if state.template_cache.exists() {
         std::fs::remove_dir_all(&state.template_cache)?;
@@ -572,6 +567,7 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
+    let _preparation_guard = state.operations.begin_preparation()?;
     let requires_local_binding = matches!(
         request.source_mode.as_str(),
         "localTemplate" | "existingProject"

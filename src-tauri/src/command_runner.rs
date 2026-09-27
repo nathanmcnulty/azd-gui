@@ -375,7 +375,31 @@ impl CommandSpec {
 
 #[derive(Clone, Default)]
 pub struct OperationManager {
-    cancellations: Arc<Mutex<HashMap<String, Option<oneshot::Sender<()>>>>>,
+    registry: Arc<Mutex<OperationRegistry>>,
+}
+
+#[derive(Default)]
+struct OperationRegistry {
+    cancellations: HashMap<String, Option<oneshot::Sender<()>>>,
+    preparing: bool,
+    clearing: bool,
+}
+
+pub struct OperationGuard {
+    registry: Arc<Mutex<OperationRegistry>>,
+    clearing: bool,
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            if self.clearing {
+                registry.clearing = false;
+            } else {
+                registry.preparing = false;
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -455,35 +479,77 @@ impl OperationPersistence {
 
 impl OperationManager {
     pub async fn is_idle(&self) -> bool {
-        self.cancellations
+        self.registry
             .lock()
-            .map(|cancellations| cancellations.is_empty())
+            .map(|registry| {
+                registry.cancellations.is_empty() && !registry.preparing && !registry.clearing
+            })
             .unwrap_or(false)
     }
 
+    pub fn begin_preparation(&self) -> AppResult<OperationGuard> {
+        self.begin_exclusive(false)
+    }
+
+    pub fn begin_clear(&self) -> AppResult<OperationGuard> {
+        self.begin_exclusive(true)
+    }
+
+    fn begin_exclusive(&self, clearing: bool) -> AppResult<OperationGuard> {
+        let mut registry = self
+            .registry
+            .lock()
+            .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?;
+        if !registry.cancellations.is_empty() || registry.preparing || registry.clearing {
+            return Err(AppError::Invalid(
+                "Wait for the active operation to finish before continuing.".into(),
+            ));
+        }
+        if clearing {
+            registry.clearing = true;
+        } else {
+            registry.preparing = true;
+        }
+        Ok(OperationGuard {
+            registry: self.registry.clone(),
+            clearing,
+        })
+    }
+
     pub async fn cancel(&self, operation_id: &str) -> bool {
-        self.cancellations
+        self.registry
             .lock()
             .ok()
-            .and_then(|mut cancellations| cancellations.get_mut(operation_id)?.take())
+            .and_then(|mut registry| registry.cancellations.get_mut(operation_id)?.take())
             .map(|sender| sender.send(()).is_ok())
             .unwrap_or(false)
     }
 
     fn reserve(&self, operation_id: &str) -> AppResult<oneshot::Receiver<()>> {
         let (sender, receiver) = oneshot::channel();
-        self.cancellations
+        let mut registry = self
+            .registry
             .lock()
-            .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?
+            .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?;
+        if registry.preparing
+            || registry.clearing
+            || registry.cancellations.contains_key(operation_id)
+        {
+            return Err(AppError::Invalid(
+                "Wait for the active operation to finish before continuing.".into(),
+            ));
+        }
+        registry
+            .cancellations
             .insert(operation_id.to_string(), Some(sender));
         Ok(receiver)
     }
 
     fn remove(&self, operation_id: &str) {
         let _ = self
-            .cancellations
+            .registry
             .lock()
-            .map(|mut cancellations| cancellations.remove(operation_id));
+            .map(|mut registry| registry.cancellations.remove(operation_id));
     }
 }
 
@@ -790,10 +856,13 @@ pub fn spawn_operation(
         persistence.apply_environment(&mut spec, &operation_id, &kind);
     }
     spec.validate()?;
-    if let Some(persistence) = persistence.as_ref() {
-        persistence.begin(&operation_id, &kind)?;
-    }
     let mut cancel_receiver = operations.reserve(&operation_id)?;
+    if let Some(persistence) = persistence.as_ref() {
+        if let Err(error) = persistence.begin(&operation_id, &kind) {
+            operations.remove(&operation_id);
+            return Err(error);
+        }
+    }
     emit_event(
         &app,
         &operation_id,
@@ -1117,6 +1186,30 @@ mod tests {
         assert!(receiver.await.is_ok());
         assert!(!operations.is_idle().await);
         operations.remove("operation-pending");
+        assert!(operations.is_idle().await);
+    }
+
+    #[tokio::test]
+    async fn preparation_and_data_clear_exclude_each_other_and_command_starts() {
+        let operations = OperationManager::default();
+        let preparation = operations.begin_preparation().unwrap();
+        assert!(!operations.is_idle().await);
+        assert!(operations.begin_preparation().is_err());
+        assert!(operations.begin_clear().is_err());
+        assert!(operations.reserve("during-preparation").is_err());
+        drop(preparation);
+
+        let clearing = operations.begin_clear().unwrap();
+        assert!(!operations.is_idle().await);
+        assert!(operations.begin_preparation().is_err());
+        assert!(operations.begin_clear().is_err());
+        assert!(operations.reserve("during-clear").is_err());
+        drop(clearing);
+
+        let _receiver = operations.reserve("after-clear").unwrap();
+        assert!(operations.begin_preparation().is_err());
+        assert!(operations.begin_clear().is_err());
+        operations.remove("after-clear");
         assert!(operations.is_idle().await);
     }
 
