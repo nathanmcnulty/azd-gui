@@ -14,24 +14,22 @@ Status meanings:
 - **Not run** — no qualifying evidence exists for the named candidate.
 - **Failed** — a qualifying attempt found a defect or invalid artifact.
 
-The current signed application candidate is version 0.1.1 from source
-`cc67ad9378c053af6b97ab7df0bb5881c94ad5b1`, built by
-[workflow 36272899991](https://github.com/nathanmcnulty/azd-gui/actions/runs/36272899991).
-It contains the application and persistence changes through P6, the exact
-Maester evidence-consumer adoption, and the optional-module readiness fix.
-The workflow and a separate host download
-check verified the signatures, checksums, version, installer payload, silent
-install, and uninstall. Clean-profile authentication and affected visual and
-management gates remain open. See the
+The current private signed application candidate is version 0.1.1 from source
+`d21634f063d259abf8495a1dc106ec3ca464ee3a`, built by
+[workflow 36298076501](https://github.com/nathanmcnulty/azd-gui/actions/runs/36298076501).
+It includes the P6 and Maester work, optional-module readiness fix, and final
+architecture/security repairs. The workflow and a separate host download check
+verified signatures, checksums, version, installer payload, silent install, and
+uninstall. A fresh standard-user Sandbox installation and process-level startup
+also passed, without visual GUI observation in that exact attempt. Clean-profile
+authentication and affected visual and management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
-Application code on main is now `da0a55f`, which includes the Graph identity,
-native Azure-target approval, preparation/clear, and environment-edit race fixes.
-The signed `cc67ad9` rows below are historical candidate evidence until this
-new source is privately signed, downloaded, and independently verified. The
-first signing attempt for predecessor `3988712` was cancelled before Azure
-signing after review found the environment-edit race.
+The first signing attempt for predecessor `3988712` was cancelled before Azure
+signing after review found the environment-edit race. Older `cc67ad9` UI and
+auth-attempt rows below remain historical evidence; they are not silently
+promoted to exact-current-source visual acceptance.
 
 The matrix contains 26 beta gates: 17 Passed, 5 Not run, 3 Blocked, and 1 Failed.
 The counts describe the retained evidence across explicitly named 0.1.1 sources;
@@ -43,13 +41,13 @@ for beta; Windows 10 coverage is outside this matrix.
 
 | Gate | Exact artifact/source and evidence | Status | Next owner action |
 | --- | --- | --- | --- |
-| Application validation and signing | Source `cc67ad9`; workflow `36272899991`; dependency audits, 136 frontend tests, Rust format/Clippy, 154 native tests with three ignored, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
-| Downloaded release artifacts | Current portable `3729991d9e58acaa3c97c2674d2c976fb0d2fd67b52680750836cab697ffcd52`; NSIS `067a0698d740bd4d1ab279e1958503ea114df7e79d4f6a3578d83c193fdb8405`; independent host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
-| Installed payload | Current installed executable `25b5d669abd74c6eb49252729101d18569d59f5dcb64fede9623cc96103ee43f`; runner and Sandbox standard-user checks verified version, signature, install, and startup | **Passed** | Repeat install/uninstall for an eventual tagged draft. |
-| Clean standard-user Windows 11 installation and startup | Current source `cc67ad9`; Windows 11 Enterprise x64 Sandbox build `10.0.28000`; non-admin local `AzdAcceptance2`; Microsoft-signed WebView2 `154.0.4258.37`; signed NSIS installer exit 0, valid installed payload, visible GUI under the new user's profile | **Passed** | Repeat for an eventual tagged artifact. The signing runner independently verified the installer on Windows build `10.0.26100.0`; its native GUI was not observed there. |
-| Native shell and admin surfaces | Signed source `a769ae6` rendered Home, Catalog, Projects, Connections, Tools, Settings, and the pinned starter wizard; dark appearance switched and the saved destination restored on reopen. Current source `cc67ad9` rendered Home, Catalog, Tools, and a bundled wizard under separate standard-user accounts | **Passed** | Repeat remaining affected surfaces and persistence behavior for the final signed/tagged source. |
-| Missing prerequisites | Current signed source `cc67ad9` under fresh nonadmin `AzdAcceptance3` with disposable CLI path entries removed showed CLI tools 0/3 and all six Tools entries Missing; no install or elevation started | **Passed** | None unless tool detection or empty-state guidance changes. |
-| Install prerequisites and refresh versions | Current signed source `cc67ad9` under a fresh standard user reported azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6 as Ready; three absent PowerShell modules were Missing, and Home accurately showed CLI tools 3/3. The false 6/6 result from source `a769ae6` is retained in the follow-up record | **Passed** | Repeat against an eventual tagged artifact or if tool detection changes. |
+| Application validation and signing | Source `d21634f`; workflow `36298076501`; dependency audits, 138 frontend tests, Rust format/Clippy, 157 native tests with three ignored, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
+| Downloaded release artifacts | Current portable `427679e0db685ae1fcd34b466983cd678d0eae922e604fca49a847646b6ea83a`; NSIS `23afb5f08477623e45b04aa0b544223f10e9bc7690bdc0c13ffc9aa4bd25b82c`; independent host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
+| Installed payload | Current installed executable `a6a9b23eb84e9421348d2e19c102578a8ce3781c796e2cbeae4979c9462fc41a`; runner and Sandbox standard-user checks verified version, signature, install, and process startup | **Passed** | Repeat install/uninstall for an eventual tagged draft. |
+| Clean standard-user Windows 11 installation and startup | Current source `d21634f`; Windows 11 Enterprise x64 Sandbox build `10.0.28000`; non-admin local `AzdAcceptance4`; Microsoft-signed WebView2 bootstrap; signed NSIS installer exit 0, valid installed payload, and running process under that user. Earlier `cc67ad9` had a visually observed GUI under a separate new user | **Passed** | Visually inspect the current signed GUI in a normal standard-user session; the new Sandbox attempt proved process startup only. The signing runner independently verified the installer on Windows build `10.0.26100.0`. |
+| Native shell and admin surfaces | Signed source `a769ae6` rendered Home, Catalog, Projects, Connections, Tools, Settings, and the pinned starter wizard; dark appearance switched and the saved destination restored on reopen. Later source `cc67ad9` rendered Home, Catalog, Tools, and a bundled wizard under separate standard-user accounts | **Passed** | Repeat remaining affected surfaces and persistence behavior for the current signed source. |
+| Missing prerequisites | Earlier signed source `cc67ad9` under fresh nonadmin `AzdAcceptance3` with disposable CLI path entries removed showed CLI tools 0/3 and all six Tools entries Missing; no install or elevation started | **Passed** | Recheck against current source during its remaining visual acceptance; tool detection has not changed. |
+| Install prerequisites and refresh versions | Earlier signed source `cc67ad9` under a fresh standard user reported azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6 as Ready; three absent PowerShell modules were Missing, and Home accurately showed CLI tools 3/3. The false 6/6 result from source `a769ae6` is retained in the follow-up record | **Passed** | Recheck against current source during its remaining visual acceptance and eventual tagged artifact. |
 | Clean-machine interactive authentication | Nora `nora@sharemylabs.com` exists in the expected tenant and has temporary Reader on the expected subscription; no retained clean-profile browser/WAM sign-in exists. Under the Sandbox secondary standard user, azd started but Windows denied its automatic Microsoft authorization-URL handoff; Edge itself launched directly under that user. This does not prove a defect in a normally logged-in profile | **Blocked** | Complete Nora's normal browser/WAM flow in a full standard-user session, or use azd's transient manual URL in Edge under the same disposable user. Never use device code or retain the authorization URL. |
 | Wrong-tenant/target rejection after interactive sign-in | Automated and cached-host checks passed, including the tenant-scoped azd probe; no clean-profile live mismatch was exercised | **Blocked** | After Nora signs in, enter an unavailable subscription UUID as a read-only negative target and confirm Continue remains blocked. This tests an unavailable target, not access to a second real tenant. |
 | Pinned source review and preparation in signed app | Signed app rendered the bundled catalog and restored drafts. Full pinned preparation ran in development source `94f60f7`, not signed 0.1.1 | **Not run** | After clean-VM tools/auth pass, prepare the named starter and retain the approval showing project, environment, template, and revision. |
@@ -85,6 +83,7 @@ or private VM data.
 | `azd-gui-a769ae6-clean-profile/prerequisites-local.json`; `medium-candidate-token.json` | On 21 September, a disposable Windows 11 Sandbox installed signed WebView2, ran local PowerShell 7.6.6 and Azure CLI 2.89.1, and launched source `a769ae6` with a filtered, medium-integrity token. The WDAG account was originally an administrator; this is prerequisite and process-token evidence, not a separate standard-user profile or completed GUI/authentication acceptance |
 | `azd-gui-a769ae6-clean-profile/prepare.json`; `prerequisites-local.json`; `path-launch.json`; native computer-use observation | On 26 September, a fresh Sandbox verified exact signed source `a769ae6`, installed Microsoft-signed WebView2, and rendered the GUI with azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6. The Tools page falsely marked absent Azure PowerShell, Microsoft Graph PowerShell, and ExchangeOnlineManagement modules Ready; Home showed 6/6. The GUI observation used the WDAG account, not a separate standard-user profile. |
 | Workflow `36272899991`; `azd-gui-cc67ad9-clean-profile/artifact-verification.json`; `installed-artifact-verification.json`; `standard-install.json`; `missing-tools-launch.json`; `path-restored.json`; native computer-use observation | Corrected `cc67ad9` signed build and host download verification, Windows build 26100 runner installer check, and Windows build 28000 fresh standard-user NSIS installation/startup. The installed GUI marked absent modules Missing and showed CLI tools 3/3 when CLI tools were present, then 0/3 in a separate no-tools profile. No sign-in or Azure operation occurred. |
+| Workflow `36298076501`; private `azd-gui-d21634f-signed/host-artifact-verification.json`, `release/installed-artifact-verification.json`, `sandbox-evidence/webview2-install.json`, and `sandbox-evidence/standard-install.json` | Final reviewed source `d21634f` passed runner build, audit, tests, Azure signing, payload verification, install/uninstall, host download checks, and fresh Windows 11 Sandbox build 28000 standard-user install/process startup. It does not prove exact-current-source visual wizard, authentication, or deployment acceptance. |
 | `azd-gui-cc67ad9-clean-profile/browser-handoff-observation.json`; native computer-use observation | The signed app started azd Connect under a secondary Sandbox standard user, but Windows denied automatic opening of the authorization URL. Edge itself launched under that user. Azure CLI Connect started, but no clean-profile sign-in completed. The private receipt contains no authorization URL. |
 | `final-artifact-verification.json` | Downloaded portable/installer hashes, version, expected publisher, and timestamps |
 | `final-installed-verification.json` | Installed 0.1.1 hash, version, expected publisher, timestamp, and correspondence with the release receipt |

@@ -37,6 +37,22 @@ the controlled target rejection, remaining clean-profile lifecycle checks, and
 eventual tagged-artifact verification remain open; this update does not authorize
 a tag, draft, or public release.
 
+### Final reviewed source update, 26 September
+
+The architecture/security checkpoint's four fixes are merged. The first new
+signing attempt was cancelled before Azure signing when independent review found
+an in-app environment-edit race. That race was fixed in PR 128; the follow-up
+read-only review found no remaining app-controlled P1/P2 defect. Exact source
+`d21634f063d259abf8495a1dc106ec3ca464ee3a` passed the private
+[signing workflow 36298076501](https://github.com/nathanmcnulty/azd-gui/actions/runs/36298076501).
+Host-downloaded portable and NSIS artifacts passed independent checksum,
+version, publisher, and timestamp verification. A fresh Windows 11 Sandbox
+non-admin account installed and started the signed payload with matching hash
+and signature; no visual GUI observation or Nora sign-in occurred in that run.
+The [current matrix](windows-acceptance-status.md) and
+[native follow-up](windows-acceptance-20260926.md) separate these gates. The
+decision remains **no-go** for tag, draft release, or publication.
+
 ## Exact signed candidate
 
 | Item | Result |

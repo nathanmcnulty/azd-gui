@@ -117,3 +117,41 @@ session, or use azd's displayed manual authorization URL in a browser running
 as the same disposable user. A human must still complete Nora's sign-in. Never
 use device-code authentication. Do not retain the one-time authorization URL
 or token/cache material in repository or evidence files.
+
+## Reviewed source signed after security repairs
+
+The final reviewed application code includes the Graph identity, Azure target,
+preparation/clear, and in-app environment-edit race fixes. The first signing
+attempt at source `3988712` was cancelled before Azure signing when independent
+review found the last race. [Workflow 36298076501](https://github.com/nathanmcnulty/azd-gui/actions/runs/36298076501)
+then passed on exact main source `d21634f063d259abf8495a1dc106ec3ca464ee3a`.
+That run passed dependency audits, frontend and native checks, Azure OIDC,
+Trusted Signing, Authenticode, checksum creation, Windows build 26100 installed-
+payload verification, silent install/uninstall, and private artifact upload.
+Local validation also passed 138 frontend tests, 157 native tests (3 ignored),
+Clippy, formatting, dependency audits, and 13 signing/verifier Pester tests.
+
+An independent download on the host matched the workflow checksums and verified
+version 0.1.1, the expected Nathan McNulty publisher, and trusted timestamps:
+
+| Payload | SHA-256 |
+| --- | --- |
+| Portable executable | `427679e0db685ae1fcd34b466983cd678d0eae922e604fca49a847646b6ea83a` |
+| NSIS installer | `23afb5f08477623e45b04aa0b544223f10e9bc7690bdc0c13ffc9aa4bd25b82c` |
+| Installed executable | `a6a9b23eb84e9421348d2e19c102578a8ce3781c796e2cbeae4979c9462fc41a` |
+
+A fresh Windows Sandbox build `10.0.28000` verified a Microsoft-signed WebView2
+bootstrap, then installed the exact NSIS artifact under new local user
+`AzdAcceptance4`, a member of Users and not Administrators. The installer exited
+0; the installed executable's hash and Authenticode matched the runner receipt;
+the GUI process remained running under that user. The Sandbox was closed after
+recording the process and installer receipts. This is exact-candidate standard-
+user install/startup evidence, but the GUI was not visually observed in that
+attempt. It does not close Nora's browser/WAM sign-in, wrong-target rejection,
+native approval-dialog observation, or the remaining clean-profile wizard and
+output/history gates. No tag, draft release, or publication was created.
+
+Private downloaded artifacts, host verification, runner installed-payload
+receipt, and Sandbox prerequisite/install receipts are under
+`C:\Users\NathanMcNulty\.codex\artifacts\azd-gui-d21634f-signed` and are not
+repository content.
