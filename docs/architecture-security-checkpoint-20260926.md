@@ -69,3 +69,14 @@ The reviewer also noted that generic output regexes cannot guarantee removal
 of every arbitrary hook-emitted secret. No separate end-to-end leak was
 established; keep this limitation in the output/history acceptance review
 without broadening the three repairs above.
+
+## Repair outcome, 26 September
+
+All three packets are merged: [Graph identity binding](https://github.com/nathanmcnulty/azd-gui/pull/123)
+at `cfb30c9`, [native target approval](https://github.com/nathanmcnulty/azd-gui/pull/124)
+at `b9c7de6`, and [preparation/clear coordination](https://github.com/nathanmcnulty/azd-gui/pull/125)
+at `3988712`. The final source passed `npm run verify` (138 frontend tests,
+157 native tests passed, 3 native integration tests ignored), formatting,
+Clippy, and `npm run audit:dependencies` with no findings. Native tests cover
+changed target rejection and preparation/clear exclusion. This closes the
+code-review findings, not the live Windows acceptance gates above.
