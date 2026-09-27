@@ -68,7 +68,7 @@ pub(crate) fn validate_optional_guid(label: &str, value: Option<&str>) -> AppRes
     Ok(())
 }
 
-fn validate_resource_group(value: Option<&str>) -> AppResult<()> {
+pub(crate) fn validate_resource_group(value: Option<&str>) -> AppResult<()> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Ok(());
     };

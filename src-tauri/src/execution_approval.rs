@@ -1,8 +1,11 @@
 use crate::{
-    deployment::validate_environment_name,
+    deployment::{
+        validate_environment_name, validate_location, validate_optional_guid,
+        validate_resource_group,
+    },
     error::{AppError, AppResult},
     local_source,
-    models::{ExecutionApprovalGrant, ExecutionApprovalRequest},
+    models::{ExecutionApprovalGrant, ExecutionApprovalRequest, ExecutionTarget},
 };
 use std::{
     collections::HashMap,
@@ -47,6 +50,9 @@ impl ExecutionApprovals {
             )));
         }
         validate_environment_name(&request.environment)?;
+        request.target = Some(validate_target(request.target.ok_or_else(|| {
+            AppError::Invalid("Execution approval requires an Azure target review.".into())
+        })?)?);
         if request.template_id.len() > 128 {
             return Err(AppError::Invalid("Template ID is too long.".into()));
         }
@@ -141,10 +147,37 @@ impl ExecutionApprovals {
     }
 }
 
+pub fn validate_target(mut target: ExecutionTarget) -> AppResult<ExecutionTarget> {
+    for (value, label) in [
+        (&mut target.tenant_id, "Tenant ID"),
+        (&mut target.subscription_id, "Subscription ID"),
+    ] {
+        if value.as_deref().is_some_and(str::is_empty) {
+            *value = None;
+        }
+        validate_optional_guid(label, value.as_deref())?;
+        if let Some(raw) = value.as_deref() {
+            *value = Some(Uuid::parse_str(raw).expect("validated UUID").to_string());
+        }
+    }
+    if target.location.as_deref().is_some_and(str::is_empty) {
+        target.location = None;
+    }
+    if let Some(location) = target.location.as_deref() {
+        validate_location(location)?;
+        target.location = Some(location.to_ascii_lowercase());
+    }
+    if target.resource_group.as_deref().is_some_and(str::is_empty) {
+        target.resource_group = None;
+    }
+    validate_resource_group(target.resource_group.as_deref())?;
+    Ok(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::ExecutionApprovals;
-    use crate::models::ExecutionApprovalRequest;
+    use crate::models::{ExecutionApprovalRequest, ExecutionTarget};
     use tempfile::tempdir;
 
     fn request(project_path: String, action: &str) -> ExecutionApprovalRequest {
@@ -156,6 +189,12 @@ mod tests {
             revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
             snapshot_digest: Some("a".repeat(64)),
             source_binding: None,
+            target: Some(ExecutionTarget {
+                tenant_id: Some("11111111-1111-1111-1111-111111111111".into()),
+                subscription_id: Some("22222222-2222-2222-2222-222222222222".into()),
+                location: Some("westus2".into()),
+                resource_group: Some("rg-sample-dev".into()),
+            }),
         }
     }
 
@@ -190,6 +229,12 @@ mod tests {
             revision: None,
             snapshot_digest: None,
             source_binding: Some(binding),
+            target: Some(ExecutionTarget {
+                tenant_id: None,
+                subscription_id: None,
+                location: Some("westus2".into()),
+                resource_group: None,
+            }),
         };
         let grant = approvals.issue(request.clone()).unwrap();
         std::fs::write(source.path().join("azure.yaml"), "name: changed").unwrap();
@@ -208,5 +253,19 @@ mod tests {
         replaced.snapshot_digest = Some("b".repeat(64));
 
         assert!(approvals.consume(&grant.token, replaced).is_err());
+    }
+
+    #[test]
+    fn changed_azure_target_invalidates_a_pending_lifecycle_approval() {
+        let directory = tempdir().unwrap();
+        std::fs::write(directory.path().join("azure.yaml"), "name: sample").unwrap();
+        let approvals = ExecutionApprovals::default();
+        let request = request(directory.path().display().to_string(), "down");
+        let grant = approvals.issue(request.clone()).unwrap();
+        let mut retargeted = request;
+        retargeted.target.as_mut().unwrap().subscription_id =
+            Some("33333333-3333-3333-3333-333333333333".into());
+
+        assert!(approvals.consume(&grant.token, retargeted).is_err());
     }
 }

@@ -26,11 +26,11 @@ use crate::{
     models::{
         AppSettings, AzureDiscovery, BootstrapData, Catalog, CatalogEntry, CatalogSource,
         ConnectionStatus, ConnectionTarget, ExecutionApprovalGrant, ExecutionApprovalRequest,
-        ExternalCatalogPreview, OperationEvent, PermissionCheckRequest, PermissionCheckResult,
-        PrepareDeploymentRequest, ProjectEnvironment, ProjectEnvironmentValue,
-        ProjectEnvironmentValueInput, ProjectSummary, ProjectTemplateSnapshot, SecurityGroupSearch,
-        TemplateInspection, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan,
-        ToolStatus,
+        ExecutionTarget, ExternalCatalogPreview, OperationEvent, PermissionCheckRequest,
+        PermissionCheckResult, PrepareDeploymentRequest, ProjectEnvironment,
+        ProjectEnvironmentValue, ProjectEnvironmentValueInput, ProjectSummary,
+        ProjectTemplateSnapshot, SecurityGroupSearch, TemplateInspection, TemplateManifest,
+        ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus,
     },
     persistence::Database,
 };
@@ -439,6 +439,7 @@ async fn start_azd_operation(
                     .and_then(|project| project.revision.clone()),
                 snapshot_digest: snapshot.as_ref().map(|snapshot| snapshot.digest.clone()),
                 source_binding: None,
+                target: Some(lifecycle_execution_target(&canonical, environment)?),
             },
         )?;
     }
@@ -590,6 +591,12 @@ async fn prepare_deployment(
             revision: request.source_revision.clone(),
             snapshot_digest: Some(request.reviewed_contract_digest.clone()),
             source_binding: request.source_binding.clone(),
+            target: Some(execution_approval::validate_target(ExecutionTarget {
+                tenant_id: request.tenant.clone(),
+                subscription_id: request.subscription.clone(),
+                location: Some(request.location.clone()),
+                resource_group: request.resource_group.clone(),
+            })?),
         },
     )?;
     deployment::prepare(request, &state.template_cache, &state.database).await
@@ -610,10 +617,19 @@ fn reviewed_contract_digest(mut entry: CatalogEntry) -> AppResult<String> {
 fn request_execution_approval(
     app: AppHandle,
     state: State<'_, AppState>,
-    request: ExecutionApprovalRequest,
+    mut request: ExecutionApprovalRequest,
 ) -> AppResult<ExecutionApprovalGrant> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+    if matches!(
+        request.action.as_str(),
+        "preview" | "up" | "provision" | "deploy" | "down"
+    ) {
+        request.target = Some(lifecycle_execution_target(
+            Path::new(&request.project_path),
+            &request.environment,
+        )?);
+    }
     let request = execution_approval::ExecutionApprovals::validate_request(request)?;
     let request = validate_registered_project_approval(&state.database, request)?;
     let destructive = request.action == "down";
@@ -640,10 +656,19 @@ fn request_execution_approval(
             )
         })
         .unwrap_or_default();
+    let target = request.target.as_ref().expect("validated approval target");
+    let target_summary =
+        format!(
+        "\nAzure cloud: AzureCloud\nTenant: {}\nSubscription: {}\nLocation: {}\nResource group: {}",
+        target.tenant_id.as_deref().unwrap_or("not selected"),
+        target.subscription_id.as_deref().unwrap_or("not selected"),
+        target.location.as_deref().unwrap_or("not selected"),
+        target.resource_group.as_deref().unwrap_or("azd/template default")
+    );
     let approved = app
         .dialog()
         .message(format!(
-            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}{source_binding}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
+            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}{source_binding}{target_summary}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
             request.project_path, request.environment, request.template_id
         ))
         .title(if destructive {
@@ -662,7 +687,48 @@ fn request_execution_approval(
             "Execution approval was cancelled.".into(),
         ));
     }
+    if request.action != "prepare"
+        && request.target.as_ref()
+            != Some(&lifecycle_execution_target(
+                Path::new(&request.project_path),
+                &request.environment,
+            )?)
+    {
+        return Err(AppError::Invalid(
+            "The saved Azure target changed during approval. Review the target and approve again."
+                .into(),
+        ));
+    }
     state.execution_approvals.issue(request)
+}
+
+fn lifecycle_execution_target(
+    project_path: &Path,
+    environment: &str,
+) -> AppResult<ExecutionTarget> {
+    let values = read_target_values(project_path, environment);
+    if values
+        .azure_cloud
+        .as_deref()
+        .is_some_and(|cloud| cloud != "AzureCloud")
+    {
+        return Err(AppError::Invalid(
+            "The selected environment is not configured for AzureCloud.".into(),
+        ));
+    }
+    let target = execution_approval::validate_target(ExecutionTarget {
+        tenant_id: values.tenant_id,
+        subscription_id: values.subscription_id,
+        location: values.location,
+        resource_group: values.resource_group,
+    })?;
+    if target.tenant_id.is_none() || target.subscription_id.is_none() {
+        return Err(AppError::Invalid(
+            "The selected environment needs explicit AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID before lifecycle approval."
+                .into(),
+        ));
+    }
+    Ok(target)
 }
 
 #[tauri::command]
@@ -1300,9 +1366,11 @@ mod catalog_review_tests {
 mod interactive_lifecycle_tests {
     use super::{
         catalog, ensure_project_lifecycle_route, ensure_registered_project_lifecycle_contract,
-        operation_evidence_context, validate_registered_project_approval, Database,
-        ExecutionApprovalRequest, ProjectSummary, ProjectTemplateSnapshot,
+        lifecycle_execution_target, operation_evidence_context,
+        validate_registered_project_approval, Database, ExecutionApprovalRequest, ExecutionTarget,
+        ProjectSummary, ProjectTemplateSnapshot,
     };
+    use crate::execution_approval::ExecutionApprovals;
     use tempfile::tempdir;
 
     #[test]
@@ -1344,6 +1412,12 @@ mod interactive_lifecycle_tests {
             revision: project.revision.clone(),
             snapshot_digest: Some(snapshot.digest.clone()),
             source_binding: None,
+            target: Some(ExecutionTarget {
+                tenant_id: Some("11111111-1111-1111-1111-111111111111".into()),
+                subscription_id: Some("22222222-2222-2222-2222-222222222222".into()),
+                location: Some("westus2".into()),
+                resource_group: None,
+            }),
         };
         assert!(validate_registered_project_approval(&database, request.clone()).is_ok());
         let mut stale = request;
@@ -1386,6 +1460,50 @@ mod interactive_lifecycle_tests {
             context.subscription_id.as_deref(),
             Some("22222222-2222-2222-2222-222222222222")
         );
+    }
+
+    #[test]
+    fn lifecycle_approval_target_tracks_saved_environment_changes() {
+        let directory = tempdir().unwrap();
+        std::fs::write(directory.path().join("azure.yaml"), "name: sample").unwrap();
+        let environment = directory.path().join(".azure/dev");
+        std::fs::create_dir_all(&environment).unwrap();
+        let dotenv = environment.join(".env");
+        std::fs::write(
+            &dotenv,
+            "AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=11111111-1111-1111-1111-111111111111\nAZURE_SUBSCRIPTION_ID=22222222-2222-2222-2222-222222222222\nAZURE_LOCATION=westus2\nAZURE_RESOURCE_GROUP=rg-original\n",
+        ).unwrap();
+        let original = lifecycle_execution_target(directory.path(), "dev").unwrap();
+        assert_eq!(original.resource_group.as_deref(), Some("rg-original"));
+        let approvals = ExecutionApprovals::default();
+        let request = ExecutionApprovalRequest {
+            action: "down".into(),
+            project_path: directory.path().display().to_string(),
+            environment: "dev".into(),
+            template_id: "sample".into(),
+            revision: None,
+            snapshot_digest: None,
+            source_binding: None,
+            target: Some(original.clone()),
+        };
+        let grant = approvals.issue(request.clone()).unwrap();
+
+        std::fs::write(
+            &dotenv,
+            "AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=11111111-1111-1111-1111-111111111111\nAZURE_SUBSCRIPTION_ID=33333333-3333-3333-3333-333333333333\nAZURE_LOCATION=eastus2\nAZURE_RESOURCE_GROUP=rg-other\n",
+        ).unwrap();
+        let changed = lifecycle_execution_target(directory.path(), "dev").unwrap();
+        assert_ne!(original, changed);
+        assert_eq!(
+            changed.subscription_id.as_deref(),
+            Some("33333333-3333-3333-3333-333333333333")
+        );
+        let mut retargeted = request;
+        retargeted.target = Some(changed);
+        assert!(approvals.consume(&grant.token, retargeted).is_err());
+
+        std::fs::write(&dotenv, "AZURE_LOCATION=westus2\n").unwrap();
+        assert!(lifecycle_execution_target(directory.path(), "dev").is_err());
     }
 
     #[test]

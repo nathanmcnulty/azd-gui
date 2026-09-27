@@ -454,6 +454,14 @@ export interface ExecutionApprovalRequest {
   revision?: string;
   snapshotDigest?: string;
   sourceBinding?: LocalSourceBinding;
+  target?: ExecutionTarget;
+}
+
+export interface ExecutionTarget {
+  tenantId?: string;
+  subscriptionId?: string;
+  location?: string;
+  resourceGroup?: string;
 }
 
 export interface ExecutionApprovalGrant {

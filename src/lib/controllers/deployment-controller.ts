@@ -39,7 +39,13 @@ export async function materializeDeployment(
     templateId: entry.id,
     revision,
     snapshotDigest: reviewedContractDigest,
-    sourceBinding: binding
+    sourceBinding: binding,
+    target: {
+      tenantId: String(values.tenantId || "") || undefined,
+      subscriptionId: String(values.subscriptionId || "") || undefined,
+      location: String(values.location || "westus2"),
+      resourceGroup: String(values.resourceGroup || "") || undefined
+    }
   });
   const project = await prepareDeployment({
     templateId: entry.id,

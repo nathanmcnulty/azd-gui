@@ -566,6 +566,17 @@ pub struct ExecutionApprovalRequest {
     pub snapshot_digest: Option<String>,
     #[serde(default)]
     pub source_binding: Option<LocalSourceBinding>,
+    #[serde(default)]
+    pub target: Option<ExecutionTarget>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionTarget {
+    pub tenant_id: Option<String>,
+    pub subscription_id: Option<String>,
+    pub location: Option<String>,
+    pub resource_group: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
