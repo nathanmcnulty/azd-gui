@@ -57,8 +57,8 @@ sets this boundary.
 
 ## Implementation packets
 
-27 September status: packet 1 is in the focused
-`codex/wizard-current-account-target-status-20260927` change. It requires the
+27 September status: packet 1 is implemented in
+[PR 132](https://github.com/nathanmcnulty/azd-gui/pull/132). It requires the
 effective provider context and selected target to agree before showing a ready
 wizard result, then clears readiness and Graph-grant proof on target or sign-in
 change. The target-context checks reuse provider commands and do not establish

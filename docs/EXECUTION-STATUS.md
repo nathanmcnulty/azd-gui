@@ -4,8 +4,8 @@ Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONT
 
 Updated 27 September 2026.
 
-The first account-choice packet is being completed from main `f2233b5` on
-`codex/wizard-current-account-target-status-20260927`. The active desktop is
+The first account-choice packet was implemented from main `f2233b5` in
+[PR 132](https://github.com/nathanmcnulty/azd-gui/pull/132). The active desktop is
 Windows 11 build 28000 under `azuread\nathanmcnulty`; no Nora standard-user
 session or clean profile was available, so the human Windows gate remains open.
 The packet shows each required provider's effective current account, fresh
