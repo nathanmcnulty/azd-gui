@@ -26,7 +26,8 @@ authentication and affected visual and management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
-On 27 September, the first account-choice code packet began after signed source
+On 27 September, the first account-choice code packet was implemented in
+[PR 132](https://github.com/nathanmcnulty/azd-gui/pull/132) after signed source
 `d21634f`. It changes current-account and target-status behavior, so the 26
 September signed candidate and its 26 gate results remain historical evidence
 for that exact source. No new signed installer, installed-payload check, Nora
