@@ -11,9 +11,12 @@ with no findings. A final independent review found an additional native
 environment-edit race, fixed in PR 128 at `da0a55f`; a follow-up Sol review
 found no remaining app-controlled P1/P2 defect and the full local verify passed.
 The first private signing [workflow 36296977843](https://github.com/nathanmcnulty/azd-gui/actions/runs/36296977843)
-was cancelled before Azure signing when the race was found. The corrected source
-has not replaced the prior signed candidate until a new workflow and separate
-artifact verification pass. The remaining release gate is the Windows 11
+was cancelled before Azure signing when the race was found. Corrected source
+`d21634f` passed [workflow 36298076501](https://github.com/nathanmcnulty/azd-gui/actions/runs/36298076501)
+and independent host download verification. Fresh Windows 11 Sandbox build 28000
+then installed and started the exact signed payload under a new non-admin user,
+with valid installed hash/signature; this is process-level, not visual GUI proof.
+The remaining release gate is the Windows 11
 clean-profile journey, including Nora's browser/WAM sign-in and target rejection.
 The proposed multi-account wizard scope is in
 [Account choice in the deployment wizard](account-selection-design.md); it is
@@ -27,7 +30,7 @@ roadmap work, not completed behavior.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `cc67ad9378c053af6b97ab7df0bb5881c94ad5b1` | Maester commit `45f839bc` completed the authorized Minimal deploy, validation, and teardown. The corrected private GUI candidate is signed and has passed fresh Windows 11 standard-user installation, startup, and present/missing prerequisite display checks. Clean-profile authentication, target rejection, and remaining UI/lifecycle gates are open. |
+| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `d21634f063d259abf8495a1dc106ec3ca464ee3a` | Maester commit `45f839bc` completed the authorized Minimal deploy, validation, and teardown. The final reviewed private GUI candidate is signed and has passed independent download checks plus fresh Windows 11 non-admin installation/process startup. Earlier signed candidate passed prerequisite UI checks; exact-current-source visual, authentication, target rejection, and lifecycle gates remain open. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
