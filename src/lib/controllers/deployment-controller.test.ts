@@ -40,11 +40,20 @@ beforeEach(() => {
 describe("wizard deployment approvals", () => {
   it("binds preparation to the reviewed contract digest", async () => {
     await materializeDeployment(entry, { templateId: entry.id, revision: 1, pages: [] }, {
-      sourceMode: "catalog", projectPath: "C:\\Projects\\template", environmentName: "dev", location: "westus2"
+      sourceMode: "catalog", projectPath: "C:\\Projects\\template", environmentName: "dev", location: "westus2",
+      tenantId: "11111111-1111-1111-1111-111111111111",
+      subscriptionId: "22222222-2222-2222-2222-222222222222",
+      resourceGroup: "rg-template-dev"
     });
 
     expect(calls.approvals[0]?.snapshotDigest).toBe("a".repeat(64));
     expect(calls.prepares[0]?.reviewedContractDigest).toBe("a".repeat(64));
+    expect(calls.approvals[0]?.target).toEqual({
+      tenantId: calls.prepares[0]?.tenant,
+      subscriptionId: calls.prepares[0]?.subscription,
+      location: calls.prepares[0]?.location,
+      resourceGroup: calls.prepares[0]?.resourceGroup
+    });
   });
 
   it("uses the persisted project snapshot for a wizard lifecycle approval", async () => {

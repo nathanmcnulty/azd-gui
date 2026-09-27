@@ -88,6 +88,7 @@ pub struct TargetEvidenceValues {
     pub azure_cloud: Option<String>,
     pub tenant_id: Option<String>,
     pub subscription_id: Option<String>,
+    pub location: Option<String>,
     pub resource_group: Option<String>,
 }
 
@@ -150,6 +151,7 @@ fn read_target_values_inner(
         "AZD_GUI_AZURE_CLOUD",
         "AZURE_TENANT_ID",
         "AZURE_SUBSCRIPTION_ID",
+        "AZURE_LOCATION",
         "AZURE_RESOURCE_GROUP",
     ];
     let mut values = HashMap::new();
@@ -180,6 +182,9 @@ fn read_target_values_inner(
         subscription_id: values
             .remove("AZURE_SUBSCRIPTION_ID")
             .filter(|value| valid_uuid(value)),
+        location: values
+            .remove("AZURE_LOCATION")
+            .filter(|value| bounded(value)),
         resource_group: values
             .remove("AZURE_RESOURCE_GROUP")
             .filter(|value| bounded(value)),
@@ -706,11 +711,12 @@ mod tests {
         fs::create_dir_all(&environment).unwrap();
         fs::write(
             environment.join(".env"),
-            "AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=00000000-0000-0000-0000-000000000000\nAZURE_SUBSCRIPTION_ID=11111111-1111-1111-1111-111111111111\nAZURE_RESOURCE_GROUP='rg-example-dev'\nSECRET=do-not-read\n",
+            "AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=00000000-0000-0000-0000-000000000000\nAZURE_SUBSCRIPTION_ID=11111111-1111-1111-1111-111111111111\nAZURE_LOCATION=westus2\nAZURE_RESOURCE_GROUP='rg-example-dev'\nSECRET=do-not-read\n",
         )
         .unwrap();
         let values = read_target_values(root.path(), "dev");
         assert_eq!(values.azure_cloud.as_deref(), Some("AzureCloud"));
+        assert_eq!(values.location.as_deref(), Some("westus2"));
         assert_eq!(values.resource_group.as_deref(), Some("rg-example-dev"));
         assert_eq!(
             values.subscription_id.as_deref(),
