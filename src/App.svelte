@@ -154,6 +154,7 @@
   let activeStep = 0;
   let removedValueWarning: string[] = [];
   let preflightRan = false;
+  let preflightStarting = false;
   let permissionChecksRunning = false;
   let permissionCheckResults: PermissionCheckResult[] = [];
   let preflightOperationId: string | null = null;
@@ -1089,7 +1090,7 @@
   }
 
   async function runPreflight() {
-    if (!selectedEntry || activeOperationId) return;
+    if (!selectedEntry || activeOperationId || preflightStarting || operationState === "running") return;
     if (requiresInteractiveTerminal) {
       addSystemLog("This template requires interactive terminal input. Use Prepare and open terminal to continue.", "warning");
       outputOpen = true;
@@ -1131,10 +1132,11 @@
       configurationIssues.forEach((issue) => addSystemLog(issue, "error"));
       return;
     }
-    if (!(await runRegisteredPermissionChecks())) return;
-    addSystemLog("Validated template manifest and pinned source revision.", "success");
-    addSystemLog("Checked required tools, connection state, and environment inputs.", "success");
+    preflightStarting = true;
     try {
+      if (!(await runRegisteredPermissionChecks())) return;
+      addSystemLog("Validated template manifest and pinned source revision.", "success");
+      addSystemLog("Checked required tools, connection state, and environment inputs.", "success");
       const projectPath = await materializeProject();
       addSystemLog(
         "Starting azd provision --preview --no-prompt. Pinned template hooks may modify local or cloud state.",
@@ -1160,6 +1162,8 @@
       addSystemLog(`Preflight failed: ${String(error)}`, "error");
       operationState = "idle";
       activeOperationKind = null;
+    } finally {
+      preflightStarting = false;
     }
   }
 
@@ -1370,7 +1374,7 @@
   }
 
   async function runDeployment(action: "up" | "provision" | "deploy" = "up") {
-    if (!selectedEntry || activeOperationId) return;
+    if (!selectedEntry || activeOperationId || preflightStarting || operationState === "running") return;
     if (!hookExecutionAccepted) {
       addSystemLog("Review and approve pinned template code execution before deployment.", "error");
       return;
@@ -2247,6 +2251,7 @@
   }
 
   async function confirmClearLocalData() {
+    if (localDataClearing || preflightStarting || interactivePreparing || operationState === "running") return;
     localDataClearing = true;
     localDataClearError = "";
     try {
@@ -2729,7 +2734,7 @@
               {#if requiresInteractiveTerminal}
                 <button class="primary large" disabled={terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
               {:else}
-                <button class="primary large" on:click={runPreflight} disabled={permissionChecksRunning || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
+                <button class="primary large" on:click={runPreflight} disabled={preflightStarting || operationState === "running" || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
               {/if}
             </div>
             <div class="check-grid">
@@ -3350,9 +3355,9 @@
             <div class="catalog-source-actions">
               {#if pendingLocalDataClear}
                 <button class="secondary compact" disabled={localDataClearing} on:click={() => (pendingLocalDataClear = false)}>Cancel</button>
-                <button class="danger compact" disabled={localDataClearing || operationState === "running"} on:click={confirmClearLocalData}>{localDataClearing ? "Clearing…" : "Confirm clear"}</button>
+                <button class="danger compact" disabled={localDataClearing || preflightStarting || interactivePreparing || operationState === "running"} on:click={confirmClearLocalData}>{localDataClearing ? "Clearing…" : "Confirm clear"}</button>
               {:else}
-                <button class="danger compact" disabled={operationState === "running"} on:click={() => { pendingLocalDataClear = true; localDataClearError = ""; }}>Clear local data</button>
+                <button class="danger compact" disabled={preflightStarting || interactivePreparing || operationState === "running"} on:click={() => { pendingLocalDataClear = true; localDataClearError = ""; }}>Clear local data</button>
               {/if}
             </div>
           </div>
