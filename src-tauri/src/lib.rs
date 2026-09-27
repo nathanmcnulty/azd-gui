@@ -41,6 +41,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tauri::{AppHandle, Manager, State};
+use tokio::sync::Mutex as AsyncMutex;
 
 const MAX_INSPECTED_MANIFESTS: usize = 128;
 const MAX_DRAFT_IDENTITY_BYTES: usize = 1024 * 1024;
@@ -48,6 +49,7 @@ const MAX_DRAFT_IDENTITY_BYTES: usize = 1024 * 1024;
 pub struct AppState {
     database: Arc<Database>,
     operations: OperationManager,
+    environment_writes: AsyncMutex<()>,
     template_cache: PathBuf,
     inspected_manifests: Mutex<HashMap<String, TemplateManifest>>,
     catalog_reviews: CatalogReviews,
@@ -173,6 +175,7 @@ async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> App
     if !approved {
         return Ok(false);
     }
+    let _environment_lock = state.environment_writes.lock().await;
     let _clear_guard = state.operations.begin_clear()?;
 
     if state.template_cache.exists() {
@@ -375,6 +378,9 @@ async fn start_azd_operation(
     environment: Option<String>,
     execution_approval_token: Option<String>,
 ) -> AppResult<String> {
+    // Keep in-app environment writes outside the target read -> approval consume
+    // -> operation reservation window. Once reserved, edits fail until completion.
+    let _environment_lock = state.environment_writes.lock().await;
     let canonical = std::fs::canonicalize(&project_path)?;
     if !canonical.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(format!(
@@ -567,6 +573,7 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
+    let _environment_lock = state.environment_writes.lock().await;
     let _preparation_guard = state.operations.begin_preparation()?;
     let requires_local_binding = matches!(
         request.source_mode.as_str(),
@@ -834,6 +841,8 @@ async fn create_project_environment(
     subscription: Option<String>,
     location: Option<String>,
 ) -> AppResult<Vec<ProjectEnvironment>> {
+    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_change = state.operations.begin_environment_change()?;
     let canonical = std::fs::canonicalize(project_path)?;
     if !canonical.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(format!(
@@ -865,6 +874,8 @@ async fn select_project_environment(
     project_path: String,
     environment: String,
 ) -> AppResult<Vec<ProjectEnvironment>> {
+    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_change = state.operations.begin_environment_change()?;
     let canonical = std::fs::canonicalize(project_path)?;
     if !canonical.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(format!(
@@ -1064,10 +1075,13 @@ async fn get_project_environment_values(
 
 #[tauri::command]
 async fn set_project_environment_values(
+    state: State<'_, AppState>,
     project_path: String,
     environment: String,
     values: Vec<ProjectEnvironmentValueInput>,
 ) -> AppResult<()> {
+    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_change = state.operations.begin_environment_change()?;
     let canonical = std::fs::canonicalize(project_path)?;
     if !canonical.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(format!(
@@ -1241,6 +1255,7 @@ pub fn run() {
             app.manage(AppState {
                 database: Arc::new(database),
                 operations: OperationManager::default(),
+                environment_writes: AsyncMutex::new(()),
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
                 catalog_reviews: CatalogReviews::default(),
@@ -1670,6 +1685,7 @@ mod draft_tests {
         let state = AppState {
             database: Arc::new(Database::open(&directory.path().join("state.sqlite")).unwrap()),
             operations: OperationManager::default(),
+            environment_writes: tokio::sync::Mutex::new(()),
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             catalog_reviews: CatalogReviews::default(),

@@ -381,7 +381,7 @@ pub struct OperationManager {
 #[derive(Default)]
 struct OperationRegistry {
     cancellations: HashMap<String, Option<oneshot::Sender<()>>>,
-    preparing: bool,
+    exclusive_work: bool,
     clearing: bool,
 }
 
@@ -396,7 +396,7 @@ impl Drop for OperationGuard {
             if self.clearing {
                 registry.clearing = false;
             } else {
-                registry.preparing = false;
+                registry.exclusive_work = false;
             }
         }
     }
@@ -482,12 +482,16 @@ impl OperationManager {
         self.registry
             .lock()
             .map(|registry| {
-                registry.cancellations.is_empty() && !registry.preparing && !registry.clearing
+                registry.cancellations.is_empty() && !registry.exclusive_work && !registry.clearing
             })
             .unwrap_or(false)
     }
 
     pub fn begin_preparation(&self) -> AppResult<OperationGuard> {
+        self.begin_exclusive(false)
+    }
+
+    pub fn begin_environment_change(&self) -> AppResult<OperationGuard> {
         self.begin_exclusive(false)
     }
 
@@ -500,7 +504,7 @@ impl OperationManager {
             .registry
             .lock()
             .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?;
-        if !registry.cancellations.is_empty() || registry.preparing || registry.clearing {
+        if !registry.cancellations.is_empty() || registry.exclusive_work || registry.clearing {
             return Err(AppError::Invalid(
                 "Wait for the active operation to finish before continuing.".into(),
             ));
@@ -508,7 +512,7 @@ impl OperationManager {
         if clearing {
             registry.clearing = true;
         } else {
-            registry.preparing = true;
+            registry.exclusive_work = true;
         }
         Ok(OperationGuard {
             registry: self.registry.clone(),
@@ -531,7 +535,7 @@ impl OperationManager {
             .registry
             .lock()
             .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?;
-        if registry.preparing
+        if registry.exclusive_work
             || registry.clearing
             || registry.cancellations.contains_key(operation_id)
         {
@@ -1197,6 +1201,7 @@ mod tests {
         assert!(operations.begin_preparation().is_err());
         assert!(operations.begin_clear().is_err());
         assert!(operations.reserve("during-preparation").is_err());
+        assert!(operations.begin_environment_change().is_err());
         drop(preparation);
 
         let clearing = operations.begin_clear().unwrap();
@@ -1204,11 +1209,19 @@ mod tests {
         assert!(operations.begin_preparation().is_err());
         assert!(operations.begin_clear().is_err());
         assert!(operations.reserve("during-clear").is_err());
+        assert!(operations.begin_environment_change().is_err());
         drop(clearing);
+
+        let environment_change = operations.begin_environment_change().unwrap();
+        assert!(operations.begin_clear().is_err());
+        assert!(operations.begin_preparation().is_err());
+        assert!(operations.reserve("during-environment-change").is_err());
+        drop(environment_change);
 
         let _receiver = operations.reserve("after-clear").unwrap();
         assert!(operations.begin_preparation().is_err());
         assert!(operations.begin_clear().is_err());
+        assert!(operations.begin_environment_change().is_err());
         operations.remove("after-clear");
         assert!(operations.is_idle().await);
     }
