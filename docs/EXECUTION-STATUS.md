@@ -7,9 +7,12 @@ The architecture/security checkpoint's three P2 repairs are merged on main at
 binding (PR 124), and preparation/local-data-clear coordination (PR 125).
 Integrated validation passed 138 frontend and 157 native tests (3 native
 integration tests ignored), native formatting and Clippy, and dependency audits
-with no findings. Private signing of this source is in progress in
-[workflow 36296977843](https://github.com/nathanmcnulty/azd-gui/actions/runs/36296977843).
-It does not replace the prior signed candidate until the workflow and separate
+with no findings. A final independent review found an additional native
+environment-edit race, fixed in PR 128 at `da0a55f`; a follow-up Sol review
+found no remaining app-controlled P1/P2 defect and the full local verify passed.
+The first private signing [workflow 36296977843](https://github.com/nathanmcnulty/azd-gui/actions/runs/36296977843)
+was cancelled before Azure signing when the race was found. The corrected source
+has not replaced the prior signed candidate until a new workflow and separate
 artifact verification pass. The remaining release gate is the Windows 11
 clean-profile journey, including Nora's browser/WAM sign-in and target rejection.
 The proposed multi-account wizard scope is in

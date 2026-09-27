@@ -80,3 +80,15 @@ at `3988712`. The final source passed `npm run verify` (138 frontend tests,
 Clippy, and `npm run audit:dependencies` with no findings. Native tests cover
 changed target rejection and preparation/clear exclusion. This closes the
 code-review findings, not the live Windows acceptance gates above.
+
+The final independent Sol review of `6fbb618..3988712` then found one additional
+app-controlled target race: an environment edit could occur between approval
+consumption and azd startup. The first private signing run
+[`36296977843`](https://github.com/nathanmcnulty/azd-gui/actions/runs/36296977843)
+was cancelled before Azure signing. [PR 128](https://github.com/nathanmcnulty/azd-gui/pull/128)
+at `da0a55f` serializes native environment creation, selection, and value writes
+with target reread, approval consumption, and operation reservation. A second
+read-only Sol review found no remaining app-controlled P1/P2 defect in that
+sequence; the full native suite passed 157 tests with 3 explicitly ignored.
+External changes to local project files and approved template hooks remain
+outside this app-controlled serialization boundary.
