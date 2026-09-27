@@ -1,5 +1,9 @@
 # Windows admin experience: execution plan
 
+**Current continuation:** [27 September roadmap](EXECUTION-CONTINUATION-20260927.md).
+This P1–P7 plan is the historical implementation baseline. Read the continuation
+and [execution status](EXECUTION-STATUS.md) before starting another packet.
+
 Planning baseline: 20 September 2026, GUI main `a4c1552`, application source
 `179b89e`, signed candidate 0.1.1. This document authorizes no new execution by
 itself. Work starts only when the user asks to follow it. No agents, application

@@ -1,5 +1,7 @@
 # Execution status
 
+Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONTINUATION-20260927.md).
+
 Updated 26 September 2026.
 
 The architecture/security checkpoint's three P2 repairs are merged on main at
