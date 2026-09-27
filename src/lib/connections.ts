@@ -26,6 +26,28 @@ export function connectionMeetsTarget(
   return true;
 }
 
+export function connectionTargetAssessment(
+  connection: ConnectionStatus,
+  target: ConnectionTarget | null,
+  fresh: boolean
+): { label: string; action: string } {
+  if (!target) return { label: "Target not selected", action: "Choose an Azure tenant and subscription" };
+  if (!fresh || connection.state === "checking") return { label: "Unverified", action: "Check this provider for the selected target" };
+  if (connection.state === "expired") return { label: "Expired", action: "Reconnect this provider" };
+  if (connection.wrongActiveAccount) return { label: "Wrong active account", action: "Reconnect this provider with the intended account" };
+  if (connection.state === "disconnected") return { label: "No current connection", action: "Connect this provider" };
+  if (connection.state !== "connected") return { label: "Unverified", action: "Reconnect this provider, then check again" };
+  if (missingRequestedScopes(connection).length) return { label: "Grant update required", action: "Reconnect this provider to update scopes" };
+  if (!connectionMeetsTarget(connection, target)) {
+    const knownMismatch = Boolean(connection.tenantId && connection.tenantId.toLowerCase() !== target.tenantId.toLowerCase()) ||
+      (["azureCli", "azPowerShell"].includes(connection.id) && Boolean(connection.subscriptionId && connection.subscriptionId.toLowerCase() !== target.subscriptionId.toLowerCase()));
+    return knownMismatch
+      ? { label: "Wrong target", action: "Reconnect this provider with the intended account" }
+      : { label: "Unverified", action: "Reconnect this provider, then check again" };
+  }
+  return { label: "Verified for target", action: "Continue" };
+}
+
 export function retainGrantedGraphScopes(
   current: ConnectionStatus[],
   refreshed: ConnectionStatus[]

@@ -57,6 +57,14 @@ sets this boundary.
 
 ## Implementation packets
 
+27 September status: packet 1 is in the focused
+`codex/wizard-current-account-target-status-20260927` change. It requires the
+effective provider context and selected target to agree before showing a ready
+wizard result, then clears readiness and Graph-grant proof on target or sign-in
+change. The target-context checks reuse provider commands and do not establish
+live Azure permissions; permission preflight remains separate. Packets 2 and 3
+remain unstarted, as does Nora's exact signed-candidate Windows journey.
+
 1. **Current-status UX.** Extend the Connections and wizard review to show the
    effective account and fresh target match for each required provider. Reuse
    `src-tauri/src/connections.rs`, `src/lib/connections.ts`, the connection

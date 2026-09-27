@@ -1,6 +1,6 @@
 # Windows acceptance status
 
-Current as of 26 September 2026. This is the operator-facing index for the next
+Current as of 27 September 2026. This is the operator-facing index for the next
 Windows candidate. It reconciles the reusable checklist in
 [Windows beta acceptance](windows-beta-acceptance.md) with the evidence in the
 [20 September acceptance record](windows-acceptance-20260920.md) and the
@@ -25,6 +25,15 @@ also passed, without visual GUI observation in that exact attempt. Clean-profile
 authentication and affected visual and management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
+
+On 27 September, the first account-choice code packet began after signed source
+`d21634f`. It changes current-account and target-status behavior, so the 26
+September signed candidate and its 26 gate results remain historical evidence
+for that exact source. No new signed installer, installed-payload check, Nora
+sign-in, or clean-profile visual acceptance was performed for the new code.
+The matrix counts and release no-go decision below are unchanged. The packet's
+local validation is tracked in [execution status](EXECUTION-STATUS.md); local
+tests cannot close a Windows or signing gate.
 
 The first signing attempt for predecessor `3988712` was cancelled before Azure
 signing after review found the environment-edit race. Older `cc67ad9` UI and

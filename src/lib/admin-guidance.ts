@@ -58,6 +58,7 @@ export function connectionBlockingGuidance(
     return `Reconnect ${connection.name}; its sign-in has expired.`;
   }
   if (connection.state === "disconnected") {
+    if (connection.wrongActiveAccount) return `Reconnect ${connection.name} with the account for the selected target.`;
     return `Connect ${connection.name} to continue.`;
   }
   if (connection.state === "unknown") {

@@ -59,6 +59,7 @@ fn status(
         subscription_name,
         expires_on: None,
         detail: None,
+        wrong_active_account: false,
     }
 }
 
@@ -242,7 +243,7 @@ fn azd_connection_status(
 }
 
 pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatus> {
-    let (azd, azd_probe, az, az_ps, graph_ps) = tokio::join!(
+    let (azd, azd_probe, az_current, az_target, az_ps_current, az_ps_target, graph_ps) = tokio::join!(
         azd::auth_status(),
         async {
             match target.and_then(|target| azd_tenant_status_spec(target).ok()) {
@@ -250,8 +251,22 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
                 None => None,
             }
         },
-        json_status(azure_cli_context_spec(target)),
-        json_status(az_power_shell_context_spec(target)),
+        json_status(azure_cli_context_spec(None)),
+        async {
+            if target.is_some() {
+                json_status(azure_cli_context_spec(target)).await
+            } else {
+                None
+            }
+        },
+        json_status(az_power_shell_context_spec(None)),
+        async {
+            if target.is_some() {
+                json_status(az_power_shell_context_spec(target)).await
+            } else {
+                None
+            }
+        },
         json_status(graph_context_spec())
     );
     let azd_status_value = azd.ok();
@@ -272,26 +287,48 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
         (&[], &[]),
     );
     graph_status.granted_scopes = graph_granted_scopes;
-    let mut statuses = vec![
-        azd_status,
-        status(
-            "azureCli",
-            "Azure CLI",
-            "Template-specific Azure and Graph operations.",
-            az.as_ref(),
+    let mut azure_cli_status = status(
+        "azureCli",
+        "Azure CLI",
+        "Template-specific Azure and Graph operations.",
+        az_current.as_ref(),
+        &["/user/name"],
+        &["/tenantId"],
+        (&["/id"], &["/name"]),
+    );
+    let mut az_power_shell_status = status(
+        "azPowerShell",
+        "Azure PowerShell",
+        "Template-specific PowerShell operations.",
+        az_ps_current.as_ref(),
+        &["/account"],
+        &["/tenantId"],
+        (&["/subscriptionId"], &["/subscriptionName"]),
+    );
+    if let Some(target) = target {
+        apply_target_context(
+            &mut azure_cli_status,
+            az_target.as_ref(),
+            target,
             &["/user/name"],
             &["/tenantId"],
-            (&["/id"], &["/name"]),
-        ),
-        status(
-            "azPowerShell",
-            "Azure PowerShell",
-            "Template-specific PowerShell operations.",
-            az_ps.as_ref(),
+            &["/id"],
+            &["/name"],
+        );
+        apply_target_context(
+            &mut az_power_shell_status,
+            az_ps_target.as_ref(),
+            target,
             &["/account"],
             &["/tenantId"],
-            (&["/subscriptionId"], &["/subscriptionName"]),
-        ),
+            &["/subscriptionId"],
+            &["/subscriptionName"],
+        );
+    }
+    let mut statuses = vec![
+        azd_status,
+        azure_cli_status,
+        az_power_shell_status,
         graph_status,
     ];
     if let Some(mismatches) = tenant_mismatch(&statuses) {
@@ -310,6 +347,71 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
         }
     }
     statuses
+}
+
+fn apply_target_context(
+    current: &mut ConnectionStatus,
+    target_value: Option<&Value>,
+    target: &ConnectionTarget,
+    account_keys: &[&str],
+    tenant_keys: &[&str],
+    subscription_keys: &[&str],
+    subscription_name_keys: &[&str],
+) {
+    if current.state != "connected" {
+        return;
+    }
+    let Some(value) = target_value else {
+        current.state = "unknown".into();
+        current.detail = Some("The selected target could not be verified for the current account. Check connections or reconnect this provider.".into());
+        return;
+    };
+    let target_status = status(
+        &current.id,
+        &current.name,
+        &current.reason,
+        Some(value),
+        account_keys,
+        tenant_keys,
+        (subscription_keys, subscription_name_keys),
+    );
+    let accounts = current
+        .account
+        .as_deref()
+        .zip(target_status.account.as_deref());
+    if accounts.is_none() {
+        current.state = "unknown".into();
+        current.detail = Some("The selected target account could not be identified. Reconnect this provider, then check again.".into());
+    } else if accounts.is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b)) {
+        current.state = "disconnected".into();
+        current.wrong_active_account = true;
+        current.detail = Some("Another account has the selected target. Reconnect this provider with the intended account.".into());
+    } else if target_status
+        .tenant_id
+        .as_deref()
+        .is_some_and(|id| id.eq_ignore_ascii_case(&target.tenant_id))
+        && target_status
+            .subscription_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(&target.subscription_id))
+    {
+        // A cached target entry cannot make a different default context current.
+        // Template hooks can use the provider default without a target argument.
+        if current
+            .tenant_id
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(&target.tenant_id))
+            && current
+                .subscription_id
+                .as_deref()
+                .is_some_and(|id| id.eq_ignore_ascii_case(&target.subscription_id))
+        {
+            current.subscription_name = target_status.subscription_name;
+        }
+    } else {
+        current.state = "unknown".into();
+        current.detail = Some("The selected target could not be verified for the current account. Check connections or reconnect this provider.".into());
+    }
 }
 
 pub fn login_spec(
@@ -510,7 +612,136 @@ mod tests {
             subscription_name: None,
             expires_on: None,
             detail: None,
+            wrong_active_account: false,
         }
+    }
+
+    #[test]
+    fn target_probe_cannot_replace_the_effective_account() {
+        let target = ConnectionTarget {
+            tenant_id: "11111111-1111-1111-1111-111111111111".into(),
+            subscription_id: "22222222-2222-2222-2222-222222222222".into(),
+        };
+        let mut current = status(
+            "azureCli",
+            "Azure CLI",
+            "",
+            Some(&serde_json::json!({
+                "user": {"name": "current@example.test"}, "tenantId": "other", "id": "other"
+            })),
+            &["/user/name"],
+            &["/tenantId"],
+            (&["/id"], &["/name"]),
+        );
+        let mut scoped = serde_json::json!({
+            "user": {"name": "cached@example.test"}, "tenantId": target.tenant_id, "id": target.subscription_id
+        });
+        apply_target_context(
+            &mut current,
+            Some(&scoped),
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &["/name"],
+        );
+        assert_eq!(current.account.as_deref(), Some("current@example.test"));
+        assert_eq!(current.state, "disconnected");
+        assert!(current.wrong_active_account);
+
+        scoped["user"]["name"] = "current@example.test".into();
+        apply_target_context(
+            &mut current,
+            Some(&scoped),
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &["/name"],
+        );
+        assert_eq!(current.state, "disconnected");
+
+        let mut fresh = status(
+            "azureCli",
+            "Azure CLI",
+            "",
+            Some(&serde_json::json!({
+                "user": {"name": "current@example.test"}, "tenantId": target.tenant_id, "id": target.subscription_id
+            })),
+            &["/user/name"],
+            &["/tenantId"],
+            (&["/id"], &["/name"]),
+        );
+        apply_target_context(
+            &mut fresh,
+            Some(&scoped),
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &["/name"],
+        );
+        assert_eq!(fresh.state, "connected");
+        assert_eq!(
+            fresh.subscription_id.as_deref(),
+            Some(target.subscription_id.as_str())
+        );
+        apply_target_context(
+            &mut fresh,
+            None,
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &["/name"],
+        );
+        assert_eq!(fresh.state, "unknown");
+
+        let mut wrong_target = status(
+            "azureCli",
+            "Azure CLI",
+            "",
+            Some(&serde_json::json!({
+                "user": {"name": "current@example.test"}, "tenantId": "other", "id": "other"
+            })),
+            &["/user/name"],
+            &["/tenantId"],
+            (&["/id"], &["/name"]),
+        );
+        apply_target_context(
+            &mut wrong_target,
+            Some(&scoped),
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &["/name"],
+        );
+        assert_eq!(wrong_target.state, "connected");
+        assert_eq!(wrong_target.subscription_id.as_deref(), Some("other"));
+
+        let mut no_account = status(
+            "azureCli",
+            "Azure CLI",
+            "",
+            Some(&serde_json::json!({
+                "tenantId": "other", "id": "other"
+            })),
+            &["/user/name"],
+            &["/tenantId"],
+            (&["/id"], &["/name"]),
+        );
+        apply_target_context(
+            &mut no_account,
+            Some(&scoped),
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &["/name"],
+        );
+        assert_eq!(no_account.state, "unknown");
+        assert!(!no_account.wrong_active_account);
     }
 
     #[test]
