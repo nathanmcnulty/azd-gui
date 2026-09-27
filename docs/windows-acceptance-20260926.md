@@ -49,3 +49,50 @@ Private receipts are under
 `prepare.json`, `prerequisites-local.json`, `medium-candidate-token.json`, and
 `path-launch.json`. The UI findings were observed through native computer use in
 this pass; they are not inferred from those setup receipts.
+
+## Corrected signed candidate and standard-user install
+
+[Private workflow 36272899991](https://github.com/nathanmcnulty/azd-gui/actions/runs/36272899991)
+built and signed source `cc67ad9378c053af6b97ab7df0bb5881c94ad5b1`.
+It passed dependency audits, 136 frontend tests, Rust formatting and Clippy,
+154 native tests with three explicitly ignored, release build, Azure signing,
+and installed-payload verification. Its Windows runner used build `10.0.26100.0`.
+Independent host verification of the downloaded private artifact found valid
+expected-publisher signatures, timestamps, version 0.1.1, and checksums:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Portable executable | `3729991d9e58acaa3c97c2674d2c976fb0d2fd67b52680750836cab697ffcd52` |
+| NSIS installer | `067a0698d740bd4d1ab279e1958503ea114df7e79d4f6a3578d83c193fdb8405` |
+| Installed executable | `25b5d669abd74c6eb49252729101d18569d59f5dcb64fede9623cc96103ee43f` |
+
+In the same disposable Windows 11 Sandbox, a newly created local account
+`AzdAcceptance2` belonged to Users and not Administrators. Under that account,
+the exact signed NSIS installer completed silently with exit code 0 in a new
+directory. The installed executable matched the workflow's signed-payload hash
+and had valid Authenticode. Its visible process was owned by `AzdAcceptance2`;
+WebView2 used that account's separate local profile. This establishes a real
+standard-user installation and startup on Sandbox build `10.0.28000`, not just
+the earlier filtered-token launch.
+
+The installed GUI detected azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6.
+The Tools page now marked the three absent PowerShell modules **Missing** and
+offered installation review only where supported. Home showed **CLI tools 3/3**
+for the three tools it lists. The clean profile's Connections page had no active
+account. No authentication or Azure mutation occurred, and the new candidate
+has no tag or draft release.
+
+The downloaded binaries and receipts are retained privately under
+`C:\Users\NathanMcNulty\.codex\artifacts\azd-gui-cc67ad9-clean-profile`.
+The native GUI findings were observed through computer use, separately from
+the installer and process receipts.
+
+For the missing-prerequisite case, a third fresh nonadmin account
+`AzdAcceptance3` launched the same installed executable with the disposable
+CLI path entries removed. Its visible Home page showed **CLI tools 0/3**, and
+Tools marked all three CLI tools and all three optional modules **Missing**.
+The recorded process was owned by that account and remained running. No tool
+installation was started. The tool path was restored after observation; the
+private `missing-tools-launch.json` and `path-restored.json` receipts preserve
+the setup boundary. This was a second clean profile in the same Sandbox, not a
+second Windows installation.

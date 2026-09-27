@@ -14,9 +14,28 @@ completed its affected clean-profile authentication and UI acceptance.
 
 The [26 September native follow-up](windows-acceptance-20260926.md) found false
 readiness for absent optional modules in this signed candidate. PR #118 fixed
-the code, but the corrected signed artifact still needs native retesting. The
-original signing operation produced a private 14-day workflow artifact only; it
-created no app tag, draft release, or public release.
+the code. The original signing operation produced a private 14-day workflow
+artifact only; it created no app tag, draft release, or public release.
+
+### 26 September update
+
+The historical 20 September decision remains no-go. Corrected source
+`cc67ad9378c053af6b97ab7df0bb5881c94ad5b1` passed private signing in
+[workflow 36272899991](https://github.com/nathanmcnulty/azd-gui/actions/runs/36272899991).
+Independent download verification found valid signatures, timestamps, version,
+and checksums. The exact NSIS payload installed and launched under a fresh
+nonadmin account in Windows 11 Sandbox build 28000. Native observation confirmed
+that absent optional modules are Missing and Home counts only CLI tools; a
+second fresh nonadmin profile with the disposable CLI paths removed showed
+0/3 CLI tools and six Missing entries. The signing runner also verified the
+installed payload on Windows build 26100. See the
+[current acceptance matrix](windows-acceptance-status.md) and
+[native follow-up](windows-acceptance-20260926.md).
+
+The corrected artifact remains private. Browser/WAM authentication as Nora,
+the controlled target rejection, remaining clean-profile lifecycle checks, and
+eventual tagged-artifact verification remain open; this update does not authorize
+a tag, draft, or public release.
 
 ## Exact signed candidate
 

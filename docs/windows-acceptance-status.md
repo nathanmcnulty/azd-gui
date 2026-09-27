@@ -15,17 +15,18 @@ Status meanings:
 - **Failed** — a qualifying attempt found a defect or invalid artifact.
 
 The current signed application candidate is version 0.1.1 from source
-`a769ae68b7db8c4b118374026412bab54dc73796`, built by
-[workflow 35670536219](https://github.com/nathanmcnulty/azd-gui/actions/runs/35670536219).
-It contains the application and persistence changes through P6 plus the exact
-Maester evidence-consumer adoption. The workflow and a separate host download
+`cc67ad9378c053af6b97ab7df0bb5881c94ad5b1`, built by
+[workflow 36272899991](https://github.com/nathanmcnulty/azd-gui/actions/runs/36272899991).
+It contains the application and persistence changes through P6, the exact
+Maester evidence-consumer adoption, and the optional-module readiness fix.
+The workflow and a separate host download
 check verified the signatures, checksums, version, installer payload, silent
 install, and uninstall. Clean-profile authentication and affected visual and
 management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
 
-The matrix contains 26 beta gates: 16 Passed, 5 Not run, 3 Blocked, and 2 Failed.
+The matrix contains 26 beta gates: 17 Passed, 5 Not run, 3 Blocked, and 1 Failed.
 The counts describe the retained evidence across explicitly named 0.1.1 sources;
 they are not a release score. Each row states whether its evidence applies to the
 current candidate or an older revision. The maintainer selected Windows 11 x64
@@ -35,13 +36,13 @@ for beta; Windows 10 coverage is outside this matrix.
 
 | Gate | Exact artifact/source and evidence | Status | Next owner action |
 | --- | --- | --- | --- |
-| Application validation and signing | Source `a769ae6`; workflow `35670536219`; dependency audits, 135 frontend tests, Rust format/Clippy, 153 native tests, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
-| Downloaded release artifacts | Current portable `06dc34656e9be603e00e8f8744053ec0b9ae1a265fd9fe1a66be7e30c11cc861`; NSIS `5d227600c82827af65a0640c13b810bca076c7c7b35424a8d007bd62173a80dd`; host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
-| Installed payload | Current installed executable `70923c1dcd524d0e97fac80664aefad5674abf6586ebe61b19f870accfdf1ed8`; runner and host checks verified version, signature, publisher, timestamp, install, and uninstall | **Passed** | Repeat on the clean acceptance image and for an eventual tagged draft. |
-| Clean standard-user Windows 11 installation and startup | Older source `179b89e`; Windows 11 Enterprise x64 build `10.0.28000`; non-admin `AzdAcceptance`; WebView2 `153.0.4234.48`; signed 0.1.1 | **Passed** | Repeat startup and affected surfaces for current source `a769ae6`; record a supported production Windows build when selecting the beta release image. |
-| Native shell and admin surfaces | Signed source `a769ae6` rendered Home, Catalog, Projects, Connections, Tools, Settings, and the pinned starter wizard; dark appearance switched and the saved destination restored on reopen | **Passed** | The Tools readiness failure is tracked separately below. Repeat affected surfaces for the final signed/tagged source and on a separate standard-user profile. |
-| Missing prerequisites | Signed 0.1.1 clean profile reported six missing tools and no connected accounts without installation, elevation, or simulated success | **Passed** | None unless tool detection or empty-state guidance changes. |
-| Install prerequisites and refresh versions | On 26 September, source `a769ae6` rendered in a disposable Sandbox after signed WebView2 installation. The GUI detected azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6. It also incorrectly showed three absent PowerShell modules as **Ready** and reported 6/6 local readiness | **Failed** | Fix empty module-output handling and retest the exact signed candidate. The observed GUI ran as the Sandbox WDAG account; it does not satisfy the separate standard-user gate. |
+| Application validation and signing | Source `cc67ad9`; workflow `36272899991`; dependency audits, 136 frontend tests, Rust format/Clippy, 154 native tests with three ignored, release build, Trusted Signing, and installed-payload verification passed | **Passed** | Repeat only if application, dependencies, packaging, or workflow behavior changes. |
+| Downloaded release artifacts | Current portable `3729991d9e58acaa3c97c2674d2c976fb0d2fd67b52680750836cab697ffcd52`; NSIS `067a0698d740bd4d1ab279e1958503ea114df7e79d4f6a3578d83c193fdb8405`; independent host download check found valid expected publisher, trusted timestamps, version, and checksums | **Passed** | Repeat against assets downloaded from an eventual tagged draft because that is a new evidence boundary. |
+| Installed payload | Current installed executable `25b5d669abd74c6eb49252729101d18569d59f5dcb64fede9623cc96103ee43f`; runner and Sandbox standard-user checks verified version, signature, install, and startup | **Passed** | Repeat install/uninstall for an eventual tagged draft. |
+| Clean standard-user Windows 11 installation and startup | Current source `cc67ad9`; Windows 11 Enterprise x64 Sandbox build `10.0.28000`; non-admin local `AzdAcceptance2`; Microsoft-signed WebView2 `154.0.4258.37`; signed NSIS installer exit 0, valid installed payload, visible GUI under the new user's profile | **Passed** | Repeat for an eventual tagged artifact. The signing runner independently verified the installer on Windows build `10.0.26100.0`; its native GUI was not observed there. |
+| Native shell and admin surfaces | Signed source `a769ae6` rendered Home, Catalog, Projects, Connections, Tools, Settings, and the pinned starter wizard; dark appearance switched and the saved destination restored on reopen. Current source `cc67ad9` rendered Home, Catalog, Tools, and a bundled wizard under separate standard-user accounts | **Passed** | Repeat remaining affected surfaces and persistence behavior for the final signed/tagged source. |
+| Missing prerequisites | Current signed source `cc67ad9` under fresh nonadmin `AzdAcceptance3` with disposable CLI path entries removed showed CLI tools 0/3 and all six Tools entries Missing; no install or elevation started | **Passed** | None unless tool detection or empty-state guidance changes. |
+| Install prerequisites and refresh versions | Current signed source `cc67ad9` under a fresh standard user reported azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6 as Ready; three absent PowerShell modules were Missing, and Home accurately showed CLI tools 3/3. The false 6/6 result from source `a769ae6` is retained in the follow-up record | **Passed** | Repeat against an eventual tagged artifact or if tool detection changes. |
 | Clean-machine interactive authentication | Nora `nora@sharemylabs.com` exists in the expected tenant and has temporary Reader on the expected subscription; no retained clean-profile browser/WAM sign-in exists | **Blocked** | A human completes the normal browser/WAM prompts as Nora in the disposable profile. Follow the checklist below; never use device code. |
 | Wrong-tenant/target rejection after interactive sign-in | Automated and cached-host checks passed, including the tenant-scoped azd probe; no clean-profile live mismatch was exercised | **Blocked** | After Nora signs in, enter an unavailable subscription UUID as a read-only negative target and confirm Continue remains blocked. This tests an unavailable target, not access to a second real tenant. |
 | Pinned source review and preparation in signed app | Signed app rendered the bundled catalog and restored drafts. Full pinned preparation ran in development source `94f60f7`, not signed 0.1.1 | **Not run** | After clean-VM tools/auth pass, prepare the named starter and retain the approval showing project, environment, template, and revision. |
@@ -76,6 +77,7 @@ or private VM data.
 | `sandbox-install.json`; `sandbox-launch.json`; native computer-use capture | Predecessor `3971cb1` installed payload and signature in Windows Sandbox plus the observed missing-WebView2 native startup stop; Sandbox ran elevated and network-disabled |
 | `azd-gui-a769ae6-clean-profile/prerequisites-local.json`; `medium-candidate-token.json` | On 21 September, a disposable Windows 11 Sandbox installed signed WebView2, ran local PowerShell 7.6.6 and Azure CLI 2.89.1, and launched source `a769ae6` with a filtered, medium-integrity token. The WDAG account was originally an administrator; this is prerequisite and process-token evidence, not a separate standard-user profile or completed GUI/authentication acceptance |
 | `azd-gui-a769ae6-clean-profile/prepare.json`; `prerequisites-local.json`; `path-launch.json`; native computer-use observation | On 26 September, a fresh Sandbox verified exact signed source `a769ae6`, installed Microsoft-signed WebView2, and rendered the GUI with azd 1.34.1, Azure CLI 2.90.0, and PowerShell 7.6.6. The Tools page falsely marked absent Azure PowerShell, Microsoft Graph PowerShell, and ExchangeOnlineManagement modules Ready; Home showed 6/6. The GUI observation used the WDAG account, not a separate standard-user profile. |
+| Workflow `36272899991`; `azd-gui-cc67ad9-clean-profile/artifact-verification.json`; `installed-artifact-verification.json`; `standard-install.json`; `missing-tools-launch.json`; `path-restored.json`; native computer-use observation | Corrected `cc67ad9` signed build and host download verification, Windows build 26100 runner installer check, and Windows build 28000 fresh standard-user NSIS installation/startup. The installed GUI marked absent modules Missing and showed CLI tools 3/3 when CLI tools were present, then 0/3 in a separate no-tools profile. No sign-in or Azure operation occurred. |
 | `final-artifact-verification.json` | Downloaded portable/installer hashes, version, expected publisher, and timestamps |
 | `final-installed-verification.json` | Installed 0.1.1 hash, version, expected publisher, timestamp, and correspondence with the release receipt |
 | `output/final/upgrade-data-verification.json` | Schema/integrity plus exact legacy draft, timestamp, theme, and navigation retention |
