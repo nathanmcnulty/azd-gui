@@ -121,6 +121,7 @@ export interface ConnectionStatus extends ConnectionRequirement {
   subscriptionName?: string;
   expiresOn?: string;
   detail?: string;
+  wrongActiveAccount?: boolean;
 }
 
 export interface ConnectionTarget {

@@ -80,6 +80,7 @@
   import {
     connectionMeetsRequirements,
     connectionMeetsTarget,
+    connectionTargetAssessment,
     missingRequestedScopes
   } from "./lib/connections";
   import {
@@ -229,6 +230,7 @@
   let azureDiscoveryRequest = 0;
   let connectionCheckRequest = 0;
   let checkedConnectionTargetKey = "";
+  let verifiedConnectionTargetKey = "";
   let azureTargetGeneration = 0;
   let wizardEditGeneration = 0;
   let draftNotice: { kind: "restored" | "loadError" | "saveError"; message: string } | null = null;
@@ -427,6 +429,7 @@
     if (key !== checkedConnectionTargetKey) {
       checkedConnectionTargetKey = key;
       connectionCheckRequest += 1;
+      verifiedConnectionTargetKey = "";
       if (key && connectionTarget) void refreshTargetConnections(connectionTarget);
     }
   }
@@ -437,7 +440,7 @@
         .some((connection) => hasKnownTargetMismatch(connection, connectionTarget!))
   );
   $: requiredConnectionsMatchTarget = Boolean(
-    connectionTarget && requiredConnections
+    connectionTarget && verifiedConnectionTargetKey === checkedConnectionTargetKey && requiredConnections
       .filter((connection) => connection.required)
       .every((connection) => connectionMeetsTarget(connection, connectionTarget!))
   );
@@ -666,6 +669,9 @@
     if (["tenantId", "subscriptionId", "location"].includes(id)) azureTargetGeneration += 1;
     hookExecutionAccepted = false;
     if ((id === "tenantId" || id === "subscriptionId") && wizardValues[id] !== value) {
+      connectionCheckRequest += 1;
+      verifiedConnectionTargetKey = "";
+      data = { ...data, connections: data.connections.map((connection) => ({ ...connection, grantedScopes: [] })) };
       const groupFields = selectedEntry?.manifest?.configuration.groups.flatMap((group) => group.fields)
         .filter((field) => field.lookup === "securityGroup") ?? [];
       wizardValues = { ...wizardValues, ...Object.fromEntries(groupFields.map((field) => [field.id, ""])) };
@@ -1000,9 +1006,11 @@
     const request = ++connectionCheckRequest;
     const session = wizardSession;
     const currentConnections = data.connections;
+    verifiedConnectionTargetKey = "";
     try {
       const connections = await refreshConnectionList(currentConnections, target);
       if (request !== connectionCheckRequest || session !== wizardSession) return;
+      verifiedConnectionTargetKey = target ? checkedConnectionTargetKey : "";
       data = {
         ...data,
         connections
@@ -1015,11 +1023,17 @@
   }
 
   async function verifyConnection(provider: ConnectionStatus, target?: ConnectionTarget) {
+    const request = ++connectionCheckRequest;
+    const session = wizardSession;
+    const targetGeneration = azureTargetGeneration;
+    verifiedConnectionTargetKey = "";
     const checkingConnections = data.connections.map((connection) =>
       connection.id === provider.id ? { ...connection, state: "checking" as const } : connection
     );
     data = { ...data, connections: checkingConnections };
     const result = await verifyConnectionContext(provider, checkingConnections, target);
+    if (request !== connectionCheckRequest || session !== wizardSession || targetGeneration !== azureTargetGeneration) return;
+    verifiedConnectionTargetKey = target ? checkedConnectionTargetKey : "";
     data = { ...data, connections: result.connections };
     if (result.connected) return;
     addSystemLog(
@@ -1031,6 +1045,9 @@
   }
 
   async function connect(provider: ConnectionStatus, target?: ConnectionTarget) {
+    connectionCheckRequest += 1;
+    verifiedConnectionTargetKey = "";
+    data = { ...data, connections: data.connections.map((connection) => ({ ...connection, state: "checking", grantedScopes: [] })) };
     addSystemLog(
       target
         ? `Starting ${provider.name} sign-in for tenant ${target.tenantId}.`
@@ -1042,16 +1059,6 @@
       const operationId = await login(provider.id, provider.scopes ?? [], target);
       if (data.isNative) {
         await waitForOperation(operationId);
-        if (provider.id === "graphPowerShell" && provider.scopes?.length) {
-          data = {
-            ...data,
-            connections: data.connections.map((connection) =>
-              connection.id === "graphPowerShell"
-                ? { ...connection, grantedScopes: [...(provider.scopes ?? [])] }
-                : connection
-            )
-          };
-        }
         await verifyConnection(provider, target);
       } else {
         data = {
@@ -1060,6 +1067,7 @@
         };
       }
     } catch (error) {
+      data = { ...data, connections: data.connections.map((connection) => ({ ...connection, state: "unknown", grantedScopes: [] })) };
       addSystemLog(`Sign-in failed: ${String(error)}`, "error");
     }
   }
@@ -2573,6 +2581,7 @@
             <div class="data-list">
               {#each requiredConnections as connection}
                 {@const missingScopes = missingRequestedScopes(connection)}
+                {@const assessment = connectionTargetAssessment(connection, connectionTarget, verifiedConnectionTargetKey === checkedConnectionTargetKey && Boolean(checkedConnectionTargetKey))}
                 <div class="data-row connection-row">
                   <div class={`state-icon ${connection.state}`}>
                     <Icon name="connections" size={16} />
@@ -2580,7 +2589,8 @@
                   <div class="data-primary">
                     <strong>{connection.name}</strong>
                     <span>{connection.reason}</span>
-                    {#if connection.account}<small>{connection.account} · {connection.tenantId}{connection.subscriptionName ? ` · ${connection.subscriptionName}` : ""}</small>{/if}
+                    <small>Current account: {connection.account ?? "Unknown"}{connection.tenantId ? ` · ${connection.tenantId}` : ""}{connection.subscriptionName ? ` · ${connection.subscriptionName}` : ""}</small>
+                    {#if connection.required}<small>Target check: {assessment.label} · {assessment.action}</small>{/if}
                     {#if connection.expiresOn}<small>Expires <time datetime={connection.expiresOn}>{new Date(connection.expiresOn).toLocaleString()}</time></small>{/if}
                     {#if connection.id === "graphPowerShell" && connection.scopes?.length}
                       <small>Requested scopes: {connection.scopes.join(", ")}</small>
@@ -2777,6 +2787,15 @@
                   <div><dt>Tenant</dt><dd>{wizardValues.tenantId}</dd></div>
                   <div><dt>Subscription</dt><dd>{wizardValues.subscriptionId || "Connected default"}</dd></div>
                   <div><dt>Resource group</dt><dd>{wizardValues.resourceGroup || "Template default"}</dd></div>
+                </dl>
+              </section>
+              <section>
+                <div class="review-section-heading"><h3>Required connections</h3><button class="text-button" aria-label="Edit required connections" on:click={() => editReviewSection("connections")}>Edit</button></div>
+                <dl class="summary-list">
+                  {#each requiredConnections.filter((connection) => connection.required) as connection}
+                    {@const assessment = connectionTargetAssessment(connection, connectionTarget, verifiedConnectionTargetKey === checkedConnectionTargetKey && Boolean(checkedConnectionTargetKey))}
+                    <div><dt>{connection.name}</dt><dd>{connection.account ?? "Unknown"} · {assessment.label} · {assessment.action}</dd></div>
+                  {/each}
                 </dl>
               </section>
               <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} on:edit={(event) => editReviewSection(event.detail)} />

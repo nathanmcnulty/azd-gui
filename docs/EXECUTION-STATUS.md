@@ -2,7 +2,23 @@
 
 Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONTINUATION-20260927.md).
 
-Updated 26 September 2026.
+Updated 27 September 2026.
+
+The first account-choice packet is being completed from main `f2233b5` on
+`codex/wizard-current-account-target-status-20260927`. The active desktop is
+Windows 11 build 28000 under `azuread\nathanmcnulty`; no Nora standard-user
+session or clean profile was available, so the human Windows gate remains open.
+The packet shows each required provider's effective current account, fresh
+target-context result, and next action in Connections and review. A cached
+target belonging to another active account cannot appear ready. Target or
+sign-in changes invalidate displayed readiness and Graph-grant proof before
+rechecking. This is an application-code change after signed source `d21634f`;
+it does not transfer any signed-candidate acceptance result to the new source.
+Local `npm run verify` passed: zero Svelte/TypeScript diagnostics, 139 frontend
+tests, production build, Rust formatting and strict Clippy, 158 native tests
+with three integration tests ignored, and doc tests. The dependency audit
+found no npm or Rust advisories. No hosted workflow,
+signing run, Azure operation, or Nora sign-in was started for this packet.
 
 The architecture/security checkpoint's three P2 repairs are merged on main at
 `3988712`: Graph grant identity binding (PR 123), native Azure-target approval

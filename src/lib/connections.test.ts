@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   connectionMeetsRequirements,
   connectionMeetsTarget,
+  connectionTargetAssessment,
   missingRequestedScopes,
   retainGrantedGraphScopes
 } from "./connections";
@@ -23,6 +24,17 @@ function graphConnection(overrides: Partial<ConnectionStatus> = {}): ConnectionS
 }
 
 describe("connection scope requirements", () => {
+  const target = { tenantId: "11111111-1111-1111-1111-111111111111", subscriptionId: "22222222-2222-2222-2222-222222222222" };
+
+  it("names the current-account target result and next action without treating stale proof as ready", () => {
+    const connection = graphConnection({ id: "azureCli", scopes: [], grantedScopes: [], subscriptionId: target.subscriptionId });
+    expect(connectionTargetAssessment(connection, target, false).label).toBe("Unverified");
+    expect(connectionTargetAssessment(connection, target, true).label).toBe("Verified for target");
+    expect(connectionTargetAssessment({ ...connection, subscriptionId: "other" }, target, true)).toEqual({ label: "Wrong target", action: "Reconnect this provider with the intended account" });
+    expect(connectionTargetAssessment({ ...connection, state: "expired" }, target, true).label).toBe("Expired");
+    expect(connectionTargetAssessment({ ...connection, state: "disconnected", wrongActiveAccount: true }, target, true).label).toBe("Wrong active account");
+    expect(connectionTargetAssessment({ ...connection, state: "unknown", account: undefined }, target, true).label).toBe("Unverified");
+  });
   it("compares Graph scopes case-insensitively and reports missing grants", () => {
     const connection = graphConnection();
 

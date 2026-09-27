@@ -661,7 +661,7 @@ describe("desktop experience", () => {
       );
     });
     expect(screen.getByRole("combobox", { name: /azure region/i })).toHaveValue("westus2");
-    expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled());
     const environmentName = screen.getByLabelText(/environment name/i);
     await fireEvent.input(environmentName, { target: { value: "" } });
     expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled();

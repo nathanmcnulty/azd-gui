@@ -222,6 +222,8 @@ pub struct ConnectionStatus {
     pub expires_on: Option<String>,
     #[serde(default)]
     pub detail: Option<String>,
+    #[serde(default)]
+    pub wrong_active_account: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
