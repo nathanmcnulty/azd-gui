@@ -2,6 +2,20 @@
 
 Updated 26 September 2026.
 
+The architecture/security checkpoint's three P2 repairs are merged on main at
+`3988712`: Graph grant identity binding (PR 123), native Azure-target approval
+binding (PR 124), and preparation/local-data-clear coordination (PR 125).
+Integrated validation passed 138 frontend and 157 native tests (3 native
+integration tests ignored), native formatting and Clippy, and dependency audits
+with no findings. Private signing of this source is in progress in
+[workflow 36296977843](https://github.com/nathanmcnulty/azd-gui/actions/runs/36296977843).
+It does not replace the prior signed candidate until the workflow and separate
+artifact verification pass. The remaining release gate is the Windows 11
+clean-profile journey, including Nora's browser/WAM sign-in and target rejection.
+The proposed multi-account wizard scope is in
+[Account choice in the deployment wizard](account-selection-design.md); it is
+roadmap work, not completed behavior.
+
 | Packet | Status | Baseline | Result |
 | --- | --- | --- | --- |
 | P1 — Make Windows acceptance finite and reproducible | **Complete** | `8d238405643c62bbdb667e157ec3ad0799a08963` | Current gate matrix, clean-machine browser/WAM checklist, and historical-installer clean-install proposal added. |
@@ -53,9 +67,8 @@ signed build under fresh standard-user accounts.
 
 The [26 September architecture and security checkpoint](architecture-security-checkpoint-20260926.md)
 found no established P0 or P1 issue and retained the current architecture.
-Three P2 repair packets now precede release-source selection: Graph scope
-identity binding, native Azure-target approval binding, and preparation
-activity coordination.
+Those P2 packets are now merged as recorded above. Release-source signing and
+affected Windows acceptance are the next gates.
 
 P5 changed the azd-reference producer contract in PR 44 and the local GUI reader.
 Bound evidence is current only when project, selected environment, target, saved
