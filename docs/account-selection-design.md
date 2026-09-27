@@ -8,12 +8,14 @@ when it was not. An optional "Locally visible profiles" expander can help an
 admin recognize another account already known to Azure CLI or Az PowerShell.
 "Other or new account…" starts that provider's normal native browser/WAM sign-in.
 
-Each CLI owns its credentials and context. A profile listed on disk is a
+Each CLI owns its credentials and context. A profile visible to a provider is a
 **candidate**, not evidence of a usable token, consent, permission, or access to
 the selected subscription. Do not build a universal account picker, read token
 caches, display token values, or silently switch global CLI defaults. In
 particular, do not call `az account set`, `Set-AzContext`, or logout to make a
-wizard choice appear active. Never use device-code authentication.
+wizard choice appear active. An explicit provider login can itself change that
+provider's default; explain this before reconnecting and show the newly observed
+default afterward. Never use device-code authentication.
 
 ## What the wizard should say
 
@@ -35,8 +37,8 @@ and verify the target again before allowing preparation or lifecycle commands.
 
 | Provider | Current evidence | Optional locally visible choices | Selection behavior |
 | --- | --- | --- | --- |
-| Azure CLI | Existing target-aware `az account show --subscription <id>` probe | Bounded metadata from `az account list`; label as candidates | Explicit reconnect or provider-supported per-command target; do not alter the CLI default. Reprobe the exact target. |
-| Az PowerShell | `Get-AzContext`, plus target-scoped `Get-AzContext -ListAvailable` | Bounded context metadata from `Get-AzContext -ListAvailable`; label as candidates | Native reconnect, then fresh exact-target check. Do not use `Set-AzContext` merely to satisfy the wizard. |
+| Azure CLI | Existing target-aware `az account show --subscription <id>` probe | Bounded metadata from `az account list` for the logged-in account; it is not an inventory of every cached identity | Explicit reconnect or provider-supported per-command target; do not silently alter the CLI default. Reprobe the exact target. |
+| Az PowerShell | `Get-AzContext`, plus target-scoped `Get-AzContext -ListAvailable` | Bounded context metadata from `Get-AzContext -ListAvailable`; results may be incomplete beyond its default 25-subscription limit | Native reconnect, then fresh exact-target check. Do not use `Set-AzContext` merely to satisfy the wizard. |
 | azd | `azd auth status` plus fresh tenant check | No supported cross-account inventory in the current integration | Show current account and "Other or new account…"; rerun the target check after sign-in. |
 | Microsoft Graph PowerShell | `Get-MgContext` or the existing single auth-record fallback | No general cache inventory | Show current context and native reconnect. An auth record with no scopes cannot establish grants. |
 
@@ -46,7 +48,12 @@ CLI JSON or PowerShell context objects to the renderer or logs. Suppress empty,
 duplicate, and malformed entries; keep an "Unknown" state when a probe fails.
 If a provider cannot safely select a specific candidate without changing its
 global default, present the candidate as a hint and offer reconnect rather than
-a clickable account switch.
+a clickable account switch. Do not show "all accounts on this device": neither
+provider promises that inventory. The documented behavior of
+[`az account list`](https://learn.microsoft.com/en-us/cli/azure/account?view=azure-cli-latest#az-account-list),
+[`Get-AzContext -ListAvailable`](https://learn.microsoft.com/en-us/powershell/module/az.accounts/get-azcontext?view=azps-15.1.0),
+and [`azd auth status`](https://learn.microsoft.com/en-us/azure/developer/azure-developer-cli/reference)
+sets this boundary.
 
 ## Implementation packets
 
@@ -63,8 +70,9 @@ a clickable account switch.
 3. **Explicit account transition.** Offer "Other or new account…" per provider
    through its normal browser/WAM flow; use one-use UI intent and a fresh native
    target check before enabling Continue. A real Windows 11 multi-account test
-   should prove that selecting another account does not silently mutate Azure
-   CLI or Az PowerShell defaults and that stale Graph grants cannot carry over.
+   should prove that the app never silently changes Azure CLI or Az PowerShell
+   defaults, warns when explicit login may change a provider default, and does
+   not carry stale Graph grants to the new identity.
 
 These packets follow the current Windows 11 signed-candidate acceptance. They
 should be separate, reviewable milestones; the clean-profile Nora sign-in and
