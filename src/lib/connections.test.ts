@@ -14,6 +14,8 @@ function graphConnection(overrides: Partial<ConnectionStatus> = {}): ConnectionS
     required: true,
     reason: "Graph operations.",
     state: "connected",
+    account: "admin@example.test",
+    tenantId: "11111111-1111-1111-1111-111111111111",
     scopes: ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"],
     grantedScopes: ["application.readwrite.all"],
     ...overrides
@@ -90,7 +92,7 @@ describe("connection scope requirements", () => {
 
   it("retains confirmed Graph scopes when refresh finds the persisted user context", () => {
     const current = [graphConnection()];
-    const refreshed = [graphConnection({ grantedScopes: [] })];
+    const refreshed = [graphConnection({ account: "ADMIN@example.test", grantedScopes: [] })];
 
     expect(retainGrantedGraphScopes(current, refreshed)[0].grantedScopes).toEqual([
       "application.readwrite.all"
@@ -102,5 +104,34 @@ describe("connection scope requirements", () => {
     const refreshed = [graphConnection({ state: "disconnected", grantedScopes: [] })];
 
     expect(retainGrantedGraphScopes(current, refreshed)[0].grantedScopes).toEqual([]);
+  });
+
+  it("does not carry grants to another account or tenant", () => {
+    const current = [graphConnection({ grantedScopes: ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"] })];
+    const target = {
+      tenantId: "22222222-2222-2222-2222-222222222222",
+      subscriptionId: "33333333-3333-3333-3333-333333333333"
+    };
+    const [connection] = retainGrantedGraphScopes(current, [graphConnection({
+      account: "other@example.test",
+      grantedScopes: []
+    })]);
+    expect(connection.grantedScopes).toEqual([]);
+    expect(connectionMeetsTarget(connection, {
+      ...target,
+      tenantId: "11111111-1111-1111-1111-111111111111"
+    })).toBe(false);
+    expect(retainGrantedGraphScopes(current, [graphConnection({
+      tenantId: target.tenantId,
+      grantedScopes: []
+    })])[0].grantedScopes).toEqual([]);
+  });
+
+  it("does not carry grants when either identity is unknown or the old session is expired", () => {
+    const current = [graphConnection()];
+    expect(retainGrantedGraphScopes(current, [graphConnection({ account: undefined, grantedScopes: [] })])[0].grantedScopes).toEqual([]);
+    expect(retainGrantedGraphScopes(current, [graphConnection({ tenantId: undefined, grantedScopes: [] })])[0].grantedScopes).toEqual([]);
+    expect(retainGrantedGraphScopes([graphConnection({ account: undefined })], [graphConnection({ grantedScopes: [] })])[0].grantedScopes).toEqual([]);
+    expect(retainGrantedGraphScopes([graphConnection({ state: "expired" })], [graphConnection({ grantedScopes: [] })])[0].grantedScopes).toEqual([]);
   });
 });

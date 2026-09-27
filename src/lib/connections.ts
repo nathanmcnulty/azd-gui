@@ -30,13 +30,20 @@ export function retainGrantedGraphScopes(
   current: ConnectionStatus[],
   refreshed: ConnectionStatus[]
 ): ConnectionStatus[] {
-  const grantedScopes = current.find(
+  const previous = current.find(
     (connection) => connection.id === "graphPowerShell"
-  )?.grantedScopes;
-  if (!grantedScopes?.length) return refreshed;
+  );
+  const grantedScopes = previous?.grantedScopes;
+  const account = previous?.account?.trim().toLowerCase();
+  const tenantId = previous?.tenantId?.trim().toLowerCase();
+  if (previous?.state !== "connected" || !grantedScopes?.length || !account || !tenantId) {
+    return refreshed;
+  }
   return refreshed.map((connection) =>
     connection.id === "graphPowerShell" &&
     connection.state === "connected" &&
+    connection.account?.trim().toLowerCase() === account &&
+    connection.tenantId?.trim().toLowerCase() === tenantId &&
     !connection.grantedScopes?.length
       ? { ...connection, grantedScopes: [...grantedScopes] }
       : connection
