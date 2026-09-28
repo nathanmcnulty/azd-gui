@@ -1,6 +1,6 @@
 # Windows acceptance status
 
-Current as of 27 September 2026. This is the operator-facing index for the next
+Current as of 28 September 2026. This is the operator-facing index for the next
 Windows candidate. It reconciles the reusable checklist in
 [Windows beta acceptance](windows-beta-acceptance.md) with the evidence in the
 [20 September acceptance record](windows-acceptance-20260920.md) and the
@@ -25,6 +25,12 @@ also passed, without visual GUI observation in that exact attempt. Clean-profile
 authentication and affected visual and management gates remain open. See the
 [P7 release decision](p7-release-decision-20260920.md).
 No tag or draft/public 0.1.1 release exists.
+
+The [28 September RDP VM readiness check](windows-vm-readiness-20260928.md)
+observed Windows 11 Pro 25H2 build `26200.9457`, but only the local
+`aiwoperator` profile. No separate standard-user profile, Nora sign-in, app
+installation, or exact-current-source visual acceptance was established there.
+The blocked and not-run gate statuses remain unchanged.
 
 On 27 September, the first account-choice code packet was implemented in
 [PR 132](https://github.com/nathanmcnulty/azd-gui/pull/132) after signed source

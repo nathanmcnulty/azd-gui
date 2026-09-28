@@ -2,7 +2,15 @@
 
 Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONTINUATION-20260927.md).
 
-Updated 27 September 2026.
+Updated 28 September 2026.
+
+The [28 September RDP VM readiness check](windows-vm-readiness-20260928.md)
+found Windows 11 Pro 25H2 x64 build `26200.9457` and only the local
+`aiwoperator` profile. The VM has no separate standard-user desktop for Nora's
+clean-profile acceptance. No account, app, prerequisite, or authentication
+change was made during this check. PR 132's merged source still needs a new
+private signed candidate before its changed wizard behavior can receive
+qualifying Windows acceptance. P7 remains release no-go.
 
 The first account-choice packet was implemented from main `f2233b5` in
 [PR 132](https://github.com/nathanmcnulty/azd-gui/pull/132). The active desktop is
