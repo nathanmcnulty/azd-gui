@@ -19,6 +19,13 @@ No hosted workflow, signing run, Azure mutation, or Nora sign-in was started.
 The new application code still requires a private signed candidate and affected
 Windows acceptance. P7 remains release no-go.
 
+A separate 1 October dependency patch updates the development-only transitive
+`fast-uri` lock from 3.1.7 to 3.1.8 for
+[GHSA-hrr3-gc8f-f4qj](https://github.com/advisories/GHSA-hrr3-gc8f-f4qj).
+No dependency ranges or application behavior changed. A fresh lockfile install,
+full local verify (143 frontend and 163 native tests; three ignored), and
+dependency audits passed with zero npm vulnerabilities and no Rust advisories.
+
 The [28 September RDP VM readiness check](windows-vm-readiness-20260928.md)
 found Windows 11 Pro 25H2 x64 build `26200.9457` and only the local
 `aiwoperator` profile. The VM has no separate standard-user desktop for Nora's
