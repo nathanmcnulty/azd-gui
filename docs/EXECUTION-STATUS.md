@@ -27,6 +27,15 @@ No dependency ranges or application behavior changed. A fresh lockfile install,
 full local verify (143 frontend and 163 native tests; three ignored), and
 dependency audits passed with zero npm vulnerabilities and no Rust advisories.
 
+The subsequent private signing attempt for source `6e1ef0a`,
+[run 36912783063](https://github.com/nathanmcnulty/azd-gui/actions/runs/36912783063),
+stopped at the dependency audit before requesting Azure signing access. Newly
+reported `devalue` advisories affected locked version 5.9.2. A focused lockfile
+patch updates it to 5.9.4 within Svelte's existing dependency range; no package
+ranges or application code changed. Full local verify passed (143 frontend,
+163 native tests; three ignored) and npm audit reports zero vulnerabilities.
+This failed run produced no signed candidate and closes no acceptance gate.
+
 The [28 September RDP VM readiness check](windows-vm-readiness-20260928.md)
 found Windows 11 Pro 25H2 x64 build `26200.9457` and only the local
 `aiwoperator` profile. The VM has no separate standard-user desktop for Nora's
