@@ -903,7 +903,7 @@ describe("desktop experience", () => {
     expect(screen.getByRole("button", { name: /^continue$/i })).toBeEnabled();
   });
 
-  it("names an unavailable required account in the blocked Continue guidance", async () => {
+  it("keeps Continue blocked when a visible profile exists but the required account check failed", async () => {
     const data = await bridge.bootstrap();
     data.connections = data.connections.map((connection) =>
       connection.id === "azureCli"
@@ -911,6 +911,11 @@ describe("desktop experience", () => {
         : connection
     );
     vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    const list = vi.spyOn(bridge, "listVisibleProfiles").mockResolvedValue({
+      providerId: "azureCli", state: "available", hasMore: false,
+      profiles: [{ account: "cached@example.test", tenantId: "72f988bf-86f1-41af-91ab-2d7cd011db47", subscriptionId: "11111111-1111-1111-1111-111111111111", subscriptionName: "Lab" }]
+    });
+    const login = vi.spyOn(bridge, "login");
     render(App);
 
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
@@ -929,6 +934,15 @@ describe("desktop experience", () => {
     const continueButton = screen.getByRole("button", { name: /^continue$/i });
     expect(continueButton).toBeDisabled();
     expect(continueButton).toHaveAccessibleDescription("Connect Azure CLI to retry its account check.");
+    expect(list).not.toHaveBeenCalled();
+    const details = screen.getAllByText("Locally visible profiles")[0].closest("details")!;
+    details.open = true;
+    await fireEvent(details, new Event("toggle"));
+    await screen.findByText("cached@example.test");
+    expect(list).toHaveBeenCalledWith("azureCli");
+    expect(continueButton).toBeDisabled();
+    expect(continueButton).toHaveAccessibleDescription("Connect Azure CLI to retry its account check.");
+    expect(login).not.toHaveBeenCalled();
   });
 
   it("applies a template recommendation profile without replacing other values", async () => {

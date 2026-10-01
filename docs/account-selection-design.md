@@ -62,8 +62,21 @@ sets this boundary.
 effective provider context and selected target to agree before showing a ready
 wizard result, then clears readiness and Graph-grant proof on target or sign-in
 change. The target-context checks reuse provider commands and do not establish
-live Azure permissions; permission preflight remains separate. Packets 2 and 3
-remain unstarted, as does Nora's exact signed-candidate Windows journey.
+live Azure permissions; permission preflight remains separate.
+
+1 October status: the maintainer authorized independent progress while Nora's
+desktop setup waits. Packet 2 in
+[PR 136](https://github.com/nathanmcnulty/azd-gui/pull/136) adds a lazy, read-only "Locally visible profiles"
+expander to Azure CLI and Az PowerShell in Connections and the wizard. Native
+enumeration projects account, tenant, subscription ID, and subscription name;
+it validates labels/IDs, deduplicates account/tenant/subscription tuples, and
+returns at most 100 hints. Failure and wholly malformed output remain unknown.
+Results live only in the component and are discarded when its effective context
+changes. They do not change defaults, readiness, persisted drafts, or Graph
+grants. Host metadata probes returned two Azure CLI entries and six Az
+PowerShell contexts, with both defaults unchanged. This is host integration
+evidence, not Nora clean-profile or signed-candidate Windows acceptance.
+Packet 3 and Nora's exact signed-candidate journey remain open.
 
 1. **Current-status UX.** Extend the Connections and wizard review to show the
    effective account and fresh target match for each required provider. Reuse
@@ -82,8 +95,8 @@ remain unstarted, as does Nora's exact signed-candidate Windows journey.
    defaults, warns when explicit login may change a provider default, and does
    not carry stale Graph grants to the new identity.
 
-These packets follow the current Windows 11 signed-candidate acceptance. They
-should be separate, reviewable milestones; the clean-profile Nora sign-in and
-target-rejection gates remain the immediate release work. A future CLI may add
+These packets are separate, reviewable milestones. Packet 2 proceeded while
+human acceptance waited; the clean-profile Nora sign-in and target-rejection
+gates remain the immediate release work. A future CLI may add
 a supported account-selection contract, at which point this design can be
 revisited against that contract instead of parsing private caches.

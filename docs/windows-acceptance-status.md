@@ -1,6 +1,6 @@
 # Windows acceptance status
 
-Current as of 28 September 2026. This is the operator-facing index for the next
+Current as of 1 October 2026. This is the operator-facing index for the next
 Windows candidate. It reconciles the reusable checklist in
 [Windows beta acceptance](windows-beta-acceptance.md) with the evidence in the
 [20 September acceptance record](windows-acceptance-20260920.md) and the
@@ -41,6 +41,15 @@ sign-in, or clean-profile visual acceptance was performed for the new code.
 The matrix counts and release no-go decision below are unchanged. The packet's
 local validation is tracked in [execution status](EXECUTION-STATUS.md); local
 tests cannot close a Windows or signing gate.
+
+On 1 October, the second account-choice packet in
+[PR 136](https://github.com/nathanmcnulty/azd-gui/pull/136) added read-only Azure CLI and Az
+PowerShell profile hints while the human desktop setup waited. Local validation
+and unchanged-default host metadata probes are recorded in
+[execution status](EXECUTION-STATUS.md). These results do not establish
+credential validity, selected-target access, or Windows acceptance. No new
+signed candidate or qualifying VM attempt was made; the matrix counts remain
+unchanged.
 
 The first signing attempt for predecessor `3988712` was cancelled before Azure
 signing after review found the environment-edit race. Older `cc67ad9` UI and
