@@ -1,6 +1,7 @@
 # Windows acceptance and account-choice continuation
 
-Checkpoint: 27 September 2026. This is the active execution order after P1–P7
+Roadmap checkpoint: 27 September 2026; candidate handoff updated 1 October 2026.
+This is the active execution order after P1–P7
 of the [original plan](EXECUTION-PLAN.md). Keep the architecture, validation,
 model policy, and milestone handoff rules there. The [status](EXECUTION-STATUS.md)
 and [Windows gate matrix](windows-acceptance-status.md) are the evidence records;
@@ -12,14 +13,16 @@ pass into proof for a newer source or machine.
 - P1–P6 are merged. The Maester Minimal pilot deployed, validated, and cleaned
   up under its separately documented boundary. P7 remains **release no-go**.
 - Current private signed 0.1.1 application source is
-  `d21634f063d259abf8495a1dc106ec3ca464ee3a`, from
-  [signing run 36298076501](https://github.com/nathanmcnulty/azd-gui/actions/runs/36298076501).
-  Documentation-only main is `6798638` before this plan. The signed source
-  passed CI, independent host download/signature checks, and a fresh Windows 11
-  standard-user Sandbox install and process startup. That attempt did not
-  visually establish the exact candidate's wizard or complete Nora's sign-in.
+  `b018ed257917a7c5118c8bf1665c9820babda244`, from
+  [signing run 36914798448](https://github.com/nathanmcnulty/azd-gui/actions/runs/36914798448).
+  Both account-choice packets are merged. The signed source passed hosted
+  audits/tests/build, signatures and installed-payload checks, and independent
+  host download verification. The [1 October VM preparation](windows-acceptance-preparation-20261001.md)
+  records the desktop kit and prerequisites. The older `d21634f` standard-user
+  Sandbox install/startup remains historical; no new-profile installation,
+  visual wizard acceptance or Nora sign-in is established for `b018ed2`.
 - Private downloaded artifacts and receipts are under
-  `C:\Users\NathanMcNulty\.codex\artifacts\azd-gui-d21634f-signed` and the
+  `C:\Users\NathanMcNulty\.codex\artifacts\azd-gui-b018ed2-signed` and the
   acceptance store named in the [26 September record](windows-acceptance-20260926.md).
   Keep raw authentication state and private receipts outside Git.
 - The gate matrix has 17 Passed, 5 Not run, 3 Blocked, and 1 Failed entries.
@@ -107,10 +110,12 @@ unrelated work and stop at the milestone with a compact evidence update. Avoid
 repeating cloud deployment or Azure signing merely to reconfirm unchanged code.
 
 If the full Windows desktop and Nora are ready, begin **A** and complete the
-human acceptance record. Otherwise begin **B's first packet** and leave A
-clearly open. No input is required to do B. The only current human dependency
-for A is the selected full Windows 11 desktop and Nora completing its normal
-interactive sign-in; never ask her to share credentials or codes.
+human acceptance record. B's first and second packets are now merged; the third
+explicit account-transition packet should follow the real multi-account Windows
+trial in the account-choice design. The next human action is to create and log
+into the new standard-user VM desktop, install the verified desktop candidate,
+and complete Nora's normal interactive sign-in. The kit contains the human
+handoff and helpers; never ask her to share credentials or codes.
 
 Suggested new-session prompt:
 
