@@ -19,7 +19,8 @@ No hosted workflow, signing run, Azure mutation, or Nora sign-in was started.
 The new application code still requires a private signed candidate and affected
 Windows acceptance. P7 remains release no-go.
 
-A separate 1 October dependency patch updates the development-only transitive
+A separate 1 October dependency patch in
+[PR 137](https://github.com/nathanmcnulty/azd-gui/pull/137) updates the development-only transitive
 `fast-uri` lock from 3.1.7 to 3.1.8 for
 [GHSA-hrr3-gc8f-f4qj](https://github.com/advisories/GHSA-hrr3-gc8f-f4qj).
 No dependency ranges or application behavior changed. A fresh lockfile install,
