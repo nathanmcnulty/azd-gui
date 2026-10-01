@@ -4,6 +4,17 @@ Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONT
 
 Updated 1 October 2026.
 
+Current private signed application source is
+`b018ed257917a7c5118c8bf1665c9820babda244` from successful
+[run 36914798448](https://github.com/nathanmcnulty/azd-gui/actions/runs/36914798448).
+Fresh hosted dependency audits, 143 frontend and 163 native tests (three ignored),
+formatting/Clippy, release build, signing and runner installed-payload checks
+passed. Independent host download verification passed. The maintainer-authorized
+Workbench VM prerequisite setup and exact-candidate desktop kit are recorded in
+the [1 October preparation checkpoint](windows-acceptance-preparation-20261001.md).
+Clean standard-user installation, visual acceptance and Nora browser/WAM sign-in
+remain open. P7 remains release no-go; no 0.1.1 tag or draft/public release exists.
+
 The second account-choice packet in
 [PR 136](https://github.com/nathanmcnulty/azd-gui/pull/136) adds read-only, bounded Azure CLI and Az
 PowerShell profile hints in Connections and the wizard. It enumerates provider
@@ -16,8 +27,9 @@ Azure CLI entries and six Az PowerShell contexts; both provider defaults stayed
 unchanged. The npm high-severity audit gate and Cargo audit passed; npm reported
 one existing moderate `fast-uri` advisory for separate dependency maintenance.
 No hosted workflow, signing run, Azure mutation, or Nora sign-in was started.
-The new application code still requires a private signed candidate and affected
-Windows acceptance. P7 remains release no-go.
+At that checkpoint, the new code required a private signed candidate and affected
+Windows acceptance. The signing preparation above supersedes that candidate
+dependency; the human acceptance gates remain open.
 
 A separate 1 October dependency patch in
 [PR 137](https://github.com/nathanmcnulty/azd-gui/pull/137) updates the development-only transitive
@@ -88,7 +100,7 @@ roadmap work, not completed behavior.
 | P4 — Qualify one useful solution template | **Complete** | `d15da58a4151009d06eca908c5680033c7c07084` | The pinned Maester Automation Account revision is mapped to every guided choice, permission boundary, cost driver, redeployment effect, evidence source, and cleanup limit; defaults, conditional gates, and review invalidation are covered. |
 | P5 — Make management evidence useful | **Complete** | `66b006b793867ddd0db4014dde71290a3971173a` | azd-reference merge `08e6088` produces bounded 1.1 evidence; the GUI correlates it to private project, target, source, and operation state while preserving honest legacy behavior. |
 | P6 — Prove recoverable solution management | **Complete** | `922772f63b1f00f3e7f81aeb646e7a06631b0d43` | Early and unrelated events retain exact operation identity; interrupted work reopens as attention; history names its environment relationship and cross-environment retry stays blocked. |
-| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `d21634f063d259abf8495a1dc106ec3ca464ee3a` | Maester commit `45f839bc` completed the authorized Minimal deploy, validation, and teardown. The final reviewed private GUI candidate is signed and has passed independent download checks plus fresh Windows 11 non-admin installation/process startup. Earlier signed candidate passed prerequisite UI checks; exact-current-source visual, authentication, target rejection, and lifecycle gates remain open. |
+| P7 — Controlled pilot and release decision | **Live pilot complete; release no-go** | `b018ed257917a7c5118c8bf1665c9820babda244` | Maester commit `45f839bc` completed the authorized Minimal deploy, validation, and teardown. The current private candidate passed signing, runner payload checks, independent host download and VM transfer verification. The new standard-user install and exact-current-source visual/authentication/target/lifecycle gates remain open; older standard-user Sandbox startup and prerequisite UI checks stay historical. |
 
 P4 changed descriptive template guidance, its exact-revision qualification,
 and regression coverage only. It started no authentication, cloud deployment,
