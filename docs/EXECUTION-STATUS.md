@@ -4,7 +4,8 @@ Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONT
 
 Updated 1 October 2026.
 
-The second account-choice packet adds read-only, bounded Azure CLI and Az
+The second account-choice packet in
+[PR 136](https://github.com/nathanmcnulty/azd-gui/pull/136) adds read-only, bounded Azure CLI and Az
 PowerShell profile hints in Connections and the wizard. It enumerates provider
 metadata only, offers no account-switch action, and cannot establish readiness
 or permission. Account/context changes discard old hints and pending results.

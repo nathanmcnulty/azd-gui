@@ -42,7 +42,8 @@ The matrix counts and release no-go decision below are unchanged. The packet's
 local validation is tracked in [execution status](EXECUTION-STATUS.md); local
 tests cannot close a Windows or signing gate.
 
-On 1 October, the second account-choice packet added read-only Azure CLI and Az
+On 1 October, the second account-choice packet in
+[PR 136](https://github.com/nathanmcnulty/azd-gui/pull/136) added read-only Azure CLI and Az
 PowerShell profile hints while the human desktop setup waited. Local validation
 and unchanged-default host metadata probes are recorded in
 [execution status](EXECUTION-STATUS.md). These results do not establish

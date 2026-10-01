@@ -65,7 +65,8 @@ change. The target-context checks reuse provider commands and do not establish
 live Azure permissions; permission preflight remains separate.
 
 1 October status: the maintainer authorized independent progress while Nora's
-desktop setup waits. Packet 2 adds a lazy, read-only "Locally visible profiles"
+desktop setup waits. Packet 2 in
+[PR 136](https://github.com/nathanmcnulty/azd-gui/pull/136) adds a lazy, read-only "Locally visible profiles"
 expander to Azure CLI and Az PowerShell in Connections and the wizard. Native
 enumeration projects account, tenant, subscription ID, and subscription name;
 it validates labels/IDs, deduplicates account/tenant/subscription tuples, and
