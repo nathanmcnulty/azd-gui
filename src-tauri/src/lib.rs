@@ -2,6 +2,7 @@ mod azd;
 mod azure;
 mod catalog;
 mod command_runner;
+mod connection_profiles;
 mod connections;
 mod deployment;
 mod deployment_receipt;
@@ -325,6 +326,13 @@ fn install_tool(
 async fn check_connections(target: Option<ConnectionTarget>) -> AppResult<Vec<ConnectionStatus>> {
     connections::validate_target(target.as_ref())?;
     Ok(connections::check_all(target.as_ref()).await)
+}
+
+#[tauri::command]
+async fn list_visible_profiles(
+    provider_id: String,
+) -> AppResult<connection_profiles::VisibleProfiles> {
+    connection_profiles::list(&provider_id).await
 }
 
 #[tauri::command]
@@ -1277,6 +1285,7 @@ pub fn run() {
             request_tool_install_approval,
             install_tool,
             check_connections,
+            list_visible_profiles,
             discover_azure_scope,
             search_security_groups,
             run_permission_checks,

@@ -11,6 +11,7 @@
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
   import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
   import StatusPill from "./components/StatusPill.svelte";
+  import VisibleProfiles from "./components/VisibleProfiles.svelte";
   import WizardConfigurationReview from "./components/WizardConfigurationReview.svelte";
   import {
     bootstrap,
@@ -2602,6 +2603,9 @@
                       <small>Granted scopes: {connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "None detected"}</small>
                     {/if}
                     {#if missingScopes.length}<small class="scope-warning">Missing scopes: {missingScopes.join(", ")}</small>{/if}
+                    {#if connection.id === "azureCli" || connection.id === "azPowerShell"}
+                      <VisibleProfiles providerId={connection.id} contextKey={`${connection.account}:${connection.tenantId}:${connection.subscriptionId}:${connection.state}`} />
+                    {/if}
                   </div>
                   <StatusPill
                     tone={missingScopes.length || connection.state === "expired" ? "warning" : connection.state === "connected" ? "success" : connection.state === "checking" ? "neutral" : "danger"}
@@ -3312,6 +3316,9 @@
               <p>{connection.account ?? "No active account detected"}</p>
               <dl><div><dt>Tenant</dt><dd>{connection.tenantId ?? "—"}</dd></div><div><dt>Subscription</dt><dd>{connection.subscriptionName ?? "—"}</dd></div><div><dt>Expires</dt><dd>{connection.expiresOn ? new Date(connection.expiresOn).toLocaleString() : "—"}</dd></div><div><dt>Credential owner</dt><dd>{connection.name}</dd></div>{#if connection.id === "graphPowerShell"}<div><dt>Granted scopes</dt><dd title={connection.grantedScopes?.join(", ")}>{connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "—"}</dd></div>{/if}</dl>
               <button class="secondary full-width" on:click={() => connect(connection)}>{connection.state === "connected" ? "Reconnect" : "Connect"}</button>
+              {#if connection.id === "azureCli" || connection.id === "azPowerShell"}
+                <VisibleProfiles providerId={connection.id} contextKey={`${connection.account}:${connection.tenantId}:${connection.subscriptionId}:${connection.state}`} />
+              {/if}
             </article>
           {/each}
         </div>

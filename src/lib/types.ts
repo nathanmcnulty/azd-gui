@@ -129,6 +129,20 @@ export interface ConnectionTarget {
   subscriptionId: string;
 }
 
+export type ProfileProvider = "azureCli" | "azPowerShell";
+
+export interface VisibleProfiles {
+  providerId: ProfileProvider;
+  state: "available" | "unknown";
+  profiles: {
+    account: string;
+    tenantId: string;
+    subscriptionId: string;
+    subscriptionName?: string | null;
+  }[];
+  hasMore: boolean;
+}
+
 export interface AzureTenant {
   tenantId: string;
   displayName?: string;

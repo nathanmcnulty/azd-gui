@@ -19,6 +19,8 @@ import type {
   DeploymentReceiptRead,
   ConnectionStatus,
   ConnectionTarget,
+  ProfileProvider,
+  VisibleProfiles,
   ExternalCatalogPreview,
   ExecutionApprovalGrant,
   ExecutionApprovalRequest,
@@ -282,6 +284,11 @@ export async function installTool(
 export async function refreshConnections(target?: ConnectionTarget): Promise<ConnectionStatus[]> {
   if (!isTauri()) return structuredClone(mockBootstrap.connections);
   return invoke<ConnectionStatus[]>("check_connections", { target });
+}
+
+export async function listVisibleProfiles(providerId: ProfileProvider): Promise<VisibleProfiles> {
+  if (!isTauri()) return { providerId, state: "available", profiles: [], hasMore: false };
+  return invoke<VisibleProfiles>("list_visible_profiles", { providerId });
 }
 
 export async function discoverAzureScope(

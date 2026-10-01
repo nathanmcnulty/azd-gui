@@ -2,7 +2,21 @@
 
 Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONTINUATION-20260927.md).
 
-Updated 28 September 2026.
+Updated 1 October 2026.
+
+The second account-choice packet adds read-only, bounded Azure CLI and Az
+PowerShell profile hints in Connections and the wizard. It enumerates provider
+metadata only, offers no account-switch action, and cannot establish readiness
+or permission. Account/context changes discard old hints and pending results.
+Local validation passed 143 frontend and 163 native tests (three native
+integration tests ignored), checks/build, formatting, and strict Clippy.
+Independent review found no blocking issue. Read-only host probes returned two
+Azure CLI entries and six Az PowerShell contexts; both provider defaults stayed
+unchanged. The npm high-severity audit gate and Cargo audit passed; npm reported
+one existing moderate `fast-uri` advisory for separate dependency maintenance.
+No hosted workflow, signing run, Azure mutation, or Nora sign-in was started.
+The new application code still requires a private signed candidate and affected
+Windows acceptance. P7 remains release no-go.
 
 The [28 September RDP VM readiness check](windows-vm-readiness-20260928.md)
 found Windows 11 Pro 25H2 x64 build `26200.9457` and only the local
