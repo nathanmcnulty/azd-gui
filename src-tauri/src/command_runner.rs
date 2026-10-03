@@ -1354,6 +1354,16 @@ mod tests {
         assert!(output.success);
         assert!(output.stdout.contains("[REDACTED]"));
         assert!(!output.stdout.contains("abcdefghijklmnopqrstuvwxyz012345"));
+
+        let url_output = capture(
+            shell("echo https://example.test/callback?code=credential-value"),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert!(url_output.success);
+        assert!(url_output.stdout.contains("code=[REDACTED]"));
+        assert!(!url_output.stdout.contains("credential-value"));
     }
 
     #[tokio::test]

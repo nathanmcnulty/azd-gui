@@ -9,6 +9,9 @@ static JWT: Lazy<Regex> = Lazy::new(|| {
 static SECRET_ASSIGNMENT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r#"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|WEBHOOK|CLIENT_SECRET)[A-Z0-9_]*\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)"#).unwrap()
 });
+static URL_QUERY_CREDENTIAL: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)([?&](?:sig|code|access_token|refresh_token|client_secret)=)[^&#\s]+").unwrap()
+});
 static ANSI_OSC: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)").unwrap());
 static ANSI_ESCAPE: Lazy<Regex> =
@@ -19,7 +22,8 @@ pub fn redact(input: &str) -> String {
     let value = ANSI_ESCAPE.replace_all(&value, "");
     let value = BEARER.replace_all(&value, "${1}[REDACTED]");
     let value = JWT.replace_all(&value, "[REDACTED_TOKEN]");
-    SECRET_ASSIGNMENT
+    let value = SECRET_ASSIGNMENT.replace_all(&value, "${1}[REDACTED]");
+    URL_QUERY_CREDENTIAL
         .replace_all(&value, "${1}[REDACTED]")
         .into_owned()
 }
@@ -54,5 +58,19 @@ mod tests {
             redact("Open \u{1b}]8;;https://example.com\u{7}documentation\u{1b}]8;;\u{7}"),
             "Open documentation"
         );
+    }
+
+    #[test]
+    fn removes_credentials_from_url_query_parameters() {
+        let output = redact(
+            "Open https://example.test/callback?state=keep&code=secret-code&sig=secret-sig#done",
+        );
+        assert_eq!(
+            output,
+            "Open https://example.test/callback?state=keep&code=[REDACTED]&sig=[REDACTED]#done"
+        );
+        assert!(!output.contains("secret-code"));
+        assert!(!output.contains("secret-sig"));
+        assert!(!redact("\"https://example.test/?sig=quoted-secret\"").contains("quoted-secret"));
     }
 }
