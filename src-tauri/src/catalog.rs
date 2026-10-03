@@ -10,7 +10,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 use url::Url;
 
@@ -302,9 +302,18 @@ fn validate_entry(entry: &CatalogFileEntryRef<'_>) -> AppResult<()> {
         return Err(AppError::Url("Catalog repositories must use HTTPS.".into()));
     }
     reject_private_url_components(&url, "Catalog repository URL")?;
-    if entry
-        .subdirectory
-        .is_some_and(|path| path.contains("..") || Path::new(path).is_absolute())
+    if let Some(subdirectory) = entry.subdirectory {
+        validate_template_subdirectory(subdirectory)?;
+    }
+    Ok(())
+}
+
+fn validate_template_subdirectory(subdirectory: &str) -> AppResult<()> {
+    let path = Path::new(subdirectory);
+    if subdirectory.is_empty()
+        || !path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
     {
         return Err(AppError::Invalid(
             "Template subdirectory must remain inside the repository.".into(),
@@ -914,16 +923,32 @@ pub fn validate_external_snapshot(catalog: &Catalog) -> AppResult<()> {
 }
 
 pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathBuf> {
+    if let Some(subdirectory) = entry.subdirectory.as_deref() {
+        validate_template_subdirectory(subdirectory)?;
+    }
+    let root = cache_path.canonicalize()?;
     let path = entry
         .subdirectory
         .as_ref()
         .map(|subdirectory| cache_path.join(subdirectory))
-        .unwrap_or_else(|| cache_path.to_path_buf());
-    if !path.join("azure.yaml").is_file() {
+        .unwrap_or_else(|| cache_path.to_path_buf())
+        .canonicalize()?;
+    if !path.starts_with(&root) {
+        return Err(AppError::Invalid(
+            "Template subdirectory must remain inside the repository.".into(),
+        ));
+    }
+    let azure_yaml = path.join("azure.yaml");
+    if !azure_yaml.is_file() {
         return Err(AppError::Invalid(format!(
             "Pinned template does not contain azure.yaml at {}",
             path.display()
         )));
+    }
+    if !azure_yaml.canonicalize()?.starts_with(&root) {
+        return Err(AppError::Invalid(
+            "Template azure.yaml must remain inside the repository.".into(),
+        ));
     }
     Ok(path)
 }
@@ -953,7 +978,8 @@ mod tests {
     use super::{
         bundled_catalog, external_manifest_digest, inspect_local, normalize_catalog_url,
         require_catalog_entry_count, require_manifest_digest, require_payload_size, same_origin,
-        validate_external_snapshot, AZURE_YAML_LIMIT, MAX_CATALOG_ENTRIES,
+        template_path, validate_external_snapshot, validate_template_subdirectory,
+        AZURE_YAML_LIMIT, MAX_CATALOG_ENTRIES,
     };
     use sha2::{Digest, Sha256};
     use std::{fs, net::IpAddr};
@@ -967,6 +993,51 @@ mod tests {
         assert!(catalog.entries.iter().all(|entry| entry.trusted
             && entry.commit.len() == 40
             && entry.manifest_sha256.is_none()));
+    }
+
+    #[test]
+    fn template_subdirectory_accepts_only_normal_path_components() {
+        assert!(validate_template_subdirectory("templates/example").is_ok());
+        for path in ["", ".", "../outside", "templates/../outside", "/outside"] {
+            assert!(validate_template_subdirectory(path).is_err(), "{path}");
+        }
+        #[cfg(windows)]
+        for path in [r"C:outside", r"C:\outside", r"\outside", r"\\server\share"] {
+            assert!(validate_template_subdirectory(path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn template_path_revalidates_the_selected_entry() {
+        let cache = tempdir().unwrap();
+        let inside = cache.path().join("templates").join("example");
+        fs::create_dir_all(&inside).unwrap();
+        fs::write(inside.join("azure.yaml"), "name: example\n").unwrap();
+        let mut entry = bundled_catalog().unwrap().entries.remove(0);
+        entry.subdirectory = Some("templates/example".into());
+        assert_eq!(
+            template_path(cache.path(), &entry).unwrap(),
+            inside.canonicalize().unwrap()
+        );
+        entry.subdirectory = Some("../outside".into());
+        assert!(template_path(cache.path(), &entry).is_err());
+        #[cfg(windows)]
+        {
+            entry.subdirectory = Some(r"C:outside".into());
+            assert!(template_path(cache.path(), &entry).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn template_path_rejects_a_symlink_outside_the_checkout() {
+        let cache = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::write(outside.path().join("azure.yaml"), "name: outside\n").unwrap();
+        std::os::unix::fs::symlink(outside.path(), cache.path().join("linked")).unwrap();
+        let mut entry = bundled_catalog().unwrap().entries.remove(0);
+        entry.subdirectory = Some("linked".into());
+        assert!(template_path(cache.path(), &entry).is_err());
     }
 
     #[test]
