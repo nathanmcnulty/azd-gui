@@ -1,0 +1,545 @@
+{
+  "schemaVersion": "1.0.0",
+  "repository": "nathanmcnulty/azd-gui",
+  "sourceRevision": "aebed2dea6fef6f31615653009412d35e0e3a8ae",
+  "capturedAt": "2026-10-04",
+  "items": [
+    {
+      "id": "GUI-001",
+      "title": "Reconcile this backlog with current source and active work",
+      "kind": "discovery",
+      "priority": "P1",
+      "status": "done",
+      "wave": 0,
+      "problem": "Plans and implementation evidence are spread across files; the captured source can change while other tasks work.",
+      "scope": [
+        "docs/backlog.json",
+        "docs/backlog.md",
+        "Existing roadmap, execution status, open issues and pull requests (read-only)"
+      ],
+      "acceptance": [
+        "Classify each candidate as implemented, still open, superseded or awaiting evidence; retain source links and reasons.",
+        "Inspect dirty state, remotes, worktrees and local environment presence without reading secrets; avoid duplicate work with active owners.",
+        "Resolve the actual offline validation commands and record exact current default-branch/working-tree provenance; do not copy historical live passes to newer code."
+      ],
+      "validation": [
+        "git status --short",
+        "git remote -v",
+        "git worktree list --porcelain",
+        "Read the applicable instructions and validation workflow; read gh issue list and gh pr list for the named repository using nathanmcnulty. Do not create or modify issues/PRs."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "README.md",
+        "docs/EXECUTION-CONTINUATION-20260927.md",
+        "docs/EXECUTION-PLAN.md",
+        "docs/EXECUTION-STATUS.md",
+        "docs/windows-readiness-roadmap.md",
+        "https://github.com/nathanmcnulty/azd-gui/pull/134",
+        "https://github.com/nathanmcnulty/azd-gui/pull/133"
+      ],
+      "evidence": [
+        "Reconciled reviewed tracking tip e3d92a66f4f54796b0baf46585d1d109c9d2e4bd against freshly fetched origin/main aebed2dea6fef6f31615653009412d35e0e3a8ae in a clean owned worktree. No dirty canonical bytes, source files or unrelated branch history were copied.",
+        "Current main adds pull request #142, which closes issues #140 and #141. Issues #5, #11, #41, #42, #55-#59 and #143 remain open and proposed; issue #143 directly tracks the exact-candidate Windows acceptance gate in GUI-002, while open dependency pull requests #133 and #134 do not overlap these tracking paths.",
+        "Items GUI-002, GUI-003, GUI-004, GUI-005, GUI-006, GUI-007, GUI-008, GUI-009, GUI-010, GUI-011, GUI-012, GUI-013, GUI-014 remain proposed because their existing acceptance gates are not satisfied by the current source changes alone.",
+        "Exact current-source offline validation passed: npm ci reported zero vulnerabilities; Svelte check reported zero errors/warnings; Vitest passed 143/143; Vite build and cargo fmt/clippy passed; native Rust tests passed 166 with three explicitly ignored integration tests. The first native compile exhausted the E: drive in an ignored target cache; the clean rerun used a private C: Cargo target and passed without changing repository source."
+      ],
+      "blocker": null,
+      "claim": null
+    },
+    {
+      "id": "GUI-002",
+      "title": "Complete exact-candidate Windows 11 human acceptance",
+      "kind": "verification",
+      "priority": "P1",
+      "status": "proposed",
+      "wave": 2,
+      "problem": "The active continuation retains release no-go for clean-profile sign-in, visual wizard and lifecycle gates.",
+      "scope": [
+        "docs/windows-acceptance-status.md",
+        "docs/EXECUTION-STATUS.md",
+        "docs/EXECUTION-CONTINUATION-20260927.md"
+      ],
+      "acceptance": [
+        "Use the exact current signed source and installed executable hashes in a normal standard-user Windows 11 desktop.",
+        "Record browser/WAM identity, unavailable-target rejection, visual wizard, cancel/recovery, draft reopening and secret-marker checks.",
+        "Update each gate with current evidence; historical Sandbox/CLI proofs do not become current GUI passes."
+      ],
+      "validation": [
+        "Follow section A of docs/EXECUTION-CONTINUATION-20260927.md with the maintainer in the prepared full desktop.",
+        "Separate read-only visual/auth checks from the separately authorized deploy/verify/down lifecycle and cleanup.",
+        "Run npm run verify only for affected code; it is not human acceptance."
+      ],
+      "dependencies": [],
+      "authorization": "azure-deployment",
+      "components": [],
+      "sources": [
+        "docs/EXECUTION-CONTINUATION-20260927.md",
+        "https://github.com/nathanmcnulty/azd-gui/issues/143"
+      ],
+      "evidence": [
+        "Open issue #143 records the still-required exact-candidate Windows acceptance after human sign-in; current offline source validation does not satisfy that human gate."
+      ],
+      "blocker": null
+    },
+    {
+      "id": "GUI-003",
+      "title": "Design explicit provider account transitions after the multi-account trial",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "The first two account-choice packets are merged; reconnect/selection should follow observed Windows provider limitations.",
+      "scope": [
+        "docs/account-selection-design.md",
+        "src/",
+        "src-tauri/",
+        "tests/"
+      ],
+      "acceptance": [
+        "Use the real multi-account trial to choose bounded explicit reconnect paths for each provider.",
+        "Changing identity/target invalidates readiness and permission proof; no parsing token caches or silent CLI defaults.",
+        "Tests prove wrong account, unavailable target, expiry and cancellation remain fail-closed; human trial remains separate."
+      ],
+      "validation": [
+        "npm run verify",
+        "Review the current Windows gate evidence and account-selection design before proposing account-transition code."
+      ],
+      "dependencies": [
+        "nathanmcnulty/azd-gui:GUI-002"
+      ],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "docs/EXECUTION-CONTINUATION-20260927.md",
+        "docs/account-selection-design.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-004",
+      "title": "Improve optional-feature recommendations using proven permissions and receipt state",
+      "kind": "feature",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "The wizard should connect optional feature benefit with exact incremental permissions and actual deployment evidence.",
+      "scope": [
+        "src/",
+        "src-tauri/",
+        "docs/",
+        "tests/"
+      ],
+      "acceptance": [
+        "Show per-feature permission deltas and missing requirement gaps without treating catalog metadata as authorization.",
+        "Disabled features remain optional and display-only source data stays inert.",
+        "Candidate receipt evidence remains bound to source/target and never implies human-visible endpoint success."
+      ],
+      "validation": [
+        "npm run verify",
+        "Use fixtures for absent/unavailable permissions, changed source revision and stale receipts."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [
+        "deployment-receipt",
+        "deployment-validation"
+      ],
+      "sources": [
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-005",
+      "title": "Prepare the exact-candidate release checkpoint",
+      "kind": "verification",
+      "priority": "P1",
+      "status": "proposed",
+      "wave": 4,
+      "problem": "Private signing and hosted tests do not authorize a public beta release.",
+      "scope": [
+        "docs/EXECUTION-STATUS.md",
+        "docs/windows-acceptance-status.md",
+        "Release evidence"
+      ],
+      "acceptance": [
+        "All required current-candidate gates and any explicitly accepted exceptions are recorded.",
+        "Separately authorize tag/draft/publication and verify downloaded assets plus installed payload.",
+        "Create a new signed candidate only when application/packaging/workflow changes require it; preserve historical invalid-upgrade evidence."
+      ],
+      "validation": [
+        "Use the offline commands in the registered validation workflow; record the exact commands, revision and results before implementation is complete.",
+        "After separate authorization, retain redacted exact-target live evidence and cleanup results outside public Git. Do not execute live operations from this backlog alone."
+      ],
+      "dependencies": [
+        "nathanmcnulty/azd-gui:GUI-002"
+      ],
+      "authorization": "publication",
+      "components": [],
+      "sources": [
+        "docs/EXECUTION-CONTINUATION-20260927.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-006",
+      "title": "Support tenant-object ownership preflight and verified adoption",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/59",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-007",
+      "title": "Surface vendored component provenance, drift, and update status",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/58",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-008",
+      "title": "Publish the manifest schema at a stable anonymously accessible URL",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/57",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-009",
+      "title": "Support conditional acknowledgements that must be accepted before deployment",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/56",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-010",
+      "title": "Support structured post-deployment reports and verification workflows",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/55",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-011",
+      "title": "Support conditional connections, scopes, prerequisites, and permission checks",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/42",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-012",
+      "title": "Support trusted dynamic option providers for tenant-backed template inputs",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/41",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-013",
+      "title": "Track upstream glib security fix in the Tauri Linux stack",
+      "kind": "maintenance",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/11",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-014",
+      "title": "Evaluate remote environment backends and optional ADE compatibility",
+      "kind": "discovery",
+      "priority": "P2",
+      "status": "proposed",
+      "wave": 3,
+      "problem": "Open GitHub report captured 2026-10-03. Reproduce against the current source and reconcile active PRs before changing code; the issue remains the detailed trigger/evidence reference.",
+      "scope": [
+        "Paths and trigger cited in the linked issue",
+        "Focused offline regression tests",
+        "docs/"
+      ],
+      "acceptance": [
+        "Classify the report as still reproducible, already fixed, superseded or requiring live evidence; record the exact current revision.",
+        "For a reproducible defect, demonstrate the linked trigger with an offline regression and apply the smallest fix preserving tenant/target/ownership and failure semantics.",
+        "For a feature, produce a bounded design with compatibility, optional permissions, acceptance and rollout gates before implementation; no live mutation or automatic issue closure."
+      ],
+      "validation": [
+        "Read the issue body and current source/PRs; capture the exact reproduction and existing registered offline validation command.",
+        "Use deterministic fixtures for the described trigger and negative boundary; retain current-source results. Do not rerun production or tenant operations to reproduce it."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/5",
+        "README.md"
+      ],
+      "evidence": [],
+      "blocker": null
+    },
+    {
+      "id": "GUI-015",
+      "title": "Redact credential query values before streaming tool output to the renderer",
+      "kind": "discovery",
+      "priority": "P1",
+      "status": "done",
+      "wave": 0,
+      "problem": "The report captured on 2026-10-03 is closed after the reviewed fix merged; this record preserves the original trigger and validation boundary.",
+      "scope": [
+        "Linked issue and current source (read-only)",
+        "Repository-local backlog evidence"
+      ],
+      "acceptance": [
+        "Read the linked issue and current default branch; classify the exact defect, current owner and evidence gap.",
+        "Record a current PR or verified resolution before selecting any implementation; preserve broader feature and live acceptance gates."
+      ],
+      "validation": [
+        "Read current issue and PR state using nathanmcnulty; do not modify or close issues during reconciliation.",
+        "Inspect dirty state and worktrees; resolve the exact current revision and relevant offline commands before implementation."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/141"
+      ],
+      "evidence": [
+        "GitHub issue #141 is closed by merged pull request #142; current origin/main aebed2dea6fef6f31615653009412d35e0e3a8ae contains the reviewed fix.",
+        "The fix is source and regression evidence only; no signed-candidate acceptance, release, deployment, tenant mutation or human-visible result is claimed."
+      ],
+      "blocker": null,
+      "claim": null
+    },
+    {
+      "id": "GUI-016",
+      "title": "Reject Windows rooted and drive-relative catalog subdirectories",
+      "kind": "discovery",
+      "priority": "P1",
+      "status": "done",
+      "wave": 0,
+      "problem": "The report captured on 2026-10-03 is closed after the reviewed fix merged; this record preserves the original trigger and validation boundary.",
+      "scope": [
+        "Linked issue and current source (read-only)",
+        "Repository-local backlog evidence"
+      ],
+      "acceptance": [
+        "Read the linked issue and current default branch; classify the exact defect, current owner and evidence gap.",
+        "Record a current PR or verified resolution before selecting any implementation; preserve broader feature and live acceptance gates."
+      ],
+      "validation": [
+        "Read current issue and PR state using nathanmcnulty; do not modify or close issues during reconciliation.",
+        "Inspect dirty state and worktrees; resolve the exact current revision and relevant offline commands before implementation."
+      ],
+      "dependencies": [],
+      "authorization": "local-only",
+      "components": [],
+      "sources": [
+        "https://github.com/nathanmcnulty/azd-gui/issues/140"
+      ],
+      "evidence": [
+        "GitHub issue #140 is closed by merged pull request #142; current origin/main aebed2dea6fef6f31615653009412d35e0e3a8ae contains the reviewed fix.",
+        "The fix is source and regression evidence only; no signed-candidate acceptance, release, deployment, tenant mutation or human-visible result is claimed."
+      ],
+      "blocker": null,
+      "claim": null
+    }
+  ]
+}
