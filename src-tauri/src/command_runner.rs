@@ -1177,8 +1177,10 @@ mod tests {
         CommandSpec, Executable, OperationManager, OperationPersistence, OUTPUT_TRUNCATED_MARKER,
     };
     use crate::{error::AppError, evidence::OperationEvidenceContext, persistence::Database};
+    #[cfg(windows)]
+    use std::path::PathBuf;
     use std::sync::Arc;
-    use std::{path::PathBuf, time::Duration};
+    use std::time::Duration;
     use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
