@@ -5,7 +5,7 @@ use crate::{
     },
     error::{AppError, AppResult},
     local_source,
-    models::{ExecutionApprovalGrant, ExecutionApprovalRequest, ExecutionTarget},
+    models::{ExecutionApprovalGrant, ExecutionApprovalRequest, ExecutionTarget, TemplateManifest},
 };
 use std::{
     collections::HashMap,
@@ -125,20 +125,54 @@ impl ExecutionApprovals {
         })
     }
 
-    pub fn consume(&self, token: &str, expected: ExecutionApprovalRequest) -> AppResult<()> {
-        let expected = Self::validate_request(expected)?;
-        let approval = self
-            .pending
-            .lock()
+    fn take(&self, token: &str) -> AppResult<ExecutionApprovalRequest> {
+        let approval = self.pending.lock()
             .map_err(|_| AppError::Invalid("Execution approval cache is unavailable.".into()))?
             .remove(token)
-            .ok_or_else(|| {
-                AppError::Invalid(
-                    "Execution approval is missing, expired, or already used. Confirm the action again."
-                        .into(),
-                )
-            })?;
-        if approval.expires_at <= Instant::now() || approval.request != expected {
+            .filter(|approval| approval.expires_at > Instant::now())
+            .ok_or_else(|| AppError::Invalid("Execution approval is missing, expired, or already used. Confirm the action again.".into()))?;
+        Ok(approval.request)
+    }
+
+    pub fn consume(&self, token: &str, expected: ExecutionApprovalRequest) -> AppResult<()> {
+        let expected = Self::validate_request(expected)?;
+        let approved = self.take(token)?;
+        Self::compare(&approved, &expected)
+    }
+
+    /// The caller supplies newly read environment values, never renderer state.
+    /// Proofs stay inside the one-time native approval and are revalidated before
+    /// any lifecycle process can start.
+    pub fn consume_lifecycle(
+        &self,
+        token: &str,
+        mut expected: ExecutionApprovalRequest,
+        manifest: Option<&TemplateManifest>,
+    ) -> AppResult<()> {
+        let approved = self.take(token)?;
+        if expected.action != "down" {
+            if let Some(manifest) = manifest {
+                crate::acknowledgements::validate(
+                    manifest,
+                    &expected.acknowledgement_values,
+                    expected
+                        .target
+                        .as_ref()
+                        .and_then(|target| target.tenant_id.as_deref()),
+                    &approved.acknowledgement_proofs,
+                )?;
+            }
+            expected.acknowledgement_proofs = approved.acknowledgement_proofs.clone();
+        }
+        let expected = Self::validate_request(expected)?;
+        Self::compare(&approved, &expected)
+    }
+
+    fn compare(
+        approved: &ExecutionApprovalRequest,
+        expected: &ExecutionApprovalRequest,
+    ) -> AppResult<()> {
+        if approved != expected {
             return Err(AppError::Invalid(
                 "Execution approval does not match this action. Confirm the action again.".into(),
             ));
@@ -188,6 +222,8 @@ mod tests {
             template_id: "sample".into(),
             revision: Some("0123456789abcdef0123456789abcdef01234567".into()),
             snapshot_digest: Some("a".repeat(64)),
+            acknowledgement_proofs: Vec::new(),
+            acknowledgement_values: Default::default(),
             source_binding: None,
             target: Some(ExecutionTarget {
                 tenant_id: Some("11111111-1111-1111-1111-111111111111".into()),
@@ -228,6 +264,8 @@ mod tests {
             template_id: "local-sample".into(),
             revision: None,
             snapshot_digest: None,
+            acknowledgement_proofs: Vec::new(),
+            acknowledgement_values: Default::default(),
             source_binding: Some(binding),
             target: Some(ExecutionTarget {
                 tenant_id: None,

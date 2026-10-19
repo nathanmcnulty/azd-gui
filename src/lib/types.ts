@@ -198,6 +198,7 @@ export type FieldType =
   | "text"
   | "secret"
   | "boolean"
+  | "acknowledgement"
   | "select"
   | "multiselect"
   | "tenant"
@@ -214,6 +215,7 @@ export interface FieldOption {
 
 export interface ConfigurationField {
   lookup?: "securityGroup";
+  validationMessage?: string;
   id: string;
   environmentVariable: string;
   label: string;
@@ -444,7 +446,14 @@ export interface BootstrapData {
   isNative: boolean;
 }
 
+export interface AcknowledgementProof {
+  fieldId: string;
+  tenantId: string;
+  controllingValues: Record<string, string | boolean | string[]>;
+}
+
 export interface PrepareDeploymentRequest {
+  acknowledgementProofs?: AcknowledgementProof[];
   templateId: string;
   sourceMode: string;
   executionApprovalToken: string;
@@ -462,6 +471,8 @@ export interface PrepareDeploymentRequest {
 }
 
 export interface ExecutionApprovalRequest {
+  acknowledgementProofs?: AcknowledgementProof[];
+  acknowledgementValues?: Record<string, string | boolean | string[] | undefined>;
   action: "prepare" | "preview" | "up" | "provision" | "deploy" | "down";
   projectPath: string;
   environment: string;

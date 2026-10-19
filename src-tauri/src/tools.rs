@@ -466,6 +466,9 @@ pub async fn evaluate_manifest_prerequisites(
 }
 
 pub async fn ensure_requirements(requirements: &[Prerequisite]) -> AppResult<()> {
+    if requirements.is_empty() {
+        return Ok(());
+    }
     let blocking = evaluate_prerequisites(requirements)
         .await
         .into_iter()

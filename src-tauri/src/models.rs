@@ -298,7 +298,7 @@ pub struct ConfigurationGroup {
     pub fields: Vec<ConfigurationField>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldCondition {
     pub field: String,
@@ -310,9 +310,80 @@ pub struct FieldCondition {
     pub includes: Option<String>,
 }
 
+impl<'de> Deserialize<'de> for FieldCondition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("Conditions must be objects."))?;
+        let field = object
+            .get("field")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("Conditions need a field ID."))?;
+        if object
+            .keys()
+            .any(|key| !matches!(key.as_str(), "field" | "equals" | "notEquals" | "includes"))
+            || ["equals", "notEquals", "includes"]
+                .iter()
+                .filter(|key| object.contains_key(**key))
+                .count()
+                != 1
+        {
+            return Err(serde::de::Error::custom(
+                "Conditions must declare exactly one comparison and no unknown properties.",
+            ));
+        }
+        for key in ["equals", "notEquals"] {
+            if object
+                .get(key)
+                .is_some_and(|value| !value.is_string() && !value.is_boolean())
+            {
+                return Err(serde::de::Error::custom(
+                    "Equals conditions require a string or boolean comparison.",
+                ));
+            }
+        }
+        if object
+            .get("includes")
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(serde::de::Error::custom(
+                "Includes conditions require a string comparison.",
+            ));
+        }
+        Ok(Self {
+            field: field.into(),
+            equals: object.get("equals").cloned(),
+            not_equals: object.get("notEquals").cloned(),
+            includes: object
+                .get("includes")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigurationField {
+    pub id: String,
+    pub environment_variable: String,
+    pub label: String,
+    pub field_type: String,
+    pub required: bool,
+    pub sensitive: bool,
+    pub help: Option<String>,
+    pub placeholder: Option<String>,
+    pub default: Option<serde_json::Value>,
+    pub options: Vec<FieldOption>,
+    pub pattern: Option<String>,
+    pub condition: Option<FieldCondition>,
+    pub lookup: Option<String>,
+    pub validation_message: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigurationField {
+struct ConfigurationFieldWire {
     pub id: String,
     pub environment_variable: String,
     pub label: String,
@@ -336,6 +407,112 @@ pub struct ConfigurationField {
     pub condition: Option<FieldCondition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lookup: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_message: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ConfigurationField {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("type").and_then(serde_json::Value::as_str) == Some("acknowledgement") {
+            if value.as_object().is_some_and(|object| {
+                object.keys().any(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "id" | "environmentVariable"
+                            | "label"
+                            | "type"
+                            | "required"
+                            | "sensitive"
+                            | "help"
+                            | "condition"
+                            | "validationMessage"
+                    )
+                })
+            }) {
+                return Err(serde::de::Error::custom(
+                    "Acknowledgement fields cannot declare unknown or unsupported properties.",
+                ));
+            }
+            if value.get("help").is_some_and(|help| !help.is_string()) {
+                return Err(serde::de::Error::custom(
+                    "Acknowledgement help must be a string when supplied.",
+                ));
+            }
+            for key in ["default", "options", "pattern", "placeholder", "lookup"] {
+                if value.get(key).is_some() {
+                    return Err(serde::de::Error::custom(format!(
+                        "Acknowledgement fields cannot declare {key}."
+                    )));
+                }
+            }
+        }
+        if let Some(message) = value.get("validationMessage") {
+            if value.get("type").and_then(serde_json::Value::as_str) != Some("acknowledgement")
+                || !message.as_str().is_some_and(|message| !message.is_empty())
+            {
+                return Err(serde::de::Error::custom(
+                    "Only acknowledgement fields may declare a nonempty validationMessage.",
+                ));
+            }
+        }
+        let field: ConfigurationFieldWire =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            id: field.id,
+            environment_variable: field.environment_variable,
+            label: field.label,
+            field_type: field.field_type,
+            required: field.required,
+            sensitive: field.sensitive,
+            help: field.help,
+            placeholder: field.placeholder,
+            default: field.default,
+            options: field.options,
+            pattern: field.pattern,
+            condition: field.condition,
+            lookup: field.lookup,
+            validation_message: field.validation_message,
+        })
+    }
+}
+
+impl Serialize for ConfigurationField {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Preserve the exact legacy field layout and order for saved-contract digests.
+        // New acknowledgement fields omit forbidden properties, including null defaults.
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        map.serialize_entry("environmentVariable", &self.environment_variable)?;
+        map.serialize_entry("label", &self.label)?;
+        map.serialize_entry("type", &self.field_type)?;
+        map.serialize_entry("required", &self.required)?;
+        map.serialize_entry("sensitive", &self.sensitive)?;
+        if self.field_type != "acknowledgement" || self.help.is_some() {
+            map.serialize_entry("help", &self.help)?;
+        }
+        if self.field_type != "acknowledgement" {
+            map.serialize_entry("placeholder", &self.placeholder)?;
+        }
+        if self.field_type != "acknowledgement" {
+            map.serialize_entry("default", &self.default)?;
+        }
+        if self.field_type != "acknowledgement" {
+            map.serialize_entry("options", &self.options)?;
+        }
+        if self.field_type != "acknowledgement" {
+            map.serialize_entry("pattern", &self.pattern)?;
+        }
+        map.serialize_entry("condition", &self.condition)?;
+        if let Some(value) = &self.lookup {
+            map.serialize_entry("lookup", value)?;
+        }
+        if let Some(value) = &self.validation_message {
+            map.serialize_entry("validationMessage", value)?;
+        }
+        map.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -555,6 +732,14 @@ pub struct CatalogSource {
     pub accepted_catalog: Option<Catalog>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcknowledgementProof {
+    pub field_id: String,
+    pub tenant_id: String,
+    pub controlling_values: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionApprovalRequest {
@@ -570,6 +755,10 @@ pub struct ExecutionApprovalRequest {
     pub source_binding: Option<LocalSourceBinding>,
     #[serde(default)]
     pub target: Option<ExecutionTarget>,
+    #[serde(default)]
+    pub acknowledgement_proofs: Vec<AcknowledgementProof>,
+    #[serde(default)]
+    pub acknowledgement_values: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -612,4 +801,6 @@ pub struct PrepareDeploymentRequest {
     pub resource_group: Option<String>,
     #[serde(default)]
     pub environment_values: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub acknowledgement_proofs: Vec<AcknowledgementProof>,
 }

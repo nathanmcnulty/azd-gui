@@ -76,7 +76,8 @@
     ToolInstallPlan,
     ToolStatus,
     WizardPlan,
-    WizardValues
+    WizardValues,
+    AcknowledgementProof
   } from "./lib/types";
   import {
     connectionMeetsRequirements,
@@ -108,6 +109,8 @@
     valuesRemovedByPlan,
     visibleFields
   } from "./lib/wizard";
+
+  import { acknowledgementControllerFields, acknowledgementFields, acknowledgementIssues, acknowledgementMatches, assertAcknowledgements, canAcknowledge, changeAcknowledgementValues, withAcknowledgementControllerValues, withoutAcknowledgements } from "./lib/acknowledgements";
 
   type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
   type IconName = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
@@ -153,6 +156,8 @@
   let selectedInspection: TemplateInspection | null = null;
   let wizardPlan: WizardPlan | null = null;
   let wizardValues: WizardValues = {};
+  let wizardAcknowledgements: AcknowledgementProof[] = [];
+  let projectAcknowledgements: AcknowledgementProof[] = [];
   let activeStep = 0;
   let removedValueWarning: string[] = [];
   let preflightRan = false;
@@ -160,6 +165,7 @@
   let permissionChecksRunning = false;
   let permissionCheckResults: PermissionCheckResult[] = [];
   let preflightOperationId: string | null = null;
+  let preflightContext: { session: number; generation: number } | null = null;
   let activeOperationId: string | null = null;
   let activeOperationKind: string | null = null;
   let operationEvents: OperationEvent[] = [];
@@ -266,23 +272,29 @@
   $: sensitiveWizardFields = sensitiveFieldIds(selectedEntry);
   $: selectedProjectConfigurationFields = selectedProjectTemplate?.entry.manifest?.configuration.groups
     .flatMap((group) => group.fields) ?? [];
-  $: projectConfigurationWizardValues = Object.fromEntries(
+  $: projectConfigurationWizardValues = { tenantId: projectEnvironmentValues.find((value) => value.name === "AZURE_TENANT_ID")?.value ?? "", ...Object.fromEntries(
       selectedProjectConfigurationFields.map((field) => [
         field.id,
-        field.type === "boolean"
+        (field.type === "boolean" || field.type === "acknowledgement")
           ? environmentConfigurationValues[field.id] === "true"
           : field.type === "multiselect"
             ? (environmentConfigurationValues[field.id] ?? "").split(",").filter(Boolean)
             : environmentConfigurationValues[field.id] ?? ""
       ])
-  );
+  ) };
+  $: projectAcknowledgementIssues = acknowledgementIssues(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements);
+  $: wizardAcknowledgementIssues = acknowledgementIssues(selectedEntry?.manifest, wizardValues, wizardAcknowledgements);
   $: visibleProjectConfigurationFields =
     selectedProjectTemplate?.entry.manifest?.configuration.groups
       ?.filter((group) => conditionMatches(group.condition, projectConfigurationWizardValues))
       .flatMap((group) => visibleFields(group.fields, projectConfigurationWizardValues)) ?? [];
+  $: uninitializedAcknowledgementControllers = environmentConfigurationState === "ready"
+    ? acknowledgementControllerFields(selectedProjectTemplate?.entry.manifest).filter((field) => field.default == null &&
+        !projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet)
+    : [];
   $: missingProjectConfiguration = environmentConfigurationState === "ready"
     ? visibleProjectConfigurationFields.filter((field) =>
-        field.required &&
+        (field.required || uninitializedAcknowledgementControllers.some((controller) => controller.id === field.id)) &&
         !projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet
       )
     : [];
@@ -290,7 +302,7 @@
     !environmentBusy && !environmentConfigurationBusy && !projectLoading;
   $: projectConfigurationReady = projectEnvironmentReady &&
     environmentConfigurationState === "ready" && missingProjectConfiguration.length === 0 &&
-    !hasUnsavedProjectEdits;
+    !hasUnsavedProjectEdits && projectAcknowledgementIssues.length === 0;
   $: projectRequiresInteractiveTerminal = Boolean(selectedProjectTemplate?.entry.manifest?.requiresInteractiveTerminal);
   $: projectContractReady = Boolean(selectedProjectTemplate);
   $: hasUnsavedProjectEdits = environmentConfigurationDirty.length > 0 ||
@@ -475,7 +487,7 @@
         ? "Use Prepare and open terminal to complete this template's interactive deployment."
         : "Run checks and preview successfully before continuing.";
     } else if (page.kind === "review") {
-      stepBlockingReason = hookExecutionAccepted ? "" : "Review your choices and approve template code execution to continue.";
+      stepBlockingReason = wizardAcknowledgementIssues[0] ?? (hookExecutionAccepted ? "" : "Review your choices and approve template code execution to continue.");
     } else {
       stepBlockingReason = "";
     }
@@ -611,10 +623,10 @@
     if (entry.source === "external") values.sourceMode = "externalCatalog";
     for (const group of entry.manifest?.configuration.groups ?? []) {
       for (const field of group.fields) {
-        if (field.default != null) values[field.id] = field.default;
+        if (field.type !== "acknowledgement" && field.default != null) values[field.id] = field.default;
       }
     }
-    return values;
+    return withAcknowledgementControllerValues(entry.manifest, values);
   }
 
   function startWizard(entry: CatalogEntry) {
@@ -627,6 +639,7 @@
     sourceTrustAccepted = Boolean(entry.trusted);
     hookExecutionAccepted = false;
     terminalLaunch = null;
+    wizardAcknowledgements = [];
     wizardValues = initializeValues(entry);
     wizardPlan = calculateWizardPlan(entry, wizardValues);
     activeStep = 0;
@@ -648,7 +661,7 @@
     void draftSaveQueue.then(() => loadWizardDraft(entry.id, draftIdentity)).then((draft) => {
       if (session !== wizardSession || selectedEntry?.id !== entry.id || wizardEditGeneration !== 0 || activeStep !== 0) return;
       if (!draft || Object.keys(draft).length === 0) return;
-      wizardValues = { ...wizardValues, ...draft };
+      wizardValues = withAcknowledgementControllerValues(entry.manifest, withoutAcknowledgements(entry.manifest, { ...wizardValues, ...draft }));
       wizardPlan = calculateWizardPlan(entry, wizardValues, wizardPlan ?? undefined);
       draftNotice = { kind: "restored", message: "Saved choices restored. Review them before preparation and enter any secrets again." };
     }).catch(() => {
@@ -662,6 +675,7 @@
     flushDraftSave();
     wizardSession += 1;
     selectedEntry = null;
+    wizardAcknowledgements = [];
     draftNotice = null;
   }
 
@@ -693,11 +707,14 @@
     ) {
       sourceTrustAccepted = false;
     }
-    wizardValues = { ...wizardValues, [id]: value };
+    const changed = changeAcknowledgementValues(selectedEntry?.manifest, wizardValues,
+      ["sourceMode", "sourcePath", "projectPath", "environmentName", "subscriptionId"].includes(id) && wizardValues[id] !== value ? [] : wizardAcknowledgements, id, value);
+    wizardValues = changed.values;
+    wizardAcknowledgements = changed.proofs;
     preflightRan = false;
     permissionCheckResults = [];
     if (!selectedEntry || !wizardPlan) return;
-    const nextPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan);
+    const nextPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements);
     const removed = valuesRemovedByPlan(wizardPlan, nextPlan);
     removedValueWarning = removed.filter((field) => wizardValues[field] !== undefined && wizardValues[field] !== "");
     const pageId = activePage?.id;
@@ -709,7 +726,7 @@
 
   function applyRecommendationProfile(profile: RecommendationProfile) {
     for (const [id, value] of Object.entries(profile.values)) {
-      setWizardValue(id, value);
+      if (!acknowledgementFields(selectedEntry?.manifest).some(({ field }) => field.id === id)) setWizardValue(id, value);
     }
     addSystemLog(`Applied the '${profile.title}' template recommendation. Review the resulting choices before continuing.`, "info");
   }
@@ -723,7 +740,7 @@
   function scheduleDraftSave() {
     if (!selectedEntry) return;
     const values = Object.fromEntries(
-      Object.entries(wizardValues).filter(
+      Object.entries(withoutAcknowledgements(selectedEntry.manifest, wizardValues)).filter(
         ([key, value]) => !sensitiveWizardFields.has(key) && value !== undefined
       )
     );
@@ -774,17 +791,20 @@
             ? await inspectGitHubTemplate(sourcePath)
             : await inspectLocalTemplate(sourcePath));
         if (session !== wizardSession || generation !== wizardEditGeneration) return;
+        wizardAcknowledgements = [];
+        wizardValues = withoutAcknowledgements(inspection.entry.manifest, wizardValues);
         selectedEntry = inspection.entry;
         selectedInspection = inspection;
         sourceTrustAccepted = false;
         for (const group of selectedEntry.manifest?.configuration.groups ?? []) {
           for (const field of group.fields) {
-            if (wizardValues[field.id] === undefined && field.default != null) {
+            if (field.type !== "acknowledgement" && wizardValues[field.id] === undefined && field.default != null) {
               wizardValues = { ...wizardValues, [field.id]: field.default };
             }
           }
         }
-        wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan);
+        wizardValues = withAcknowledgementControllerValues(selectedEntry.manifest, wizardValues);
+        wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements);
         if (!inspectionAlreadyReported) {
           inspection.warnings.forEach((warning) => addSystemLog(warning, "warning"));
           if (inspection.warnings.length) outputOpen = true;
@@ -1146,6 +1166,9 @@
       configurationIssues.forEach((issue) => addSystemLog(issue, "error"));
       return;
     }
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
+    const isCurrent = () => session === wizardSession && generation === wizardEditGeneration;
     preflightStarting = true;
     try {
       if (!(await runRegisteredPermissionChecks())) return;
@@ -1159,9 +1182,12 @@
       const operationId = await startApprovedDeploymentOperation(
         "preview",
         projectPath,
-        String(wizardValues.environmentName || "dev")
+        String(wizardValues.environmentName || "dev"),
+        wizardAcknowledgements,
+        isCurrent
       );
       preflightOperationId = operationId;
+      preflightContext = { session, generation };
       operationProjectPaths.set(operationId, projectPath);
       operationEnvironments.set(operationId, String(wizardValues.environmentName || "dev"));
       activeOperationId = operationId;
@@ -1173,6 +1199,7 @@
       if (earlyEvent) handleOperationEvent(earlyEvent, true);
       else if (!data.isNative) simulateOperation(operationId, "preview");
     } catch (error) {
+      if (session === wizardSession) invalidateAcknowledgements();
       addSystemLog(`Preflight failed: ${String(error)}`, "error");
       operationState = "idle";
       activeOperationKind = null;
@@ -1183,22 +1210,30 @@
 
   async function materializeProject(): Promise<string> {
     if (!selectedEntry) throw new Error("No template is selected.");
+    assertAcknowledgements(selectedEntry.manifest, wizardValues, wizardAcknowledgements);
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
+    const isCurrent = () => session === wizardSession && generation === wizardEditGeneration;
     let projectPath = String(wizardValues.projectPath || "");
     if (projectPrepared) {
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
       const environment = String(wizardValues.environmentName || "dev");
       if (preparedEnvironmentName !== environment) {
+        const subscription = String(wizardValues.subscriptionId || "") || undefined;
+        const location = String(wizardValues.location || "") || undefined;
         const environments = await listProjectEnvironments(projectPath);
+        if (!isCurrent()) throw new Error("Configuration changed before selecting an environment. Review again.");
         if (environments.some((item) => item.name === environment)) {
           await selectProjectEnvironment(projectPath, environment);
         } else {
           await createProjectEnvironment(
             projectPath,
             environment,
-            String(wizardValues.subscriptionId || "") || undefined,
-            String(wizardValues.location || "") || undefined
+            subscription,
+            location
           );
         }
+        if (!isCurrent()) throw new Error("Configuration changed while selecting an environment. Review again.");
         preparedEnvironmentName = environment;
       }
       const targetValues: Record<string, string | boolean | string[] | undefined> = {
@@ -1214,7 +1249,9 @@
       for (const name of preparedEnvironmentVariables.get(environment) ?? []) {
         if (!Object.hasOwn(targetValues, name)) values.push({ name, value: "" });
       }
+      if (!isCurrent()) throw new Error("Configuration changed. Review and acknowledge again.");
       await setProjectEnvironmentValues(projectPath, environment, values);
+      if (!isCurrent()) throw new Error("Configuration changed while saving the environment. Review again.");
       preparedEnvironmentVariables.set(environment, new Set(values.map(({ name }) => name)));
       addSystemLog("Refreshed the prepared project environment with the reviewed values.", "success");
       return projectPath;
@@ -1224,7 +1261,7 @@
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
       let result: Awaited<ReturnType<typeof materializeDeploymentProject>>;
       try {
-        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues, selectedInspection?.sourceBinding);
+        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues, selectedInspection?.sourceBinding, wizardAcknowledgements, isCurrent);
       } catch (error) {
         if (wizardValues.sourceMode !== "existingProject") {
           try {
@@ -1238,6 +1275,7 @@
         }
         throw error;
       }
+      if (!isCurrent()) throw new Error("The wizard changed while preparing. Reopen the preserved project to review it.");
       const project = result.project;
       projectPath = project.path;
       wizardValues = result.values;
@@ -1314,6 +1352,10 @@
 
   async function openExistingProjectTerminal() {
     if (!selectedEntry || interactivePreparing || terminalOpening) return;
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
+    const path = String(wizardValues.projectPath);
+    const environment = String(wizardValues.environmentName || "dev");
     if (!selectedPlatformSupported || !requiredToolsReady || !requiredConnectionsReady || requiredTenantMismatch) {
       addSystemLog("Resolve the template platform, tool, and connection requirements before opening the terminal.", "error");
       outputOpen = true;
@@ -1322,7 +1364,8 @@
     if (!(await runRegisteredPermissionChecks())) return;
     outputOpen = true;
     try {
-      await launchExternalTerminal(String(wizardValues.projectPath), String(wizardValues.environmentName || "dev"));
+      if (session !== wizardSession || generation !== wizardEditGeneration) return;
+      await launchExternalTerminal(path, environment);
     } catch (error) {
       addSystemLog(`Could not open the project terminal: ${String(error)}`, "error");
     }
@@ -1330,6 +1373,9 @@
 
   async function prepareAndOpenInteractiveTerminal() {
     if (!selectedEntry || activeOperationId || interactivePreparing) return;
+    const session = wizardSession;
+    const generation = wizardEditGeneration;
+    const environment = String(wizardValues.environmentName || "dev");
     if (!selectedEntry.trusted && !sourceTrustAccepted) {
       addSystemLog("Review and approve this source before opening the terminal.", "error");
       outputOpen = true;
@@ -1379,8 +1425,10 @@
     addSystemLog("Preparing the approved project before opening an interactive terminal.", "info");
     try {
       const projectPath = await materializeProject();
-      await launchExternalTerminal(projectPath, String(wizardValues.environmentName || "dev"));
+      if (session !== wizardSession || generation !== wizardEditGeneration) return;
+      await launchExternalTerminal(projectPath, environment);
     } catch (error) {
+      if (session === wizardSession) invalidateAcknowledgements();
       addSystemLog(`Could not prepare the interactive project: ${String(error)}`, "error");
     } finally {
       interactivePreparing = false;
@@ -1399,6 +1447,8 @@
       return;
     }
     const session = wizardSession;
+    const generation = wizardEditGeneration;
+    const isCurrent = () => session === wizardSession && generation === wizardEditGeneration;
     const environment = String(wizardValues.environmentName || "dev");
     const entry = selectedEntry;
     if (action === "up") wizardDeployment = {
@@ -1415,7 +1465,9 @@
       const operationId = await startApprovedDeploymentOperation(
         action,
         projectPath,
-        environment
+        environment,
+        wizardAcknowledgements,
+        isCurrent
       );
       const earlyEvent = [...operationEvents].reverse().find((event) => event.operationId === operationId && event.kind === action) ?? null;
       if (action === "up" && wizardDeployment?.session === session) {
@@ -1429,6 +1481,7 @@
       if (earlyEvent) handleOperationEvent(earlyEvent, true);
       else if (!data.isNative) simulateOperation(operationId, action);
     } catch (error) {
+      if (session === wizardSession) invalidateAcknowledgements();
       if (action === "up" && wizardDeployment?.session === session) wizardDeployment = { ...wizardDeployment, state: "failed", error: `Could not start deployment: ${String(error)}` };
       operationState = "failed";
       activeOperationKind = null;
@@ -1567,8 +1620,11 @@
       preflightOperationId === event.operationId &&
       (event.state === "succeeded" || event.state === "failed" || event.state === "cancelled")
     ) {
-      preflightRan = event.state === "succeeded";
+      preflightRan = event.state === "succeeded" &&
+        preflightContext?.session === wizardSession &&
+        preflightContext?.generation === wizardEditGeneration;
       preflightOperationId = null;
+      preflightContext = null;
       activeOperationId = null;
       activeOperationKind = null;
       operationState = "idle";
@@ -1642,7 +1698,18 @@
     await cancelTrackedOperation(deployment.operationId, "up");
   }
 
+  function invalidateAcknowledgements() {
+    wizardAcknowledgements = [];
+    projectAcknowledgements = [];
+    wizardEditGeneration += 1;
+    if (selectedEntry) {
+      wizardValues = withoutAcknowledgements(selectedEntry.manifest, wizardValues);
+      wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan ?? undefined);
+    }
+  }
+
   async function cancelTrackedOperation(operationId: string, kind: string) {
+    invalidateAcknowledgements();
     await cancelOperation(operationId);
     if (!data.isNative) {
       const mutating = ["up", "provision", "deploy", "down", "preview"].includes(kind);
@@ -1702,6 +1769,7 @@
     if (!canLeaveProjectEdits()) return;
     projectWorkspaceRequest += 1;
     selectedProject = null;
+    projectAcknowledgements = [];
     rawVariableName = "";
     rawVariableValue = "";
   }
@@ -1723,6 +1791,7 @@
     const workspace = projectWorkspaceRequest;
     if (!isCurrentProject(workspace, projectPath, environment)) return;
     const request = ++environmentReadRequest;
+    if (!preserveEdits) projectAcknowledgements = [];
     const isCurrent = () => request === environmentReadRequest && isCurrentProject(workspace, projectPath, environment);
     environmentConfigurationState = "loading";
     environmentConfigurationError = "";
@@ -1736,6 +1805,9 @@
       hydrateEnvironmentConfiguration(values);
       environmentConfigurationValues = { ...environmentConfigurationValues, ...edits };
       environmentConfigurationDirty = dirty;
+      const freshValues = configurationValuesForProof(values);
+      projectAcknowledgements = projectAcknowledgements.filter((proof) => acknowledgementFields(selectedProjectTemplate?.entry.manifest)
+        .some(({ field, group }) => field.id === proof.fieldId && acknowledgementMatches(field, group, freshValues, [proof])));
     } catch {
       if (!isCurrent()) return;
       projectEnvironmentValues = [];
@@ -1752,12 +1824,30 @@
     }
   }
 
+  function configurationValuesForProof(values: ProjectEnvironmentValue[]): WizardValues {
+    return { tenantId: values.find((value) => value.name === "AZURE_TENANT_ID")?.value ?? "",
+      ...Object.fromEntries(selectedProjectConfigurationFields.map((field) => {
+        const value = values.find((value) => value.name === field.environmentVariable)?.value;
+        return [field.id, value === undefined ? field.default : field.type === "boolean" || field.type === "acknowledgement"
+          ? value === "true" : field.type === "multiselect" ? value.split(",").filter(Boolean) : value];
+      })) };
+  }
+
   function setProjectConfigurationValue(field: ConfigurationField, value: WizardValues[string]) {
-    setEnvironmentConfigurationValue(field, serializeConfigurationValue(value));
+    const changed = changeAcknowledgementValues(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements, field.id, value);
+    projectAcknowledgements = changed.proofs;
+    for (const candidate of selectedProjectConfigurationFields) {
+      const next = changed.values[candidate.id];
+      if ((candidate.id === field.id || candidate.type === "acknowledgement") &&
+          serializeConfigurationValue(next) !== environmentConfigurationValues[candidate.id]) {
+        setEnvironmentConfigurationValue(candidate, serializeConfigurationValue(next));
+      }
+    }
   }
 
   function discardEnvironmentConfigurationChanges() {
     if (environmentConfigurationBusy || environmentBusy || projectLoading) return;
+    projectAcknowledgements = [];
     hydrateEnvironmentConfiguration(projectEnvironmentValues);
     environmentConfigurationError = "";
   }
@@ -1786,10 +1876,11 @@
       environmentConfigurationError = validationIssue;
       return;
     }
-    const values = environmentConfigurationDirty
+    const names = [...new Set([...environmentConfigurationDirty, ...uninitializedAcknowledgementControllers.map((field) => field.environmentVariable)])];
+    const values = names
       .map((name) => fields.find((field) => field.environmentVariable === name))
       .filter((field): field is ConfigurationField => Boolean(field))
-      .map((field) => ({ name: field.environmentVariable, value: environmentConfigurationValues[field.id] ?? "" }))
+      .map((field) => ({ name: field.environmentVariable, value: serializeConfigurationValue(projectConfigurationWizardValues[field.id]) }))
       .filter((value) => value.value !== "" || !projectEnvironmentValues.find((item) => item.name === value.name)?.sensitive);
     if (values.length === 0) return;
     environmentConfigurationBusy = true;
@@ -1830,6 +1921,7 @@
     const isCurrent = () => isCurrentProject(workspace, project.path, environment);
     environmentConfigurationBusy = true;
     environmentConfigurationError = "";
+    projectAcknowledgements = [];
     const write = setProjectEnvironmentValues(project.path, environment, [{ name, value }]);
     projectEnvironmentWrites.set(project.path, write);
     try {
@@ -1909,6 +2001,7 @@
       projectTab = "overview";
     }
     selectedProject = project;
+    projectAcknowledgements = [];
     selectedProjectTemplate = null;
     activeNav = "projects";
     environmentEditorOpen = false;
@@ -2122,8 +2215,12 @@
     if (["preview", "up", "provision", "deploy", "refresh", "down"].includes(action)) {
       projectPreview = null;
     }
+    const proofs = projectAcknowledgements;
+    const digest = selectedProjectTemplate?.digest;
+    const workspace = projectWorkspaceRequest;
     try {
-      const operationId = await startProjectOperation(project, action, selectedProjectTemplate?.digest);
+      const operationId = await startProjectOperation(project, action, digest, proofs,
+        () => isCurrentProject(workspace, project.path, project.environment) && proofs === projectAcknowledgements && !hasUnsavedProjectEdits && digest === selectedProjectTemplate?.digest);
       if (action === "up" && selectedProject?.path === project.path &&
           selectedProject.environment === project.environment) projectDeploymentResult = null;
       operationProjectPaths.set(operationId, project.path);
@@ -2138,6 +2235,7 @@
     } catch (error) {
       operationState = "failed";
       activeOperationKind = null;
+      if (isCurrentProject(workspace, project.path, project.environment)) projectAcknowledgements = [];
       addSystemLog(`Could not start azd ${action}: ${String(error)}`, "error");
     }
   }
@@ -2733,6 +2831,7 @@
                   <ConfigurationFieldControl
                     {field}
                     value={wizardValues[field.id]}
+                    acknowledgementAvailable={field.type !== "acknowledgement" || canAcknowledge(selectedEntry.manifest, field.id, wizardValues)}
                     lookupTarget={connectionTarget}
                     on:change={(event) => setWizardValue(field.id, event.detail ?? "")}
                   />
@@ -2751,9 +2850,9 @@
               <h2>{requiresInteractiveTerminal ? "Prepare for interactive terminal" : preflightRan ? "Preview completed" : "Run checks and template preview"}</h2>
               <p>{requiresInteractiveTerminal ? "Permission checks remain read-only. Prepare the approved project, then finish its prompts in an external terminal." : preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview completed. Review Output for hook-driven changes." : "Permission checks are read-only. Project initialization and azd preview can execute pinned template hooks that modify local or cloud state."}</p>
               {#if requiresInteractiveTerminal}
-                <button class="primary large" disabled={terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+                <button class="primary large" disabled={wizardAcknowledgementIssues.length > 0 || terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
               {:else}
-                <button class="primary large" on:click={runPreflight} disabled={preflightStarting || operationState === "running" || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
+                <button class="primary large" on:click={runPreflight} disabled={wizardAcknowledgementIssues.length > 0 || preflightStarting || operationState === "running" || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
               {/if}
             </div>
             <div class="check-grid">
@@ -2807,7 +2906,7 @@
                   {/each}
                 </dl>
               </section>
-              <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} on:edit={(event) => editReviewSection(event.detail)} />
+              <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} acknowledgementProofs={wizardAcknowledgements} on:edit={(event) => editReviewSection(event.detail)} />
             </div>
             <div class="callout warning interactive-hook-warning">
               <Icon name="warning" size={18} />
@@ -2836,7 +2935,7 @@
                 {#if requiresInteractiveTerminal}
                   <button class="primary large" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
                 {:else}
-                  <button class="primary large" on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {wizardDeploymentState === "succeeded" ? "Deploy again" : wizardDeploymentEvent?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
+                  <button class="primary large" disabled={wizardAcknowledgementIssues.length > 0} on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {wizardDeploymentState === "succeeded" ? "Deploy again" : wizardDeploymentEvent?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
                 {/if}
               {/if}
             </div>
@@ -3165,12 +3264,19 @@
                   {#if missingProjectConfiguration.length > 0}
                     <div class="callout warning"><Icon name="warning" size={17} /><div><strong>Configuration required before deployment</strong><p>{missingProjectConfiguration.map((field) => field.label).join(", ")}</p></div></div>
                   {/if}
+                  {#if uninitializedAcknowledgementControllers.length > 0}
+                    <p role="status">Save configuration to initialize the displayed acknowledgement controls: {uninitializedAcknowledgementControllers.map((field) => field.label).join(", ")}. Nothing is written until you save.</p>
+                  {/if}
+                  {#if projectAcknowledgementIssues.length > 0}
+                    <div class="callout warning"><div><strong>Fresh acknowledgement required</strong><p>{projectAcknowledgementIssues.join(" ")}</p></div></div>
+                  {/if}
                   {#if visibleProjectConfigurationFields.length > 0}
                     <div class="configuration-editor-grid">
                       {#each visibleProjectConfigurationFields as field}
                         <ConfigurationFieldControl
                           {field}
-                          value={projectConfigurationWizardValues[field.id]}
+                          value={field.type === "acknowledgement" ? projectAcknowledgements.some((proof) => proof.fieldId === field.id) && projectConfigurationWizardValues[field.id] === true : projectConfigurationWizardValues[field.id]}
+                          acknowledgementAvailable={field.type !== "acknowledgement" || canAcknowledge(selectedProjectTemplate?.entry.manifest, field.id, projectConfigurationWizardValues)}
                           configuredSensitive={Boolean(projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.sensitive && projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet)}
                           on:change={(event) => setProjectConfigurationValue(field, event.detail)}
                         />
@@ -3179,11 +3285,15 @@
                   {:else}
                     <div class="empty-configuration"><strong>No visible manifest fields</strong><span>Add a raw environment variable below when the template documentation requires one.</span></div>
                   {/if}
+                  {#if selectedProjectTemplate && acknowledgementFields(selectedProjectTemplate.entry.manifest).length > 0}
+                    <WizardConfigurationReview pages={calculateWizardPlan(selectedProjectTemplate.entry, projectConfigurationWizardValues, undefined, projectAcknowledgements).pages}
+                      values={projectConfigurationWizardValues} acknowledgementProofs={projectAcknowledgements} on:edit={() => (projectTab = "environments")} />
+                  {/if}
                   {#if visibleProjectConfigurationFields.length > 0 || environmentConfigurationDirty.length > 0}
                     <div class="environment-configuration-actions">
                       <span>{environmentConfigurationDirty.length === 0 ? "No unsaved changes" : `${environmentConfigurationDirty.length} unsaved`}</span>
                       <button class="secondary" disabled={environmentConfigurationBusy || environmentConfigurationDirty.length === 0} on:click={discardEnvironmentConfigurationChanges}>Discard changes</button>
-                      <button class="primary" disabled={environmentConfigurationBusy || environmentConfigurationDirty.length === 0} on:click={saveEnvironmentConfiguration}>{environmentConfigurationBusy ? "Saving…" : "Save configuration"}</button>
+                      <button class="primary" disabled={environmentConfigurationBusy || (environmentConfigurationDirty.length === 0 && uninitializedAcknowledgementControllers.length === 0)} on:click={saveEnvironmentConfiguration}>{environmentConfigurationBusy ? "Saving…" : "Save configuration"}</button>
                     </div>
                   {/if}
                   <div class="raw-environment-editor">

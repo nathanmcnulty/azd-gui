@@ -104,10 +104,16 @@ pub fn read_target_values(project_root: &Path, environment: &str) -> TargetEvide
     read_target_values_inner(project_root, environment).unwrap_or_default()
 }
 
-fn read_target_values_inner(
+pub(crate) fn read_environment_values(
     project_root: &Path,
     environment: &str,
-) -> Option<TargetEvidenceValues> {
+    wanted: &[&str],
+) -> Option<HashMap<String, String>> {
+    if crate::deployment::validate_environment_name(environment).is_err()
+        || matches!(environment, "." | "..")
+    {
+        return None;
+    }
     let root = fs::canonicalize(project_root).ok()?;
     let azure = root.join(".azure");
     if is_link_or_reparse(&azure).ok()? {
@@ -147,13 +153,6 @@ fn read_target_values_inner(
         return None;
     }
     let content = String::from_utf8(bytes).ok()?;
-    let wanted = [
-        "AZD_GUI_AZURE_CLOUD",
-        "AZURE_TENANT_ID",
-        "AZURE_SUBSCRIPTION_ID",
-        "AZURE_LOCATION",
-        "AZURE_RESOURCE_GROUP",
-    ];
     let mut values = HashMap::new();
     for line in content.lines() {
         let line = line.trim();
@@ -169,10 +168,28 @@ fn read_target_values_inner(
             continue;
         }
         let value = dotenv_value(raw.trim())?;
-        if value.len() > 256 || value.chars().any(|character| character <= '\u{1f}') {
+        if value.len() > 32_768 || value.chars().any(|character| character <= '\u{1f}') {
             return None;
         }
-        values.insert(key, value);
+        values.insert(key.to_string(), value);
+    }
+    Some(values)
+}
+
+fn read_target_values_inner(
+    project_root: &Path,
+    environment: &str,
+) -> Option<TargetEvidenceValues> {
+    let wanted = [
+        "AZD_GUI_AZURE_CLOUD",
+        "AZURE_TENANT_ID",
+        "AZURE_SUBSCRIPTION_ID",
+        "AZURE_LOCATION",
+        "AZURE_RESOURCE_GROUP",
+    ];
+    let mut values = read_environment_values(project_root, environment, &wanted)?;
+    if values.values().any(|value| value.len() > 256) {
+        return None;
     }
     Some(TargetEvidenceValues {
         azure_cloud: values.remove("AZD_GUI_AZURE_CLOUD"),

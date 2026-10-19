@@ -1,4 +1,5 @@
 import type {
+  AcknowledgementProof,
   CatalogEntry,
   ConfigurationField,
   FieldCondition,
@@ -6,6 +7,7 @@ import type {
   WizardPlan,
   WizardValues
 } from "./types";
+import { acknowledgementMatches, acknowledgementMessage } from "./acknowledgements";
 import { effectiveRequirements, requirementControllerIds } from "./requirements";
 
 export function conditionMatches(condition: FieldCondition | undefined, values: WizardValues): boolean {
@@ -24,6 +26,7 @@ export function visibleFields(fields: ConfigurationField[], values: WizardValues
 }
 
 export function validateField(field: ConfigurationField, value: WizardValues[string]): string | null {
+  if (field.type === "acknowledgement") return value === true ? null : acknowledgementMessage(field);
   if (field.required && (value == null || value === "" || (Array.isArray(value) && value.length === 0))) {
     return `${field.label} is required.`;
   }
@@ -73,7 +76,8 @@ function standardPage(
 export function calculateWizardPlan(
   entry: CatalogEntry,
   values: WizardValues,
-  previous?: WizardPlan
+  previous?: WizardPlan,
+  acknowledgementProofs: AcknowledgementProof[] = []
 ): WizardPlan {
   const manifest = entry.manifest;
   const pages: WizardPage[] = [
@@ -86,7 +90,9 @@ export function calculateWizardPlan(
     if (!conditionMatches(group.condition, values)) continue;
     const fields = visibleFields(group.fields, values);
     if (fields.length === 0) continue;
-    const blockingIssues = fields.map((field) => validateField(field, values[field.id]))
+    const blockingIssues = fields.map((field) => field.type === "acknowledgement"
+      ? acknowledgementMatches(field, group, values, acknowledgementProofs) ? null : acknowledgementMessage(field)
+      : validateField(field, values[field.id]))
       .filter((issue): issue is string => issue !== null);
     configurationPages.push({
       id: `configuration:${group.id}`, kind: "configuration", title: group.title,
@@ -96,8 +102,22 @@ export function calculateWizardPlan(
   }
   const controllers = manifest ? requirementControllerIds(manifest) : new Set<string>();
   const isFeaturePage = (page: WizardPage) => page.group!.fields.some((field) => controllers.has(field.id));
-  // Feature choices come before the readiness gates they control.
-  pages.push(...configurationPages.filter(isFeaturePage));
+  // Feature choices precede readiness, but acknowledgements need the selected
+  // tenant. Split a mixed feature group so its acceptance control is reachable.
+  const featurePages: WizardPage[] = [];
+  const targetPages: WizardPage[] = [];
+  for (const page of configurationPages) {
+    if (!isFeaturePage(page)) { targetPages.push(page); continue; }
+    const acknowledgements = page.group!.fields.filter((field) => field.type === "acknowledgement");
+    if (!acknowledgements.length) { featurePages.push(page); continue; }
+    const choices = page.group!.fields.filter((field) => field.type !== "acknowledgement");
+    const choiceIssues = choices.map((field) => validateField(field, values[field.id])).filter((issue): issue is string => issue !== null);
+    featurePages.push({ ...page, group: { ...page.group!, fields: choices }, blockingIssues: choiceIssues, complete: !choiceIssues.length });
+    const issues = acknowledgements.filter((field) => !acknowledgementMatches(field, page.group!, values, acknowledgementProofs)).map(acknowledgementMessage);
+    targetPages.push({ ...page, id: `${page.id}:acknowledgements`, title: `${page.title}: acknowledgements`,
+      group: { ...page.group!, fields: acknowledgements }, blockingIssues: issues, complete: !issues.length });
+  }
+  pages.push(...featurePages);
 
   if ((manifest && effectiveRequirements(manifest.prerequisites, manifest, values).length > 0) || manifest?.minimumAzdVersion) {
     pages.push(
@@ -130,7 +150,7 @@ export function calculateWizardPlan(
     )
   );
 
-  pages.push(...configurationPages.filter((page) => !isFeaturePage(page)));
+  pages.push(...targetPages);
 
   pages.push(
     standardPage("review", "review", "Review deployment", "Confirm values and approve pinned template code execution."),

@@ -117,6 +117,7 @@
             "text",
             "secret",
             "boolean",
+            "acknowledgement",
             "select",
             "multiselect",
             "tenant",
@@ -130,16 +131,37 @@
         "sensitive": { "type": "boolean" },
         "lookup": { "enum": ["securityGroup"] },
         "help": { "type": "string" },
+        "validationMessage": { "type": "string", "minLength": 1 },
         "placeholder": { "type": "string" },
         "default": { "type": ["string", "boolean", "array"], "items": { "type": "string" } },
         "options": { "type": "array", "items": { "$ref": "#/$defs/option" } },
         "pattern": { "type": "string" },
         "condition": { "$ref": "#/$defs/condition" }
       },
-      "allOf": [{
-        "if": { "properties": { "lookup": {} }, "required": ["lookup"] },
-        "then": { "properties": { "type": { "const": "entraObject" }, "sensitive": { "const": false } } }
-      }]
+      "allOf": [
+        {
+          "if": { "properties": { "lookup": {} }, "required": ["lookup"] },
+          "then": { "properties": { "type": { "const": "entraObject" }, "sensitive": { "const": false } } }
+        },
+        {
+          "if": { "properties": { "type": { "const": "acknowledgement" } }, "required": ["type"] },
+          "then": {
+            "required": ["required", "condition"],
+            "properties": {
+              "label": { "type": "string", "minLength": 1 },
+              "required": { "const": true },
+              "condition": { "$ref": "#/$defs/condition" },
+              "sensitive": { "const": false },
+              "default": false,
+              "lookup": false,
+              "options": false,
+              "pattern": false,
+              "placeholder": false
+            }
+          },
+          "else": { "properties": { "validationMessage": false } }
+        }
+      ]
     },
     "group": {
       "type": "object",
