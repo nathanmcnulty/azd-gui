@@ -7,6 +7,7 @@ import {
   startAzdOperation
 } from "../bridge";
 import type {
+  AcknowledgementProof,
   AzdProjectState,
   OperationEvent,
   ProjectEnvironment,
@@ -56,7 +57,9 @@ export type ProjectAction = "preview" | "up" | "provision" | "deploy" | "refresh
 export async function startProjectOperation(
   project: ProjectSummary,
   action: ProjectAction,
-  snapshotDigest?: string
+  snapshotDigest?: string,
+  acknowledgementProofs: AcknowledgementProof[] = [],
+  isCurrent: () => boolean = () => true
 ): Promise<string> {
   const requiresApproval = ["preview", "up", "provision", "deploy", "down"].includes(action);
   const environment = project.environment;
@@ -65,6 +68,7 @@ export async function startProjectOperation(
       throw new Error("Select an environment before starting this lifecycle action.");
     }
     const approval = await requestExecutionApproval({
+      acknowledgementProofs,
       action: action as Exclude<ProjectAction, "refresh">,
       projectPath: project.path,
       environment,
@@ -72,6 +76,7 @@ export async function startProjectOperation(
       revision: project.revision,
       snapshotDigest
     });
+    if (!isCurrent()) throw new Error("Configuration changed during approval. Review and acknowledge again.");
     return startAzdOperation(action, approval.projectPath, environment, approval.token);
   }
   return startAzdOperation(action, project.path, environment);

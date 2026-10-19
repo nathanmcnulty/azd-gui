@@ -1,3 +1,4 @@
+mod acknowledgements;
 mod azd;
 mod azure;
 mod catalog;
@@ -53,6 +54,7 @@ pub struct AppState {
     environment_writes: AsyncMutex<()>,
     template_cache: PathBuf,
     inspected_manifests: Mutex<HashMap<String, TemplateManifest>>,
+    reviewed_contracts: Mutex<HashMap<String, ProjectTemplateSnapshot>>,
     catalog_reviews: CatalogReviews,
     execution_approvals: execution_approval::ExecutionApprovals,
     tool_install_approvals: tools::ToolInstallApprovals,
@@ -194,6 +196,11 @@ async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> App
         .pending
         .lock()
         .map_err(|_| AppError::Invalid("Catalog review cache is unavailable.".into()))?
+        .clear();
+    state
+        .reviewed_contracts
+        .lock()
+        .map_err(|_| AppError::Invalid("Reviewed contract cache is unavailable.".into()))?
         .clear();
     state.execution_approvals.clear()?;
     state.tool_install_approvals.clear()?;
@@ -386,6 +393,38 @@ async fn start_azd_operation(
     environment: Option<String>,
     execution_approval_token: Option<String>,
 ) -> AppResult<String> {
+    start_azd_operation_checked(
+        state.inner(),
+        action,
+        project_path,
+        environment,
+        execution_approval_token,
+        |action, spec, persistence| {
+            spawn_operation(
+                app,
+                state.operations.clone(),
+                action,
+                spec,
+                Some(persistence),
+            )
+        },
+    )
+    .await
+}
+
+// Keep the entire production validation-to-launch path testable without a GUI
+// runtime. The Tauri command above has no independent process-launch route.
+async fn start_azd_operation_checked<F>(
+    state: &AppState,
+    action: String,
+    project_path: String,
+    environment: Option<String>,
+    execution_approval_token: Option<String>,
+    launch: F,
+) -> AppResult<String>
+where
+    F: FnOnce(String, command_runner::CommandSpec, OperationPersistence) -> AppResult<String>,
+{
     // Keep in-app environment writes outside the target read -> approval consume
     // -> operation reservation window. Once reserved, edits fail until completion.
     let _environment_lock = state.environment_writes.lock().await;
@@ -416,15 +455,6 @@ async fn start_azd_operation(
             ensure_registered_project_lifecycle_contract(&action, snapshot.as_ref())?;
             if let Some(snapshot) = &snapshot {
                 ensure_project_lifecycle_route(&action, snapshot)?;
-                if let Some(manifest) = &snapshot.entry.manifest {
-                    let requirement_values = registered_requirement_environment_values(
-                        manifest,
-                        &canonical,
-                        environment,
-                    )
-                    .await?;
-                    tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
-                }
             }
             snapshot
         } else {
@@ -433,31 +463,70 @@ async fn start_azd_operation(
         if let (Some(project), Some(snapshot)) = (project.as_ref(), snapshot.as_ref()) {
             persistence_context = Some(operation_evidence_context(project, snapshot, environment));
         }
-        state.execution_approvals.consume(
-            token,
-            ExecutionApprovalRequest {
-                action: action.clone(),
-                project_path: canonical.display().to_string(),
-                environment: environment.to_string(),
-                template_id: project
-                    .as_ref()
-                    .and_then(|project| project.template_id.clone())
-                    .unwrap_or_default(),
-                revision: project
-                    .as_ref()
-                    .and_then(|project| project.revision.clone()),
-                snapshot_digest: snapshot.as_ref().map(|snapshot| snapshot.digest.clone()),
-                source_binding: None,
-                target: Some(lifecycle_execution_target(&canonical, environment)?),
-            },
-        )?;
+        let manifest = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.entry.manifest.as_ref());
+        let acknowledgement_values = if action == "down" {
+            HashMap::new()
+        } else {
+            manifest
+                .map(|manifest| {
+                    acknowledgements::saved_binding_values(manifest, &canonical, environment)
+                })
+                .transpose()?
+                .unwrap_or_default()
+        };
+        let expected = ExecutionApprovalRequest {
+            action: action.clone(),
+            project_path: canonical.display().to_string(),
+            environment: environment.to_string(),
+            template_id: project
+                .as_ref()
+                .and_then(|project| project.template_id.clone())
+                .unwrap_or_default(),
+            revision: project
+                .as_ref()
+                .and_then(|project| project.revision.clone()),
+            snapshot_digest: snapshot.as_ref().map(|snapshot| snapshot.digest.clone()),
+            source_binding: None,
+            acknowledgement_proofs: Vec::new(),
+            acknowledgement_values,
+            target: Some(lifecycle_execution_target(&canonical, environment)?),
+        };
+        state
+            .execution_approvals
+            .consume_lifecycle(token, expected.clone(), manifest)?;
+        if let Some(manifest) = manifest {
+            let requirement_values =
+                registered_requirement_environment_values(manifest, &canonical, environment)
+                    .await?;
+            tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
+        }
+        // Tool checks can take time. Re-read immediately before the final launch,
+        // in addition to the pre-process gate, to catch external environment edits.
+        let current_values = if action == "down" {
+            HashMap::new()
+        } else {
+            manifest
+                .map(|manifest| {
+                    acknowledgements::saved_binding_values(manifest, &canonical, environment)
+                })
+                .transpose()?
+                .unwrap_or_default()
+        };
+        if current_values != expected.acknowledgement_values
+            || Some(lifecycle_execution_target(&canonical, environment)?) != expected.target
+        {
+            return Err(AppError::Invalid(
+                "The saved execution context changed before launch. Review and approve again."
+                    .into(),
+            ));
+        }
     }
-    spawn_operation(
-        app,
-        state.operations.clone(),
+    launch(
         action,
         spec,
-        Some(match persistence_context {
+        match persistence_context {
             Some(context) => OperationPersistence::with_context(
                 state.database.clone(),
                 canonical.display().to_string(),
@@ -466,7 +535,7 @@ async fn start_azd_operation(
             None => {
                 OperationPersistence::new(state.database.clone(), canonical.display().to_string())
             }
-        }),
+        },
     )
 }
 
@@ -592,36 +661,142 @@ async fn prepare_deployment(
             "Local sources require the exact binding returned by native inspection.".into(),
         ));
     }
-    state.execution_approvals.consume(
-        &request.execution_approval_token,
-        ExecutionApprovalRequest {
-            action: "prepare".into(),
-            project_path: request.destination.clone(),
-            environment: request.environment.clone(),
-            template_id: request.template_id.clone(),
-            revision: request.source_revision.clone(),
-            snapshot_digest: Some(request.reviewed_contract_digest.clone()),
-            source_binding: request.source_binding.clone(),
-            target: Some(execution_approval::validate_target(ExecutionTarget {
-                tenant_id: request.tenant.clone(),
-                subscription_id: request.subscription.clone(),
-                location: Some(request.location.clone()),
-                resource_group: request.resource_group.clone(),
-            })?),
-        },
-    )?;
+    let mut expected = ExecutionApprovalRequest {
+        action: "prepare".into(),
+        project_path: request.destination.clone(),
+        environment: request.environment.clone(),
+        template_id: request.template_id.clone(),
+        revision: request.source_revision.clone(),
+        snapshot_digest: Some(request.reviewed_contract_digest.clone()),
+        acknowledgement_proofs: request.acknowledgement_proofs.clone(),
+        acknowledgement_values: request.environment_values.clone(),
+        source_binding: request.source_binding.clone(),
+        target: Some(execution_approval::validate_target(ExecutionTarget {
+            tenant_id: request.tenant.clone(),
+            subscription_id: request.subscription.clone(),
+            location: Some(request.location.clone()),
+            resource_group: request.resource_group.clone(),
+        })?),
+    };
+    prepare_approval_acknowledgements(state.inner(), &mut expected)?;
+    state
+        .execution_approvals
+        .consume(&request.execution_approval_token, expected)?;
+    // Preparation can also rewrite an existing environment. Revoke any other
+    // pending grants before those writes, including an A -> B -> A sequence.
+    state.execution_approvals.clear()?;
     deployment::prepare(request, &state.template_cache, &state.database).await
 }
 
 #[tauri::command]
-fn reviewed_contract_digest(mut entry: CatalogEntry) -> AppResult<String> {
+fn reviewed_contract_digest(state: State<'_, AppState>, entry: CatalogEntry) -> AppResult<String> {
+    let snapshot = reviewed_contract_snapshot(entry)?;
+    let digest = snapshot.digest.clone();
+    let mut contracts = state
+        .reviewed_contracts
+        .lock()
+        .map_err(|_| AppError::Invalid("Reviewed contract cache is unavailable.".into()))?;
+    if contracts.len() >= MAX_INSPECTED_MANIFESTS {
+        contracts.clear();
+    }
+    contracts.insert(digest.clone(), snapshot);
+    Ok(digest)
+}
+
+fn reviewed_contract_snapshot(mut entry: CatalogEntry) -> AppResult<ProjectTemplateSnapshot> {
     // Bootstrap marks accepted external entries as reviewed for presentation. The
     // persisted contract retains the source document's false value, so exclude
     // that UI-only state from the digest supplied for native preparation.
     if entry.source.as_deref() == Some("external") {
         entry.trusted = false;
     }
-    Ok(ProjectTemplateSnapshot::new(entry)?.digest)
+    ProjectTemplateSnapshot::new(entry)
+}
+
+fn prepare_approval_acknowledgements(
+    state: &AppState,
+    request: &mut ExecutionApprovalRequest,
+) -> AppResult<()> {
+    let contracts = state
+        .reviewed_contracts
+        .lock()
+        .map_err(|_| AppError::Invalid("Reviewed contract cache is unavailable.".into()))?;
+    let snapshot = request
+        .snapshot_digest
+        .as_ref()
+        .and_then(|digest| contracts.get(digest))
+        .ok_or_else(|| {
+            AppError::Invalid(
+                "Review the exact template contract before requesting preparation approval.".into(),
+            )
+        })?;
+    let revision = (snapshot.entry.commit != "local").then_some(snapshot.entry.commit.as_str());
+    if snapshot.entry.id != request.template_id || request.revision.as_deref() != revision {
+        return Err(AppError::Invalid(
+            "The reviewed contract does not match this template and revision.".into(),
+        ));
+    }
+    if let Some(manifest) = &snapshot.entry.manifest {
+        acknowledgements::validate_preparation(
+            manifest,
+            &request.acknowledgement_values,
+            request
+                .target
+                .as_ref()
+                .and_then(|target| target.tenant_id.as_deref()),
+            &request.acknowledgement_proofs,
+        )?;
+        request.acknowledgement_values =
+            acknowledgements::binding_values(manifest, &request.acknowledgement_values)?;
+    } else {
+        request.acknowledgement_values.clear();
+        if !request.acknowledgement_proofs.is_empty() {
+            return Err(AppError::Invalid(
+                "This template does not declare acknowledgements.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn lifecycle_approval_acknowledgements(
+    database: &Database,
+    request: &mut ExecutionApprovalRequest,
+) -> AppResult<()> {
+    if request.action == "down" {
+        request.acknowledgement_values.clear();
+        request.acknowledgement_proofs.clear();
+        return Ok(());
+    }
+    let manifest = database
+        .project_by_path(&request.project_path)?
+        .map(|project| resolve_project_template(database, &project))
+        .transpose()?
+        .flatten()
+        .and_then(|snapshot| snapshot.entry.manifest);
+    if let Some(manifest) = manifest {
+        request.acknowledgement_values = acknowledgements::saved_binding_values(
+            &manifest,
+            Path::new(&request.project_path),
+            &request.environment,
+        )?;
+        acknowledgements::validate(
+            &manifest,
+            &request.acknowledgement_values,
+            request
+                .target
+                .as_ref()
+                .and_then(|target| target.tenant_id.as_deref()),
+            &request.acknowledgement_proofs,
+        )?;
+    } else if !request.acknowledgement_proofs.is_empty()
+        || !request.acknowledgement_values.is_empty()
+    {
+        return Err(AppError::Invalid(
+            "This project does not declare acknowledgements.".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -642,7 +817,12 @@ fn request_execution_approval(
         )?);
     }
     let request = execution_approval::ExecutionApprovals::validate_request(request)?;
-    let request = validate_registered_project_approval(&state.database, request)?;
+    let mut request = validate_registered_project_approval(&state.database, request)?;
+    if request.action == "prepare" {
+        prepare_approval_acknowledgements(state.inner(), &mut request)?;
+    } else {
+        lifecycle_approval_acknowledgements(&state.database, &mut request)?;
+    }
     let destructive = request.action == "down";
     let action = if destructive {
         "delete the environment's Azure resources with azd down --force"
@@ -709,6 +889,13 @@ fn request_execution_approval(
             "The saved Azure target changed during approval. Review the target and approve again."
                 .into(),
         ));
+    }
+    if request.action != "prepare" {
+        let mut fresh = request.clone();
+        lifecycle_approval_acknowledgements(&state.database, &mut fresh)?;
+        if fresh != request {
+            return Err(AppError::Invalid("The saved acknowledgement context changed during approval. Review and acknowledge again.".into()));
+        }
     }
     state.execution_approvals.issue(request)
 }
@@ -1041,11 +1228,26 @@ async fn get_project_environment_values(
     };
     let canonical_path = canonical.display().to_string();
     let fields = project_configuration_fields(&state, &canonical_path)?;
-    let declared_names = fields
+    let mut declared_names = fields
         .iter()
         .map(|field| field.environment_variable.clone())
         .collect::<HashSet<_>>();
     let mut values = Vec::new();
+    if fields
+        .iter()
+        .any(|field| field.field_type == "acknowledgement")
+    {
+        let tenant = read_target_values(&canonical, &environment).tenant_id;
+        declared_names.insert("AZURE_TENANT_ID".into());
+        values.push(ProjectEnvironmentValue {
+            name: "AZURE_TENANT_ID".into(),
+            is_set: tenant.is_some(),
+            value: tenant,
+            sensitive: false,
+            declared: true,
+            required: false,
+        });
+    }
     for field in fields {
         let is_set = keys.contains(&field.environment_variable);
         let sensitive = field.sensitive || field.field_type == "secret";
@@ -1097,6 +1299,9 @@ async fn set_project_environment_values(
             canonical.display()
         )));
     }
+    // A GUI edit is a new intent boundary even if the user later restores the
+    // previous values. Never revive a native grant across an A -> B -> A edit.
+    state.execution_approvals.clear()?;
     let values = values
         .into_iter()
         .map(|value| (value.name, value.value))
@@ -1193,7 +1398,7 @@ fn draft_keys(
     {
         let field_id = field.id.to_ascii_lowercase();
         allowed_keys.insert(field_id.clone());
-        if field.sensitive || field.field_type == "secret" {
+        if field.sensitive || matches!(field.field_type.as_str(), "secret" | "acknowledgement") {
             sensitive_keys.insert(field_id);
         }
     }
@@ -1266,6 +1471,7 @@ pub fn run() {
                 environment_writes: AsyncMutex::new(()),
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
+                reviewed_contracts: Mutex::new(HashMap::new()),
                 catalog_reviews: CatalogReviews::default(),
                 execution_approvals: execution_approval::ExecutionApprovals::default(),
                 tool_install_approvals: tools::ToolInstallApprovals::default(),
@@ -1335,7 +1541,7 @@ mod environment_value_tests {
 
 #[cfg(test)]
 mod catalog_review_tests {
-    use super::{catalog, reviewed_contract_digest, CatalogReviews, ProjectTemplateSnapshot};
+    use super::{catalog, reviewed_contract_snapshot, CatalogReviews, ProjectTemplateSnapshot};
 
     fn external_catalog() -> crate::models::Catalog {
         let mut catalog = catalog::bundled_catalog().unwrap();
@@ -1378,7 +1584,10 @@ mod catalog_review_tests {
             .digest;
         persisted.trusted = true;
 
-        assert_eq!(reviewed_contract_digest(persisted).unwrap(), expected);
+        assert_eq!(
+            reviewed_contract_snapshot(persisted).unwrap().digest,
+            expected
+        );
     }
 }
 
@@ -1432,6 +1641,8 @@ mod interactive_lifecycle_tests {
             revision: project.revision.clone(),
             snapshot_digest: Some(snapshot.digest.clone()),
             source_binding: None,
+            acknowledgement_proofs: Vec::new(),
+            acknowledgement_values: Default::default(),
             target: Some(ExecutionTarget {
                 tenant_id: Some("11111111-1111-1111-1111-111111111111".into()),
                 subscription_id: Some("22222222-2222-2222-2222-222222222222".into()),
@@ -1504,6 +1715,8 @@ mod interactive_lifecycle_tests {
             revision: None,
             snapshot_digest: None,
             source_binding: None,
+            acknowledgement_proofs: Vec::new(),
+            acknowledgement_values: Default::default(),
             target: Some(original.clone()),
         };
         let grant = approvals.issue(request.clone()).unwrap();
@@ -1697,6 +1910,7 @@ mod draft_tests {
             environment_writes: tokio::sync::Mutex::new(()),
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
+            reviewed_contracts: Mutex::new(HashMap::new()),
             catalog_reviews: CatalogReviews::default(),
             execution_approvals: crate::execution_approval::ExecutionApprovals::default(),
             tool_install_approvals: crate::tools::ToolInstallApprovals::default(),
@@ -1718,5 +1932,492 @@ mod draft_tests {
         let (allowed, sensitive) = draft_keys(&state, "local-template").unwrap();
         assert!(allowed.contains("teamschannellink"));
         assert!(!sensitive.contains("teamschannellink"));
+    }
+}
+
+#[cfg(test)]
+mod acknowledgement_caller_tests {
+    use super::*;
+    use crate::acknowledgements::tests::{fixture_manifest, fixture_value, proof, values, TENANT};
+    use serde_json::json;
+
+    fn fixture() -> (
+        tempfile::TempDir,
+        AppState,
+        ProjectTemplateSnapshot,
+        ExecutionApprovalRequest,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("azure.yaml"),
+            "name: acknowledgement-test\n",
+        )
+        .unwrap();
+        write_environment(root.path(), "all", "true");
+        let state = AppState {
+            database: Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap()),
+            operations: OperationManager::default(),
+            environment_writes: AsyncMutex::new(()),
+            template_cache: root.path().join("cache"),
+            inspected_manifests: Mutex::new(HashMap::new()),
+            reviewed_contracts: Mutex::new(HashMap::new()),
+            catalog_reviews: CatalogReviews::default(),
+            execution_approvals: execution_approval::ExecutionApprovals::default(),
+            tool_install_approvals: tools::ToolInstallApprovals::default(),
+        };
+        let mut entry = catalog::entry_by_id("myworkid").unwrap();
+        entry.manifest = Some(fixture_manifest());
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        let project = ProjectSummary {
+            id: "ack-test".into(),
+            name: "Acknowledgement test".into(),
+            path: root.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some(snapshot.entry.id.clone()),
+            revision: Some(snapshot.entry.commit.clone()),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        state.database.upsert_project(&project).unwrap();
+        state
+            .database
+            .save_project_template(&project, &snapshot)
+            .unwrap();
+        state
+            .reviewed_contracts
+            .lock()
+            .unwrap()
+            .insert(snapshot.digest.clone(), snapshot.clone());
+        let request = ExecutionApprovalRequest {
+            action: "preview".into(),
+            project_path: project.path,
+            environment: "dev".into(),
+            template_id: snapshot.entry.id.clone(),
+            revision: project.revision,
+            snapshot_digest: Some(snapshot.digest.clone()),
+            source_binding: None,
+            target: Some(lifecycle_execution_target(root.path(), "dev").unwrap()),
+            acknowledgement_proofs: vec![proof()],
+            acknowledgement_values: values(),
+        };
+        (root, state, snapshot, request)
+    }
+
+    fn write_environment(path: &Path, mode: &str, enabled: &str) {
+        let environment = path.join(".azure/dev");
+        std::fs::create_dir_all(&environment).unwrap();
+        std::fs::write(environment.join(".env"), format!("AZURE_TENANT_ID={TENANT}\nAZURE_SUBSCRIPTION_ID=22222222-2222-2222-2222-222222222222\nAZURE_LOCATION=westus2\nMODE={mode}\nENABLED={enabled}\nCONFIRM_ALL=true\n")).unwrap();
+    }
+
+    #[test]
+    fn preparation_approval_independently_requires_proof_and_binds_submitted_values() {
+        let (_root, state, _snapshot, mut request) = fixture();
+        request.action = "prepare".into();
+        let mut missing = request.clone();
+        missing.acknowledgement_proofs.clear();
+        assert!(prepare_approval_acknowledgements(&state, &mut missing).is_err());
+        prepare_approval_acknowledgements(&state, &mut request).unwrap();
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        let mut changed = request.clone();
+        changed
+            .acknowledgement_values
+            .insert("MODE".into(), json!("limited"));
+        prepare_approval_acknowledgements(&state, &mut changed).unwrap();
+        assert!(state
+            .execution_approvals
+            .consume(&grant.token, changed)
+            .is_err());
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        state
+            .execution_approvals
+            .consume(&grant.token, request.clone())
+            .unwrap();
+        assert!(state
+            .execution_approvals
+            .consume(&grant.token, request)
+            .is_err());
+    }
+
+    #[test]
+    fn lifecycle_approval_reads_saved_values_and_saved_true_alone_never_approves() {
+        let (root, state, snapshot, mut request) = fixture();
+        request.acknowledgement_proofs.clear();
+        request
+            .acknowledgement_values
+            .insert("MODE".into(), json!("limited"));
+        assert!(lifecycle_approval_acknowledgements(&state.database, &mut request).is_err());
+        request.acknowledgement_proofs = vec![proof()];
+        lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+        assert_eq!(request.acknowledgement_values, values());
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        write_environment(root.path(), "limited", "true");
+        let mut expected = request.clone();
+        expected.acknowledgement_values = acknowledgements::saved_binding_values(
+            snapshot.entry.manifest.as_ref().unwrap(),
+            root.path(),
+            "dev",
+        )
+        .unwrap();
+        expected.acknowledgement_proofs.clear();
+        assert!(state
+            .execution_approvals
+            .consume_lifecycle(&grant.token, expected, snapshot.entry.manifest.as_ref())
+            .is_err());
+    }
+
+    #[test]
+    fn actual_lifecycle_consumption_rejects_forged_saved_true_without_proof_for_each_expansion_action(
+    ) {
+        let (_root, state, snapshot, request) = fixture();
+        for action in ["preview", "up", "provision", "deploy"] {
+            let mut forged = request.clone();
+            forged.action = action.into();
+            forged.acknowledgement_proofs.clear();
+            // Even a mistakenly issued internal grant cannot bypass the actual
+            // consumer used by start_azd_operation.
+            let grant = state.execution_approvals.issue(forged.clone()).unwrap();
+            assert!(
+                state
+                    .execution_approvals
+                    .consume_lifecycle(&grant.token, forged, snapshot.entry.manifest.as_ref())
+                    .is_err(),
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_consumption_rejects_stale_tenant_and_group_controller() {
+        let (_root, state, snapshot, request) = fixture();
+        for change in ["tenant", "group"] {
+            let grant = state.execution_approvals.issue(request.clone()).unwrap();
+            let mut changed = request.clone();
+            if change == "tenant" {
+                changed.target.as_mut().unwrap().tenant_id =
+                    Some("33333333-3333-3333-3333-333333333333".into());
+            } else {
+                changed
+                    .acknowledgement_values
+                    .insert("ENABLED".into(), json!(false));
+            }
+            assert!(state
+                .execution_approvals
+                .consume_lifecycle(&grant.token, changed, snapshot.entry.manifest.as_ref())
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn down_does_not_require_expansion_acknowledgement_and_gui_writes_invalidate_grants() {
+        let (_root, state, snapshot, mut request) = fixture();
+        request.action = "down".into();
+        lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+        assert!(request.acknowledgement_proofs.is_empty());
+        assert!(request.acknowledgement_values.is_empty());
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        state
+            .execution_approvals
+            .consume_lifecycle(
+                &grant.token,
+                request.clone(),
+                snapshot.entry.manifest.as_ref(),
+            )
+            .unwrap();
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        state.execution_approvals.clear().unwrap(); // Same invalidation used before GUI environment writes.
+        assert!(state
+            .execution_approvals
+            .consume_lifecycle(&grant.token, request, snapshot.entry.manifest.as_ref())
+            .is_err());
+    }
+
+    #[test]
+    fn hidden_false_and_omitted_preparation_acknowledgements_have_identical_binding() {
+        let (_root, state, _snapshot, mut request) = fixture();
+        request.action = "prepare".into();
+        request.acknowledgement_proofs.clear();
+        request
+            .acknowledgement_values
+            .insert("MODE".into(), json!("limited"));
+        request
+            .acknowledgement_values
+            .insert("CONFIRM_ALL".into(), json!(false));
+        prepare_approval_acknowledgements(&state, &mut request).unwrap();
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        request.acknowledgement_values.remove("CONFIRM_ALL");
+        prepare_approval_acknowledgements(&state, &mut request).unwrap();
+        state
+            .execution_approvals
+            .consume(&grant.token, request)
+            .unwrap();
+    }
+
+    #[test]
+    fn native_drafts_never_save_or_restore_acknowledgements() {
+        let (_root, state, snapshot, _request) = fixture();
+        state
+            .inspected_manifests
+            .lock()
+            .unwrap()
+            .insert(snapshot.entry.id.clone(), fixture_manifest());
+        let (allowed, blocked) = draft_keys(&state, &snapshot.entry.id).unwrap();
+        let cleaned = sanitized_draft(
+            json!({"mode":"all","confirm":true,"acknowledgementProofs":[proof()]}),
+            &allowed,
+            &blocked,
+        )
+        .unwrap();
+        assert_eq!(cleaned, json!({"mode":"all"}));
+    }
+
+    #[tokio::test]
+    async fn actual_preparation_revalidates_resolved_manifest_before_azd_or_destination_creation() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("azure.yaml"), "name: acknowledgement-test\n").unwrap();
+        std::fs::write(
+            source.join("azd-gui.json"),
+            serde_json::to_vec(&fixture_value()).unwrap(),
+        )
+        .unwrap();
+        let inspected = catalog::inspect_local(source.to_str().unwrap()).unwrap();
+        let snapshot = ProjectTemplateSnapshot::new(inspected.entry.clone()).unwrap();
+        let destination = root.path().join("not-created");
+        let request = PrepareDeploymentRequest {
+            template_id: inspected.entry.id,
+            source_mode: "localTemplate".into(),
+            execution_approval_token: "cannot-bypass".into(),
+            reviewed_contract_digest: snapshot.digest,
+            source_path: Some(source.display().to_string()),
+            source_revision: None,
+            source_binding: inspected.source_binding,
+            destination: destination.display().to_string(),
+            environment: "dev".into(),
+            tenant: Some(TENANT.into()),
+            subscription: Some("22222222-2222-2222-2222-222222222222".into()),
+            location: "westus2".into(),
+            resource_group: None,
+            environment_values: values(),
+            acknowledgement_proofs: Vec::new(),
+        };
+        let database = Database::open(&root.path().join("state.sqlite")).unwrap();
+        let error = deployment::prepare(request, &root.path().join("cache"), &database)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Confirm all users first"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+        assert!(database
+            .project_by_path(destination.to_str().unwrap())
+            .unwrap()
+            .is_none());
+    }
+    #[tokio::test]
+    async fn actual_lifecycle_start_blocks_before_launcher_for_missing_or_stale_acknowledgement() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for action in ["preview", "up", "provision", "deploy"] {
+            for scenario in ["missing", "false", "tenant", "controller", "group"] {
+                let (root, state, _snapshot, mut request) = fixture();
+                request.action = action.into();
+                if scenario == "missing" {
+                    request.acknowledgement_proofs.clear();
+                }
+                if scenario == "tenant" {
+                    request.acknowledgement_proofs[0].tenant_id =
+                        "33333333-3333-3333-3333-333333333333".into();
+                }
+                let grant = state.execution_approvals.issue(request.clone()).unwrap();
+                match scenario {
+                    "false" => {
+                        let file = root.path().join(".azure/dev/.env");
+                        let text = std::fs::read_to_string(&file)
+                            .unwrap()
+                            .replace("CONFIRM_ALL=true", "CONFIRM_ALL=false");
+                        std::fs::write(file, text).unwrap();
+                    }
+                    "controller" => write_environment(root.path(), "limited", "true"),
+                    "group" => write_environment(root.path(), "all", "false"),
+                    _ => {}
+                }
+                let launches = AtomicUsize::new(0);
+                let result = start_azd_operation_checked(
+                    &state,
+                    action.into(),
+                    request.project_path,
+                    Some("dev".into()),
+                    Some(grant.token),
+                    |_, _, _| {
+                        launches.fetch_add(1, Ordering::Relaxed);
+                        Ok("must-not-launch".into())
+                    },
+                )
+                .await;
+                assert!(result.is_err(), "{action}: {scenario}");
+                assert_eq!(launches.load(Ordering::Relaxed), 0, "{action}: {scenario}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_lifecycle_start_accepts_fresh_proof_once_and_hidden_fields_without_proof() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for hidden in [false, true] {
+            let (root, state, _snapshot, mut request) = fixture();
+            if hidden {
+                write_environment(root.path(), "limited", "true");
+                request.acknowledgement_proofs.clear();
+            }
+            lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+            let grant = state.execution_approvals.issue(request.clone()).unwrap();
+            let launches = AtomicUsize::new(0);
+            let result = start_azd_operation_checked(
+                &state,
+                "preview".into(),
+                request.project_path.clone(),
+                Some("dev".into()),
+                Some(grant.token.clone()),
+                |_, _, _| {
+                    launches.fetch_add(1, Ordering::Relaxed);
+                    Ok("launched".into())
+                },
+            )
+            .await;
+            assert_eq!(result.unwrap(), "launched");
+            let result = start_azd_operation_checked(
+                &state,
+                "preview".into(),
+                request.project_path,
+                Some("dev".into()),
+                Some(grant.token),
+                |_, _, _| {
+                    launches.fetch_add(1, Ordering::Relaxed);
+                    Ok("must-not-repeat".into())
+                },
+            )
+            .await;
+            assert!(result.is_err());
+            assert_eq!(launches.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn actual_existing_project_preparation_rejects_null_and_missing_controller_retention() {
+        for has_default in [false, true] {
+            for explicit_null in [false, true] {
+                let root = tempfile::tempdir().unwrap();
+                let source = root.path().join("source");
+                std::fs::create_dir(&source).unwrap();
+                std::fs::write(source.join("azure.yaml"), "name: acknowledgement-test\n").unwrap();
+                let mut manifest = fixture_value();
+                if !has_default {
+                    manifest["configuration"]["groups"][0]["fields"][1]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("default");
+                }
+                std::fs::write(
+                    source.join("azd-gui.json"),
+                    serde_json::to_vec(&manifest).unwrap(),
+                )
+                .unwrap();
+                write_environment(&source, "all", "true");
+                let inspected = catalog::inspect_local(source.to_str().unwrap()).unwrap();
+                let snapshot = ProjectTemplateSnapshot::new(inspected.entry.clone()).unwrap();
+                let mut submitted = values();
+                submitted.remove("ENABLED");
+                submitted.remove("CONFIRM_ALL");
+                if explicit_null {
+                    submitted.insert("ENABLED".into(), serde_json::Value::Null);
+                }
+                let request = PrepareDeploymentRequest {
+                    template_id: inspected.entry.id,
+                    source_mode: "existingProject".into(),
+                    execution_approval_token: "cannot-bypass".into(),
+                    reviewed_contract_digest: snapshot.digest,
+                    source_path: Some(source.display().to_string()),
+                    source_revision: None,
+                    source_binding: inspected.source_binding,
+                    destination: source.display().to_string(),
+                    environment: "dev".into(),
+                    tenant: Some(TENANT.into()),
+                    subscription: Some("22222222-2222-2222-2222-222222222222".into()),
+                    location: "westus2".into(),
+                    resource_group: None,
+                    environment_values: submitted,
+                    acknowledgement_proofs: Vec::new(),
+                };
+                let database = Database::open(&root.path().join("state.sqlite")).unwrap();
+                let error = deployment::prepare(request, &root.path().join("cache"), &database)
+                    .await
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("explicit acknowledgement controller value: ENABLED"),
+                    "{error}"
+                );
+                assert!(std::fs::read_to_string(source.join(".azure/dev/.env"))
+                    .unwrap()
+                    .contains("ENABLED=true"));
+            }
+        }
+    }
+    #[tokio::test]
+    async fn actual_lifecycle_start_rejects_unset_controller_without_default_before_launch() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (root, state, mut snapshot, mut request) = fixture();
+        snapshot
+            .entry
+            .manifest
+            .as_mut()
+            .unwrap()
+            .configuration
+            .groups[0]
+            .fields[1]
+            .default = None;
+        snapshot = ProjectTemplateSnapshot::new(snapshot.entry).unwrap();
+        let project = state
+            .database
+            .project_by_path(&request.project_path)
+            .unwrap()
+            .unwrap();
+        state
+            .database
+            .save_project_template(&project, &snapshot)
+            .unwrap();
+        request.snapshot_digest = Some(snapshot.digest.clone());
+        let file = root.path().join(".azure/dev/.env");
+        let content = std::fs::read_to_string(&file)
+            .unwrap()
+            .replace("ENABLED=true\n", "");
+        std::fs::write(file, content).unwrap();
+        assert!(
+            lifecycle_approval_acknowledgements(&state.database, &mut request.clone()).is_err()
+        );
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        let launches = AtomicUsize::new(0);
+        let error = start_azd_operation_checked(
+            &state,
+            "preview".into(),
+            request.project_path,
+            Some("dev".into()),
+            Some(grant.token),
+            |_, _, _| {
+                launches.fetch_add(1, Ordering::Relaxed);
+                Ok("must-not-launch".into())
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("controller value is missing: ENABLED"),
+            "{error}"
+        );
+        assert_eq!(launches.load(Ordering::Relaxed), 0);
     }
 }
