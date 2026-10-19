@@ -1,3 +1,4 @@
+import type { ComponentProvenanceRead } from "./component-provenance";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -464,6 +465,11 @@ export async function getProjectState(
 export async function getProjectValidationReport(projectPath: string): Promise<ValidationReportRead> {
   if (!isTauri()) return { state: "notFound" };
   return invoke<ValidationReportRead>("get_project_validation_report", { projectPath });
+}
+
+export async function getProjectComponentProvenance(projectPath: string): Promise<ComponentProvenanceRead> {
+  if (!isTauri()) return { state: "notFound", unknownMetadata: false, components: [] };
+  return invoke<ComponentProvenanceRead>("get_project_component_provenance", { projectPath });
 }
 
 export async function getProjectDeploymentReceipt(projectPath: string): Promise<DeploymentReceiptRead> {
