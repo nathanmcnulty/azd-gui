@@ -1,0 +1,19 @@
+{
+  "manifestVersion": "1.0",
+  "baseline": "2026.08",
+  "components": [
+    {
+      "id": "deployment-validation",
+      "version": "0.1.0",
+      "sourceRepository": "https://github.com/example/azd-reference",
+      "sourceRevision": "0123456789abcdef0123456789abcdef01234567",
+      "files": [
+        {
+          "source": "components/engine.psm1",
+          "target": "scripts/vendor/engine.psm1",
+          "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      ]
+    }
+  ]
+}
