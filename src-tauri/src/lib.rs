@@ -2,6 +2,7 @@ mod azd;
 mod azure;
 mod catalog;
 mod command_runner;
+mod component_provenance;
 mod connection_profiles;
 mod connections;
 mod deployment;
@@ -770,6 +771,29 @@ fn get_project_validation_report(
     ))
 }
 
+fn registered_component_root(database: &Database, project_path: &str) -> AppResult<PathBuf> {
+    // Match the stored path before any filesystem access. Canonicalizing an
+    // unregistered UNC path could otherwise trigger a network filesystem lookup.
+    database
+        .projects()?
+        .into_iter()
+        .find(|project| project.path == project_path)
+        .map(|project| PathBuf::from(project.path))
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))
+}
+
+#[tauri::command]
+async fn get_project_component_provenance(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<component_provenance::ComponentProvenanceRead> {
+    let root = registered_component_root(&state.database, &project_path)?;
+    // Hashing is optional workspace metadata, never a deployment prerequisite.
+    tauri::async_runtime::spawn_blocking(move || component_provenance::read(&root))
+        .await
+        .map_err(|_| AppError::Invalid("Component provenance is unavailable.".into()))
+}
+
 #[tauri::command]
 fn get_project_deployment_receipt(
     state: State<'_, AppState>,
@@ -1302,6 +1326,7 @@ pub fn run() {
             get_project_state,
             get_project_validation_report,
             get_project_deployment_receipt,
+            get_project_component_provenance,
             list_project_environments,
             create_project_environment,
             select_project_environment,
@@ -1315,6 +1340,37 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Azure Deployment Studio");
+}
+
+#[cfg(test)]
+mod component_project_tests {
+    use super::{registered_component_root, Database, ProjectSummary};
+
+    #[test]
+    fn matches_only_a_registered_path_without_resolving_the_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let path = directory.path().join("not-created").display().to_string();
+        database
+            .upsert_project(&ProjectSummary {
+                id: "component-project".into(),
+                name: "Component project".into(),
+                path: path.clone(),
+                environment: None,
+                template_id: None,
+                revision: None,
+                last_operation: None,
+                state: "ready".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            registered_component_root(&database, &path).unwrap(),
+            std::path::PathBuf::from(&path)
+        );
+        assert!(registered_component_root(&database, &format!("{path}/../not-created")).is_err());
+        assert!(registered_component_root(&database, r"\\example.invalid\share\project").is_err());
+        assert!(!std::path::Path::new(&path).exists());
+    }
 }
 
 #[cfg(test)]

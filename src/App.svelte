@@ -10,6 +10,7 @@
   import OutputPanel from "./components/OutputPanel.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
   import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
+  import ProjectComponentProvenance from "./components/ProjectComponentProvenance.svelte";
   import StatusPill from "./components/StatusPill.svelte";
   import VisibleProfiles from "./components/VisibleProfiles.svelte";
   import WizardConfigurationReview from "./components/WizardConfigurationReview.svelte";
@@ -2970,6 +2971,7 @@
               </section>
               <ProjectValidationReport project={selectedProject} />
               <ProjectDeploymentReceipt project={selectedProject} />
+              <ProjectComponentProvenance project={selectedProject} />
               {#if activeOperationKind === "up" || projectDeploymentResult}
                 <section class="workspace-panel full project-deployment-result" aria-label="Latest deployment">
                   <div class="section-toolbar">
