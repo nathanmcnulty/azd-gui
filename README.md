@@ -32,6 +32,8 @@ Prerequisites:
 
 - Node.js 22 or newer
 - Rust stable
+- PowerShell 7.6 or newer for maintained tooling and PowerShell-based template operations
+- Pester exactly 6.2.0 for offline signing/verifier tests
 - Windows: Visual Studio Build Tools with the C++ workload
 - macOS: Xcode command-line tools
 - Linux: the [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
@@ -63,10 +65,34 @@ The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub E
 
 ## Validation
 
+Install the pinned test dependency explicitly once in PowerShell 7.6+:
+
 ```powershell
+Install-Module Pester -RequiredVersion 6.2.0 -Scope CurrentUser -Repository PSGallery
+```
+
+```powershell
+npm run test:powershell
 npm run verify
 npm run audit:dependencies
 ```
+
+`npm run test:powershell` runs every suite in `scripts/tests`. The PowerShell runner
+resolves paths relative to itself, imports only Pester 6.2.0, prints runtime versions
+and actual test counts, and fails
+on failed/discovery-error, empty, skipped, inconclusive, or incomplete runs. It does
+not install modules or request credentials. `npm run verify` includes this check.
+Signing and Authenticode calls are mocked; Linux/macOS use test-only fail-closed
+command shims where the Windows cmdlet is absent. A passing offline suite is not
+proof of Windows signatures, packaging, or clean-VM acceptance.
+
+The manual validation and signed-release workflows assert PowerShell 7.6+ before
+existing steps, install Pester 6.2.0, and run the same offline entry point before
+any Azure sign-in or signing. An older hosted image fails explicitly; the workflow
+does not silently install another engine or fall back to an older test module.
+Current bundled manifest prerequisites and demo readiness use PowerShell 7.6.0.
+Historical Windows acceptance receipts and companion Maester pilot descriptions
+retain the versions actually observed; immutable template revisions are unchanged.
 
 Local validation is the normal development path. The dependency audit requires `cargo-audit` 0.22.2 (`cargo install cargo-audit --version 0.22.2 --locked`); the signed release installs that pinned version and runs both npm and RustSec audits before building. RustSec fails on vulnerabilities and every unrecognized maintenance warning; the narrowly documented temporary upstream exceptions and their removal criteria live in `.cargo/audit.toml`. Pull requests and branch pushes do not start GitHub Actions. The `Manual validation` workflow must be explicitly dispatched for one selected platform when hosted validation is genuinely necessary; validating all three platforms requires three intentional dispatches. Tagged releases run the Windows validation, audit, build, and signing workflow once. Live Azure authentication and deployment checks remain manual because automation must not contain interactive user credentials.
 

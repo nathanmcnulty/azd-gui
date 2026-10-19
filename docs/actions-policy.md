@@ -4,15 +4,26 @@
 
 ## Development validation
 
-Run the complete validation suite locally before requesting review:
+Run the complete validation suite locally before requesting review. Maintained
+PowerShell tooling requires PowerShell 7.6+ and exactly Pester 6.2.0; install the
+test module explicitly (the runner never installs it):
 
 ```powershell
+Install-Module Pester -RequiredVersion 6.2.0 -Scope CurrentUser -Repository PSGallery
 npm ci
 npm run verify
 npm run audit:dependencies
 ```
 
-`npm run verify` performs Svelte and TypeScript checks, frontend tests, the production frontend build, Rust formatting, Clippy with warnings denied, and Rust tests.
+`npm run verify` performs Svelte and TypeScript checks, frontend tests, the production frontend build, the offline signing/verifier Pester suites, Rust formatting, Clippy with warnings denied, and Rust tests.
+
+`npm run test:powershell` is the focused offline entry point. It reports engine/module
+versions and actual test counts and rejects empty, skipped, failed, or incomplete
+runs. Signing and signature inspection are mocked, including fail-closed test-only
+command shims on non-Windows hosts; these tests do not establish real Authenticode
+or packaging acceptance. Both workflows assert PowerShell 7.6+ and install exactly
+Pester 6.2.0 before running this check. The signed release does so before Azure
+sign-in and all signing operations. An older hosted engine fails explicitly.
 
 The `Manual validation` workflow has only a `workflow_dispatch` trigger. A dispatch validates exactly one selected runner: Windows, Linux, or macOS. Use it only when a platform-specific result cannot reasonably be established on a local machine. Cross-platform validation requires three separate, visible decisions rather than an automatically expanded matrix.
 

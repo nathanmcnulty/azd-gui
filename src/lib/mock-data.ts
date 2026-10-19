@@ -64,8 +64,8 @@ export const mockTools: ToolStatus[] = [
     id: "pwsh",
     name: "PowerShell",
     kind: "tool",
-    minimumVersion: "7.4.0",
-    installedVersion: "7.5.2",
+    minimumVersion: "7.6.0",
+    installedVersion: "7.6.0",
     required: false,
     state: "ready",
     installProvider: "manual"
