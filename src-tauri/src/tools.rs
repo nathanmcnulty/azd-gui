@@ -294,15 +294,7 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
             None,
         ),
         azure_cli,
-        tool(
-            "pwsh",
-            "PowerShell",
-            "tool",
-            Some("7.4.0"),
-            pwsh,
-            "manual",
-            None,
-        ),
+        powershell_tool(pwsh),
         tool(
             "Az.Accounts",
             "Azure PowerShell",
@@ -331,6 +323,18 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
             Some("ExchangeOnlineManagement"),
         ),
     ]
+}
+
+fn powershell_tool(probe: ToolProbe) -> ToolStatus {
+    tool(
+        "pwsh",
+        "PowerShell",
+        "tool",
+        Some("7.6.0"),
+        probe,
+        "manual",
+        None,
+    )
 }
 
 fn version_requirement(value: &str) -> Result<semver::VersionReq, semver::Error> {
@@ -666,11 +670,37 @@ pub fn install_spec(id: &str, exact_version: &str) -> AppResult<CommandSpec> {
 mod tests {
     use super::{
         approved_install, evaluate_requirement, install_spec, manifest_prerequisites,
-        parse_azd_tool_inventory, parse_azd_tool_updates, tool, ToolInstallApprovals, ToolProbe,
+        parse_azd_tool_inventory, parse_azd_tool_updates, powershell_tool, tool,
+        ToolInstallApprovals, ToolProbe,
     };
     use crate::models::{Prerequisite, TemplateManifest};
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn powershell_readiness_enforces_the_76_boundary() {
+        for (version, expected_state) in [
+            (Some("7.4.0"), "outdated"),
+            (Some("7.5.99"), "outdated"),
+            (Some("7.6.0-preview.1"), "outdated"),
+            (Some("7.6.0"), "ready"),
+            (Some("7.6.6"), "ready"),
+            (Some("7.7.0"), "ready"),
+            (Some("bad output"), "unknown"),
+            (Some(""), "missing"),
+            (None, "missing"),
+        ] {
+            let status = powershell_tool(ToolProbe {
+                version: version.map(Into::into),
+                executable_path: Some("pwsh.exe".into()),
+            });
+            assert_eq!(status.state, expected_state, "version: {version:?}");
+            assert_eq!(status.minimum_version.as_deref(), Some("7.6.0"));
+            assert_eq!(status.install_provider.as_deref(), Some("manual"));
+            assert_eq!(status.executable_path.as_deref(), Some("pwsh.exe"));
+            assert!(!status.can_install);
+        }
+    }
 
     #[test]
     fn parses_public_azd_tool_inventory_and_update_contracts() {

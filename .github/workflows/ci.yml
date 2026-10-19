@@ -33,6 +33,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Assert PowerShell 7.6 minimum
+        shell: pwsh
+        run: ./scripts/assert-powershell-version.ps1
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
@@ -48,6 +52,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install pinned Pester
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 6.2.0 -Scope CurrentUser -Force -Repository PSGallery
+
+      - name: Test offline PowerShell signing and verification
+        run: npm run test:powershell
 
       - name: Install frontend dependencies
         run: npm ci
