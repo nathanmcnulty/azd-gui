@@ -608,3 +608,8 @@ export async function onOperationEvent(handler: (event: OperationEvent) => void)
   if (!isTauri()) return () => undefined;
   return listen<OperationEvent>("operation-event", ({ payload }) => handler(payload));
 }
+
+export async function getProjectReportArtifacts(projectPath: string, revealId: string | null = null, snapshotDigest: string | null = null): Promise<import("./report-artifacts").ArtifactRead> {
+  if (!isTauri()) return { context: null, observedAt: "", artifacts: [] };
+  return invoke("get_project_report_artifacts", { projectPath, revealId, snapshotDigest });
+}

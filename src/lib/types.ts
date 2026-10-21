@@ -38,7 +38,15 @@ export interface CatalogEntry {
   trusted?: boolean;
 }
 
+export interface ReportArtifactDeclaration {
+  id: string; label: string; path: string;
+  format: "json" | "text" | "markdown";
+  stage: "plan" | "up" | "provision" | "deploy" | "verify";
+  required: boolean; sensitive: boolean;
+}
+
 export interface TemplateManifest {
+  postDeployment?: { schemaVersion: "1.0"; artifacts: ReportArtifactDeclaration[] };
   schemaVersion: "1.0";
   minimumAzdVersion?: string;
   requiresInteractiveTerminal?: boolean;

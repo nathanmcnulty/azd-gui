@@ -96,6 +96,8 @@ pub struct TemplateManifest {
     pub recommendation_profiles: Vec<RecommendationProfile>,
     #[serde(default)]
     pub permission_checks: Vec<PermissionCheck>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_deployment: Option<crate::report_artifacts::ArtifactContract>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
