@@ -125,7 +125,7 @@ impl ComponentProvenanceRead {
 }
 
 #[derive(Debug)]
-enum ReadError {
+pub(crate) enum ReadError {
     Missing,
     Unsupported(Reason),
 }
@@ -142,7 +142,7 @@ fn unsafe_path() -> ReadError {
     ReadError::Unsupported(Reason::UnsafePath)
 }
 
-fn safe_relative_path(value: &str) -> bool {
+pub(crate) fn safe_relative_path(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_PATH_BYTES
         && !value.contains(['\\', ':'])
@@ -162,11 +162,11 @@ fn safe_relative_path(value: &str) -> bool {
 // On Unix, every lookup is relative to an already-open directory descriptor.
 // O_NOFOLLOW applies to every segment, so rename/link races cannot escape the root.
 #[cfg(unix)]
-struct Root(File);
+pub(crate) struct Root(File);
 
 #[cfg(unix)]
 impl Root {
-    fn open(path: &Path) -> Result<Self, ReadError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, ReadError> {
         use std::os::{
             fd::{AsRawFd, FromRawFd},
             unix::fs::OpenOptionsExt,
@@ -206,7 +206,7 @@ impl Root {
         Ok(Self(directory))
     }
 
-    fn file(&self, relative: &str) -> Result<File, ReadError> {
+    pub(crate) fn file(&self, relative: &str) -> Result<File, ReadError> {
         use std::os::fd::{AsRawFd, FromRawFd};
         let mut directory = self.0.try_clone().map_err(io_error)?;
         let parts: Vec<_> = relative.split('/').collect();
@@ -250,7 +250,7 @@ impl Root {
 // Windows directory handles deny delete sharing while descendants are opened/read.
 // Keep every ancestor pinned, and inspect the opened handle itself for reparse points.
 #[cfg(windows)]
-struct Root {
+pub(crate) struct Root {
     path: std::path::PathBuf,
     _ancestors: Vec<File>,
 }
@@ -279,7 +279,7 @@ fn windows_open(path: &Path, directory: bool) -> Result<File, ReadError> {
 
 #[cfg(windows)]
 impl Root {
-    fn open(path: &Path) -> Result<Self, ReadError> {
+    pub(crate) fn open(path: &Path) -> Result<Self, ReadError> {
         // Do not canonicalize away links before inspecting them.
         if !path.is_absolute() {
             return Err(unsafe_path());
@@ -311,7 +311,7 @@ impl Root {
         })
     }
 
-    fn file(&self, relative: &str) -> Result<File, ReadError> {
+    pub(crate) fn file(&self, relative: &str) -> Result<File, ReadError> {
         let mut current = self.path.clone();
         let mut parents = Vec::new();
         let parts: Vec<_> = relative.split('/').collect();
@@ -328,7 +328,7 @@ impl Root {
     }
 }
 
-fn bounded_bytes(mut file: File, limit: u64) -> Result<Vec<u8>, ReadError> {
+pub(crate) fn bounded_bytes(mut file: File, limit: u64) -> Result<Vec<u8>, ReadError> {
     if file.metadata().map_err(io_error)?.len() > limit {
         return Err(ReadError::Unsupported(Reason::LimitExceeded));
     }

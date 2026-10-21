@@ -283,6 +283,7 @@ impl Database {
 
     /// The caller must first match a registered stored path. Never canonicalize
     /// renderer-supplied paths while resolving requirement metadata.
+
     pub(crate) fn project_template_exact(
         &self,
         project_path: &str,
