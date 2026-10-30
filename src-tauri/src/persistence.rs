@@ -265,6 +265,15 @@ impl Database {
         project_path: &str,
     ) -> AppResult<Option<ProjectTemplateSnapshot>> {
         let project_path = self.stored_project_path(project_path)?;
+        self.project_template_exact(&project_path)
+    }
+
+    /// Read an already matched stored path without filesystem canonicalization.
+    /// Used by optional confined readers that must not resolve UNC paths or aliases.
+    pub(crate) fn project_template_exact(
+        &self,
+        project_path: &str,
+    ) -> AppResult<Option<ProjectTemplateSnapshot>> {
         let row: Option<(Option<String>, Option<String>, String)> = self
             .lock()?
             .query_row(

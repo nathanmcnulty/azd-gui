@@ -836,6 +836,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
         .and_then(serde_yaml::Value::as_str)
         .map(ToOwned::to_owned);
     TemplateManifest {
+        post_deployment: None,
         schema_version: "1.0".into(),
         minimum_azd_version: minimum_azd_version.clone(),
         requires_interactive_terminal: false,
