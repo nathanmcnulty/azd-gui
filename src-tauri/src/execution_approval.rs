@@ -216,6 +216,7 @@ mod tests {
 
     fn request(project_path: String, action: &str) -> ExecutionApprovalRequest {
         ExecutionApprovalRequest {
+            requirements: None,
             action: action.into(),
             project_path,
             environment: "dev".into(),
@@ -258,6 +259,7 @@ mod tests {
         let binding = crate::local_source::inspect(source.path()).unwrap();
         let approvals = ExecutionApprovals::default();
         let request = ExecutionApprovalRequest {
+            requirements: None,
             action: "prepare".into(),
             project_path: source.path().display().to_string(),
             environment: "dev".into(),

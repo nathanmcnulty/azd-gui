@@ -456,12 +456,6 @@ pub async fn preview_external_catalog(url: &str) -> AppResult<Catalog> {
                     .expect("external manifest digest was validated"),
             )?;
             let manifest: TemplateManifest = serde_json::from_slice(&manifest_bytes)?;
-            if manifest.schema_version != "1.0" {
-                return Err(AppError::Invalid(format!(
-                    "Unsupported template manifest version: {}",
-                    manifest.schema_version
-                )));
-            }
             crate::manifest::validate(&manifest)?;
             Some(manifest)
         } else {
@@ -596,12 +590,6 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
     } else {
         (inferred_manifest(&yaml), "inferred".to_string())
     };
-    if manifest.schema_version != "1.0" {
-        return Err(AppError::Invalid(format!(
-            "Unsupported template manifest version: {}",
-            manifest.schema_version
-        )));
-    }
     crate::manifest::validate(&manifest)?;
     let (interactive_hooks, windows_hooks, posix_hooks) = hook_characteristics(&yaml);
     manifest.requires_interactive_terminal |= interactive_hooks;
@@ -755,12 +743,6 @@ async fn inspect_github_revision(
             embedded_manifest.status()
         )));
     };
-    if manifest.schema_version != "1.0" {
-        return Err(AppError::Invalid(format!(
-            "Unsupported template manifest version: {}",
-            manifest.schema_version
-        )));
-    }
     crate::manifest::validate(&manifest)?;
     let name = yaml
         .get("name")
@@ -860,6 +842,7 @@ fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
             scopes: vec![],
             reason: "Deploy the local azd project.".into(),
             condition: None,
+            scope_groups: None,
         }],
         configuration: Configuration::default(),
         recommendation_profiles: vec![],
@@ -882,16 +865,6 @@ pub(crate) fn validate_external_entry_snapshot(entry: &CatalogEntry) -> AppResul
         commit: &entry.commit,
         subdirectory: entry.subdirectory.as_deref(),
     })?;
-    if entry
-        .manifest
-        .as_ref()
-        .is_some_and(|manifest| manifest.schema_version != "1.0")
-    {
-        return Err(AppError::Invalid(format!(
-            "Unsupported manifest schema for {}.",
-            entry.id
-        )));
-    }
     if let Some(manifest) = &entry.manifest {
         crate::manifest::validate(manifest)?;
     }
@@ -1231,5 +1204,29 @@ mod tests {
         assert!(error
             .to_string()
             .contains("Unsupported permission-check provider ID"));
+    }
+
+    #[test]
+    fn local_requirement_manifest_uses_the_shared_version_gate() {
+        let directory = tempdir().unwrap();
+        fs::write(
+            directory.path().join("azure.yaml"),
+            "name: requirement-fixture",
+        )
+        .unwrap();
+        let raw = include_str!("../../src/lib/fixtures/conditional-requirements-v1.1.json");
+        fs::write(directory.path().join("azd-gui.json"), raw).unwrap();
+        let inspection = inspect_local(directory.path().to_str().unwrap()).unwrap();
+        assert_eq!(inspection.entry.manifest.unwrap().schema_version, "1.1");
+        for version in ["1.0", "2.0"] {
+            let mut value: serde_json::Value = serde_json::from_str(raw).unwrap();
+            value["schemaVersion"] = serde_json::json!(version);
+            fs::write(
+                directory.path().join("azd-gui.json"),
+                serde_json::to_vec(&value).unwrap(),
+            )
+            .unwrap();
+            assert!(inspect_local(directory.path().to_str().unwrap()).is_err());
+        }
     }
 }

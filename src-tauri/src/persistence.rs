@@ -12,7 +12,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> AppResult<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -78,6 +78,13 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
             project_key TEXT PRIMARY KEY,
             values_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS requirement_snapshots (
+            id TEXT PRIMARY KEY,
+            project_path TEXT NOT NULL,
+            action TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            snapshot_json TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS app_settings (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -265,6 +272,15 @@ impl Database {
         project_path: &str,
     ) -> AppResult<Option<ProjectTemplateSnapshot>> {
         let project_path = self.stored_project_path(project_path)?;
+        self.project_template_exact(&project_path)
+    }
+
+    /// The caller must first match a registered stored path. Never canonicalize
+    /// renderer-supplied paths while resolving requirement metadata.
+    pub(crate) fn project_template_exact(
+        &self,
+        project_path: &str,
+    ) -> AppResult<Option<ProjectTemplateSnapshot>> {
         let row: Option<(Option<String>, Option<String>, String)> = self
             .lock()?
             .query_row(
@@ -515,6 +531,7 @@ impl Database {
         transaction.execute_batch(
             "
             DELETE FROM operation_history;
+            DELETE FROM requirement_snapshots;
             DELETE FROM projects;
             DELETE FROM catalog_sources;
             DELETE FROM wizard_drafts;
@@ -529,6 +546,22 @@ impl Database {
     #[cfg(test)]
     pub fn record_operation(&self, event: &OperationEvent, project_path: &str) -> AppResult<()> {
         self.record_operation_with_context(event, project_path, None)
+    }
+
+    /// An execution intent audit, not a receipt of success or permission proof.
+    /// Store the complete effective arrays alongside their native digest.
+    pub fn save_requirement_snapshot(
+        &self,
+        id: &str,
+        project_path: &str,
+        action: &str,
+        snapshot: &crate::requirements::RequirementSnapshot,
+    ) -> AppResult<()> {
+        self.lock()?.execute(
+            "INSERT INTO requirement_snapshots (id,project_path,action,recorded_at,snapshot_json) VALUES (?1,?2,?3,?4,?5)",
+            params![id,project_path,action,Utc::now().to_rfc3339(),serde_json::to_string(snapshot)?],
+        )?;
+        Ok(())
     }
 
     pub fn begin_operation(
@@ -802,6 +835,60 @@ mod tests {
         assert!(column_exists(&connection, "catalog_sources", "accepted_catalog_json").unwrap());
         assert!(column_exists(&connection, "operation_history", "outcome_json").unwrap());
         assert!(column_exists(&connection, "operation_history", "context_json").unwrap());
+    }
+
+    #[test]
+    fn requirement_audit_keeps_effective_arrays_across_reopen_and_clears_with_local_data() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite");
+        let contract = crate::models::ProjectTemplateSnapshot::new(
+            crate::catalog::entry_by_id("myworkid").unwrap(),
+        )
+        .unwrap();
+        let snapshot = crate::requirements::resolve(
+            &contract,
+            &Default::default(),
+            "dev",
+            crate::models::ExecutionTarget {
+                tenant_id: None,
+                subscription_id: None,
+                location: None,
+                resource_group: None,
+            },
+        )
+        .unwrap();
+        {
+            let database = Database::open(&path).unwrap();
+            database
+                .save_requirement_snapshot("intent-1", "C:/Projects/test", "prepare", &snapshot)
+                .unwrap();
+            assert!(database
+                .save_requirement_snapshot("intent-1", "C:/Projects/test", "prepare", &snapshot)
+                .is_err());
+        }
+        let database = Database::open(&path).unwrap();
+        let text: String = database
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT snapshot_json FROM requirement_snapshots WHERE id='intent-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let restored: crate::requirements::RequirementSnapshot =
+            serde_json::from_str(&text).unwrap();
+        assert_eq!(restored, snapshot);
+        assert!(!restored.requirements.connections.is_empty());
+        database.clear_local_data().unwrap();
+        let count: i64 = database
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM requirement_snapshots", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

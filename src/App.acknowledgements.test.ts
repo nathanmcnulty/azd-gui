@@ -315,6 +315,28 @@ describe("fresh conditional acknowledgements", () => {
     expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled();
   });
 
+  it("retains the native plan snapshot after acknowledgement edits and rejects changed requirements before approval", async () => {
+    const { approvals } = setup();
+    const review = bridge.reviewWizardRequirements;
+    let changed = false;
+    vi.spyOn(bridge, "reviewWizardRequirements").mockImplementation(async (entry, values) => {
+      const result = await review(entry, values);
+      return { ...result, snapshot: { ...result.snapshot, digest: changed ? "changed-native-requirements" : "reviewed-native-requirements" } };
+    });
+    render(App);
+    await openWizard();
+    await continueWizard();
+    await fireEvent.click(acknowledgementCheckbox());
+    await continueWizard();
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await continueWizard();
+    changed = true;
+    await fireEvent.click(screen.getByRole("button", { name: /^run checks and preview$/i }));
+    const output = await screen.findByRole("region", { name: "Operation output" });
+    await waitFor(() => expect(output).toHaveTextContent("Effective requirements changed"));
+    expect(approvals).not.toHaveBeenCalled();
+  });
+
   it("clears wizard acceptance after cancelled approval and requires a fresh check before retrying", async () => {
     const { approvals, starts, project } = setup();
     approvals.mockRejectedValueOnce(new Error("Execution approval cancelled."));
@@ -335,7 +357,7 @@ describe("fresh conditional acknowledgements", () => {
     expect(starts).not.toHaveBeenCalled();
     await fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
     const review = screen.getByRole("region", { name: "Review Directory acknowledgement" });
-    expect(review).toHaveTextContent("Fresh acknowledgement required");
+    await waitFor(() => expect(review).toHaveTextContent("Fresh acknowledgement required"));
     await fireEvent.click(within(review).getByRole("button", { name: "Edit Directory acknowledgement" }));
     expect(acknowledgementCheckbox()).not.toBeChecked();
     expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled();
