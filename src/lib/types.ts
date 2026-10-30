@@ -39,7 +39,7 @@ export interface CatalogEntry {
 }
 
 export interface TemplateManifest {
-  schemaVersion: "1.0";
+  schemaVersion: "1.0" | "1.1";
   minimumAzdVersion?: string;
   requiresInteractiveTerminal?: boolean;
   prerequisites: Prerequisite[];
@@ -72,7 +72,7 @@ export interface Prerequisite {
 
 export interface RequirementCondition {
   field: string;
-  equals: boolean;
+  equals: boolean | string;
 }
 
 export interface ToolStatus extends Prerequisite {
@@ -109,7 +109,14 @@ export interface ConnectionRequirement {
   name: string;
   required: boolean;
   scopes?: string[];
+  scopeGroups?: ScopeGroup[];
   reason: string;
+}
+
+export interface ScopeGroup {
+  id: string;
+  scopes: string[];
+  condition?: RequirementCondition;
 }
 
 export interface ConnectionStatus extends ConnectionRequirement {
@@ -285,6 +292,7 @@ export interface WizardPage {
 }
 
 export interface WizardPlan {
+  requirements?: RequirementSnapshot;
   templateId: string;
   pages: WizardPage[];
   revision: number;
@@ -471,6 +479,7 @@ export interface PrepareDeploymentRequest {
 }
 
 export interface ExecutionApprovalRequest {
+  requirements?: RequirementSnapshot;
   acknowledgementProofs?: AcknowledgementProof[];
   acknowledgementValues?: Record<string, string | boolean | string[] | undefined>;
   action: "prepare" | "preview" | "up" | "provision" | "deploy" | "down";
@@ -488,6 +497,30 @@ export interface ExecutionTarget {
   subscriptionId?: string;
   location?: string;
   resourceGroup?: string;
+}
+
+export interface RequirementSelection {
+  reviewedContractDigest?: string;
+  projectPath?: string;
+  environment: string;
+  environmentValues?: Record<string, string>;
+  target?: ExecutionTarget;
+}
+
+/** Requested requirements; this does not prove authentication, consent or access. */
+export interface RequirementSnapshot {
+  digest: string;
+  requirements: {
+    schemaVersion: "1.0";
+    contractDigest: string;
+    environment: string;
+    target: ExecutionTarget;
+    controllerValues: Record<string, string>;
+    minimumAzdVersion?: string | null;
+    prerequisites: Prerequisite[];
+    connections: ConnectionRequirement[];
+    permissionChecks: PermissionCheck[];
+  };
 }
 
 export interface ExecutionApprovalGrant {

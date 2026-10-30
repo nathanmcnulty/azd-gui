@@ -23,7 +23,7 @@ pub(crate) fn is_standard_environment_variable(name: &str) -> bool {
 }
 
 pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
-    if manifest.schema_version != "1.0" {
+    if !matches!(manifest.schema_version.as_str(), "1.0" | "1.1") {
         return Err(AppError::Invalid(
             "Unsupported template manifest version.".into(),
         ));
@@ -142,8 +142,55 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
     for prerequisite in &manifest.prerequisites {
         validate_requirement_condition(prerequisite.condition.as_ref(), manifest)?;
     }
+    let mut connection_ids = HashSet::new();
     for connection in &manifest.connections {
+        if manifest.schema_version == "1.1"
+            && (!matches!(
+                connection.id.as_str(),
+                "azd" | "azureCli" | "azPowerShell" | "graphPowerShell"
+            ) || !connection_ids.insert(&connection.id))
+        {
+            return Err(AppError::Invalid(
+                "Manifest 1.1 connections must have unique registered provider IDs.".into(),
+            ));
+        }
         validate_requirement_condition(connection.condition.as_ref(), manifest)?;
+        if let Some(groups) = &connection.scope_groups {
+            if manifest.schema_version != "1.1" || connection.id != "graphPowerShell" {
+                return Err(AppError::Invalid(
+                    "Conditional Graph scope groups require manifest version 1.1 and the Graph PowerShell connection.".into(),
+                ));
+            }
+            if groups.len() > 32 {
+                return Err(AppError::Invalid("Too many Graph scope groups.".into()));
+            }
+            let mut ids = HashSet::new();
+            for group in groups {
+                if group.id.is_empty()
+                    || group.id.len() > 64
+                    || !group
+                        .id
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+                    || !ids.insert(&group.id)
+                    || group.scopes.is_empty()
+                    || group.scopes.len() > 64
+                    || group.scopes.iter().any(|scope| !valid_scope(scope))
+                    || group.scopes.iter().collect::<HashSet<_>>().len() != group.scopes.len()
+                {
+                    return Err(AppError::Invalid("Invalid Graph scope group.".into()));
+                }
+                validate_requirement_condition(group.condition.as_ref(), manifest)?;
+            }
+        }
+        if manifest.schema_version == "1.1"
+            && (connection.scopes.len() > 64
+                || connection.scopes.iter().any(|scope| !valid_scope(scope))
+                || connection.scopes.iter().collect::<HashSet<_>>().len()
+                    != connection.scopes.len())
+        {
+            return Err(AppError::Invalid("Invalid connection scopes.".into()));
+        }
     }
     for check in &manifest.permission_checks {
         validate_requirement_condition(check.condition.as_ref(), manifest)?;
@@ -316,6 +363,14 @@ fn requirement_controller<'a>(
     ))
 }
 
+fn valid_scope(scope: &str) -> bool {
+    !scope.is_empty()
+        && scope.len() <= 512
+        && scope
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ":/._-".contains(c))
+}
+
 fn validate_requirement_condition(
     condition: Option<&FieldCondition>,
     manifest: &TemplateManifest,
@@ -328,28 +383,52 @@ fn validate_requirement_condition(
             "Requirement conditions support only equals comparisons.".into(),
         ));
     }
-    condition
-        .equals
-        .as_ref()
-        .and_then(serde_json::Value::as_bool)
-        .ok_or_else(|| {
-            AppError::Invalid("Requirement conditions must compare a boolean equals value.".into())
-        })?;
     let field = requirement_controller(manifest, condition)?;
-    if field.sensitive || field.field_type == "secret" || field.field_type != "boolean" {
+    if field.sensitive || !matches!(field.field_type.as_str(), "boolean" | "select") {
         return Err(AppError::Invalid(
-            "Requirement conditions must depend on non-sensitive boolean fields.".into(),
+            "Requirement conditions must depend on non-sensitive boolean or select fields.".into(),
         ));
     }
-    if !matches!(field.default, Some(serde_json::Value::Bool(_))) {
+    if field.field_type == "select" {
+        let expected = condition
+            .equals
+            .as_ref()
+            .and_then(serde_json::Value::as_str);
+        let default = field.default.as_ref().and_then(serde_json::Value::as_str);
+        let declared = |value: Option<&str>| {
+            value.is_some_and(|value| {
+                !value.is_empty() && field.options.iter().any(|option| option.value == value)
+            })
+        };
+        let mut options = HashSet::new();
+        if manifest.schema_version != "1.1"
+            || !declared(expected)
+            || !declared(default)
+            || field.options.len() > 128
+            || field.options.iter().any(|option| {
+                option.value.is_empty()
+                    || option.value.len() > 128
+                    || option.value.chars().any(char::is_control)
+                    || !options.insert(&option.value)
+            })
+        {
+            return Err(AppError::Invalid(
+                "Select requirement conditions need manifest version 1.1 and declared comparison/default options.".into(),
+            ));
+        }
+        return Ok(());
+    }
+    if !matches!(field.default, Some(serde_json::Value::Bool(_)))
+        || !matches!(condition.equals, Some(serde_json::Value::Bool(_)))
+    {
         return Err(AppError::Invalid(
-            "Requirement controller fields must declare a boolean default.".into(),
+            "Boolean requirement controllers need a boolean comparison and default.".into(),
         ));
     }
     Ok(())
 }
 
-fn requirement_condition_matches(
+pub(crate) fn requirement_condition_matches(
     manifest: &TemplateManifest,
     condition: Option<&FieldCondition>,
     environment_values: &HashMap<String, String>,
@@ -358,6 +437,22 @@ fn requirement_condition_matches(
         return Ok(true);
     };
     let field = requirement_controller(manifest, condition)?;
+    if field.field_type == "select" {
+        let value = environment_values
+            .get(&field.environment_variable)
+            .map(String::as_str)
+            .or_else(|| field.default.as_ref().and_then(serde_json::Value::as_str));
+        if !value.is_some_and(|value| field.options.iter().any(|option| option.value == value)) {
+            return Err(AppError::Invalid(
+                "Invalid saved requirement selection.".into(),
+            ));
+        }
+        return Ok(value
+            == condition
+                .equals
+                .as_ref()
+                .and_then(serde_json::Value::as_str));
+    }
     let default = field
         .default
         .as_ref()
@@ -390,29 +485,40 @@ fn requirement_condition_matches(
     Ok(value == expected)
 }
 
-fn validate_requirement_value_keys(
-    manifest: &TemplateManifest,
-    environment_values: &HashMap<String, String>,
-) -> AppResult<()> {
-    validate(manifest)?;
-    let mut controllers = HashSet::new();
-    for condition in manifest
+fn requirement_conditions(manifest: &TemplateManifest) -> Vec<&FieldCondition> {
+    manifest
         .prerequisites
         .iter()
-        .filter_map(|requirement| requirement.condition.as_ref())
+        .filter_map(|item| item.condition.as_ref())
         .chain(
             manifest
                 .connections
                 .iter()
-                .filter_map(|requirement| requirement.condition.as_ref()),
+                .filter_map(|item| item.condition.as_ref()),
+        )
+        .chain(
+            manifest
+                .connections
+                .iter()
+                .flat_map(|item| item.scope_groups.iter().flatten())
+                .filter_map(|group| group.condition.as_ref()),
         )
         .chain(
             manifest
                 .permission_checks
                 .iter()
-                .filter_map(|requirement| requirement.condition.as_ref()),
+                .filter_map(|item| item.condition.as_ref()),
         )
-    {
+        .collect()
+}
+
+pub(crate) fn validate_requirement_value_keys(
+    manifest: &TemplateManifest,
+    environment_values: &HashMap<String, String>,
+) -> AppResult<()> {
+    validate(manifest)?;
+    let mut controllers = HashSet::new();
+    for condition in requirement_conditions(manifest) {
         validate_requirement_condition(Some(condition), manifest)?;
         // Resolve every controller here, including controllers used only by a
         // connection or permission check. Tool evaluation must not make a
@@ -457,23 +563,7 @@ pub(crate) fn requirement_controller_variables(
     manifest: &TemplateManifest,
 ) -> AppResult<Vec<String>> {
     let mut variables = HashSet::new();
-    for condition in manifest
-        .prerequisites
-        .iter()
-        .filter_map(|requirement| requirement.condition.as_ref())
-        .chain(
-            manifest
-                .connections
-                .iter()
-                .filter_map(|requirement| requirement.condition.as_ref()),
-        )
-        .chain(
-            manifest
-                .permission_checks
-                .iter()
-                .filter_map(|requirement| requirement.condition.as_ref()),
-        )
-    {
+    for condition in requirement_conditions(manifest) {
         validate_requirement_condition(Some(condition), manifest)?;
         variables.insert(
             requirement_controller(manifest, condition)?
@@ -484,6 +574,71 @@ pub(crate) fn requirement_controller_variables(
     let mut variables = variables.into_iter().collect::<Vec<_>>();
     variables.sort();
     Ok(variables)
+}
+
+pub(crate) fn normalized_requirement_values(
+    manifest: &TemplateManifest,
+    supplied: &HashMap<String, String>,
+) -> AppResult<std::collections::BTreeMap<String, String>> {
+    validate_requirement_value_keys(manifest, supplied)?;
+    let mut values = std::collections::BTreeMap::new();
+    for condition in requirement_conditions(manifest) {
+        let field = requirement_controller(manifest, condition)?;
+        let value = supplied
+            .get(&field.environment_variable)
+            .cloned()
+            .unwrap_or_else(|| match field.default.as_ref() {
+                Some(serde_json::Value::Bool(value)) => value.to_string(),
+                Some(serde_json::Value::String(value)) => value.clone(),
+                _ => unreachable!("validated requirement controller default"),
+            });
+        values.insert(field.environment_variable.clone(), value);
+    }
+    Ok(values)
+}
+
+pub(crate) fn effective_connections(
+    manifest: &TemplateManifest,
+    values: &HashMap<String, String>,
+) -> AppResult<Vec<crate::models::ConnectionRequirement>> {
+    validate_requirement_value_keys(manifest, values)?;
+    let mut result = Vec::new();
+    for connection in &manifest.connections {
+        if !requirement_condition_matches(manifest, connection.condition.as_ref(), values)? {
+            continue;
+        }
+        let mut effective = connection.clone();
+        for group in connection.scope_groups.iter().flatten() {
+            if requirement_condition_matches(manifest, group.condition.as_ref(), values)? {
+                effective.scopes.extend(group.scopes.iter().cloned());
+            }
+        }
+        effective
+            .scopes
+            .sort_by_key(|scope| (scope.to_ascii_lowercase(), scope.clone()));
+        effective.scopes.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        effective.scope_groups = None;
+        result.push(effective);
+    }
+    Ok(result)
+}
+
+pub(crate) fn effective_permission_checks(
+    manifest: &TemplateManifest,
+    values: &HashMap<String, String>,
+) -> AppResult<Vec<crate::models::PermissionCheck>> {
+    validate_requirement_value_keys(manifest, values)?;
+    manifest
+        .permission_checks
+        .iter()
+        .filter_map(|check| {
+            match requirement_condition_matches(manifest, check.condition.as_ref(), values) {
+                Ok(true) => Some(Ok(check.clone())),
+                Ok(false) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+        .collect()
 }
 
 fn digest(entry: &CatalogEntry) -> AppResult<String> {

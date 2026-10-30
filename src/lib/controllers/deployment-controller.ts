@@ -1,6 +1,7 @@
 import {
   getProjectTemplate,
   getReviewedContractDigest,
+  reviewWizardRequirements,
   prepareDeployment,
   requestExecutionApproval,
   startAzdOperation
@@ -38,9 +39,14 @@ export async function materializeDeployment(
     : String(values.sourcePath || "") || undefined;
   const binding = localSource ? sourceBinding : undefined;
   const reviewedContractDigest = await getReviewedContractDigest(entry);
+  const requirementReview = await reviewWizardRequirements(entry, { ...values, location: values.location || "westus2" });
+  if (plan.requirements && plan.requirements.digest !== requirementReview.snapshot.digest) {
+    throw new Error("Effective requirements changed. Review the plan and run checks again.");
+  }
   if (!isCurrent()) throw new Error("Configuration changed. Review and acknowledge the current choices again.");
   const approval = await requestExecutionApproval({
     action: "prepare",
+    requirements: requirementReview.snapshot,
     acknowledgementProofs,
     acknowledgementValues,
     projectPath,

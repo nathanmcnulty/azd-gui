@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { effectiveConnectionRequirements, effectiveRequirements, requirementEnvironmentValues } from "./requirements";
 import {
   mockAzureDiscovery,
   mockBootstrap,
@@ -40,7 +41,10 @@ import type {
   ToolStatus,
   TemplateManifest,
   ValidationReportRead,
-  SecurityGroupSearch
+  SecurityGroupSearch,
+  RequirementSelection,
+  RequirementSnapshot,
+  WizardValues
 } from "./types";
 
 let previewProjectEnvironments = structuredClone(mockProjectEnvironments);
@@ -395,6 +399,51 @@ export async function prepareDeployment(request: PrepareDeploymentRequest): Prom
 export async function getReviewedContractDigest(entry: CatalogEntry): Promise<string> {
   if (!isTauri()) return "browser-preview";
   return invoke<string>("reviewed_contract_digest", { entry });
+}
+
+export async function reviewWizardRequirements(entry: CatalogEntry, values: WizardValues): Promise<{
+  selection: RequirementSelection; snapshot: RequirementSnapshot;
+}> {
+  const selection: RequirementSelection = {
+    reviewedContractDigest: await getReviewedContractDigest(entry),
+    environment: String(values.environmentName || "dev"),
+    environmentValues: entry.manifest ? requirementEnvironmentValues(entry.manifest, values) : {},
+    target: Object.fromEntries(["tenantId", "subscriptionId", "location", "resourceGroup"]
+      .filter((key) => Boolean(values[key])).map((key) => [key, String(values[key])]))
+  };
+  if (isTauri()) {
+    return { selection, snapshot: await invoke<RequirementSnapshot>("get_effective_requirements", { ...selection }) };
+  }
+  const manifest = entry.manifest;
+  const requirements: RequirementSnapshot["requirements"] = {
+    schemaVersion: "1.0", contractDigest: "browser-preview", environment: selection.environment,
+    target: selection.target ?? {}, controllerValues: selection.environmentValues ?? {},
+    minimumAzdVersion: manifest?.minimumAzdVersion,
+    prerequisites: manifest ? effectiveRequirements(manifest.prerequisites, manifest, values) : [],
+    connections: manifest ? effectiveConnectionRequirements(manifest, values) : [],
+    permissionChecks: manifest ? effectiveRequirements(manifest.permissionChecks ?? [], manifest, values) : []
+  };
+  return { selection, snapshot: { digest: `browser-preview:${JSON.stringify(requirements)}`, requirements } };
+}
+
+export async function checkRequirementPrerequisites(
+  selection: RequirementSelection, snapshot: RequirementSnapshot
+): Promise<ToolStatus[]> {
+  if (isTauri()) return invoke<ToolStatus[]>("check_requirement_prerequisites", { selection, expectedDigest: snapshot.digest });
+  const requirements = [...snapshot.requirements.prerequisites];
+  if (snapshot.requirements.minimumAzdVersion && !requirements.some((tool) => tool.id === "azd")) {
+    requirements.push({ id: "azd", name: "Azure Developer CLI", kind: "tool", required: true, minimumVersion: snapshot.requirements.minimumAzdVersion });
+  }
+  return requirements.map((required) => ({ ...mockBootstrap.tools.find((tool) => tool.id === required.id), ...required, state: mockBootstrap.tools.find((tool) => tool.id === required.id)?.state ?? "unknown", canInstall: false } as ToolStatus));
+}
+
+export async function checkRequirementPermissions(
+  selection: RequirementSelection, snapshot: RequirementSnapshot
+): Promise<PermissionCheckResult[]> {
+  if (isTauri()) return invoke<PermissionCheckResult[]>("check_requirement_permissions", { selection, expectedDigest: snapshot.digest });
+  return runPermissionChecks({ checks: snapshot.requirements.permissionChecks,
+    tenantId: snapshot.requirements.target.tenantId ?? "", subscriptionId: snapshot.requirements.target.subscriptionId ?? "",
+    requiredGraphScopes: snapshot.requirements.connections.filter((connection) => connection.id === "graphPowerShell").flatMap((connection) => connection.scopes ?? []) });
 }
 
 export async function getProjectTemplate(projectPath: string): Promise<ProjectTemplateSnapshot | null> {

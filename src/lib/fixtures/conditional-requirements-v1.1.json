@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1.1",
+  "prerequisites": [
+    { "id": "azd", "name": "azd", "kind": "tool", "required": true },
+    { "id": "az-cli", "name": "Azure CLI", "kind": "tool", "required": true,
+      "condition": { "field": "includeAzure", "equals": true } }
+  ],
+  "connections": [
+    { "id": "graphPowerShell", "name": "Graph", "required": true,
+      "reason": "Read or enforce the selected mode", "scopes": ["Directory.Read.All"],
+      "scopeGroups": [
+        { "id": "enforced", "condition": { "field": "mode", "equals": "enforced" },
+          "scopes": ["Policy.ReadWrite.ConditionalAccess", "Directory.Read.All"] }
+      ] },
+    { "id": "azureCli", "name": "Azure CLI", "required": true,
+      "reason": "Optional Azure feature", "condition": { "field": "includeAzure", "equals": true } }
+  ],
+  "permissionChecks": [
+    { "id": "graph-delegated-scopes", "name": "Graph scopes", "provider": "graph",
+      "required": true, "description": "Check current delegated scopes" },
+    { "id": "azure-subscription-access", "name": "Azure access", "provider": "azure",
+      "required": true, "description": "Check selected Azure target",
+      "condition": { "field": "includeAzure", "equals": true } }
+  ],
+  "configuration": {
+    "groups": [{ "id": "features", "title": "Features", "fields": [
+      { "id": "includeAzure", "environmentVariable": "INCLUDE_AZURE", "label": "Include Azure",
+        "type": "boolean", "default": false },
+      { "id": "mode", "environmentVariable": "MODE", "label": "Mode", "type": "select",
+        "default": "plan", "options": [
+          { "value": "plan", "label": "Read-only plan" },
+          { "value": "enforced", "label": "Enforce" }
+        ] }
+    ] }]
+  }
+}
