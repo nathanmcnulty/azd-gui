@@ -42,8 +42,9 @@ traversal, absolute paths, backslashes, alternate streams, control characters,
 empty segments, Windows device names and trailing-dot/space aliases are rejected
 by the native validator. The registered project is matched before any filesystem
 resolution. Existing no-follow/anchored native access rejects symlinks, reparse
-points and nonregular files. The Windows implementation still requires native
-runtime acceptance; Linux source inspection is not that evidence.
+points and nonregular files. Direct Windows regressions exercise directory
+junctions in report paths, at the project root and in its ancestors. These cases
+do not constitute exhaustive coverage of every Windows reparse-point type.
 
 Limits are 32 declarations, 64 KiB per file, 1,024 UTF-8 path bytes, 64 path
 segments, 64-byte IDs and 160-byte labels. JSON must parse under serde_json's
@@ -87,11 +88,21 @@ limitation must stay visible rather than suggesting a stale report has passed.
   and path rejection, late replies, context changes and generic errors.
 - Native tests are supplied for bounded content, malformed data, sensitive
   non-reading, metadata, symlink escapes and observation context.
-- Run `npm run verify` with the repository's Rust toolchain; the resumed
-  cloud workspace did not have `cargo`, so no native compile/test/format/Clippy
-  pass is claimed for this patch. Node tests are not a substitute.
-- Windows no-follow/reparse behavior and visual acceptance need a dedicated
-  native session. No Azure account, lab resource, authentication or deployment
-  is needed to complete these local checks.
-- No dependency changes, installation, hosted workflow dispatch, publication,
-  merge, deployment or new permission occurred.
+- Windows qualification on 30 October 2026 passed `npm run format:native`,
+  `npm run lint:native` (all targets, warnings denied), and
+  `npm run test:native`: 190 passed, zero failed, three explicitly ignored
+  integration tests. The nine report-reader tests include direct/nested report
+  junctions, project/root-ancestor junctions, and hidden/revealed sensitive files
+  under Windows sharing denial. An initial test-fixture failure was corrected:
+  `mklink` requires native path separators, while report contracts retain `/`.
+- The 27 focused frontend report tests and production frontend build passed.
+  An unsigned development application built with `tauri build --debug
+  --no-bundle` and an isolated application identity. Synthetic registered local
+  projects verified literal HTML/Markdown, invalid/missing states, explicit
+  sensitive reveal, hide/refresh, project switching, and sensitive content hidden
+  after application restart. Synthetic revealed markers were absent from that
+  profile's database and captured application logs.
+- These are local reader/UI checks. Existing startup and project-state probes
+  read tool/provider status; no sign-in, preview, deployment, terminal launch or
+  permission change was invoked. Signed packaging, clean-profile authentication,
+  release acceptance and broader #55 verification work remain separate.
