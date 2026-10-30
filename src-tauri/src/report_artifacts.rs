@@ -358,6 +358,97 @@ mod tests {
         let r = read(d.path(), &c, context(), None);
         assert_eq!(r.artifacts[0].content.as_deref(), Some(text));
     }
+    #[cfg(windows)]
+    fn junction(link: &Path, target: &Path) {
+        use std::os::windows::process::CommandExt;
+        let output = std::process::Command::new("cmd.exe")
+            .creation_flags(0x08000000)
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(link)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Could not create test junction: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[cfg(windows)]
+    fn assert_no_payload(result: &ArtifactResult, expected: ArtifactState) {
+        assert_eq!(result.state, expected);
+        assert!(result.content.is_none());
+        assert!(result.sha256.is_none());
+        assert!(result.modified_at.is_none());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_report_directory_and_nested_junctions_including_reveal() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("plan.json"), "{\"outside\":true}").unwrap();
+        for nested in [false, true] {
+            let d = tempfile::tempdir().unwrap();
+            let relative = if nested {
+                std::fs::create_dir(d.path().join("reports")).unwrap();
+                "reports/linked/plan.json"
+            } else {
+                "reports/plan.json"
+            };
+            // mklink treats '/' as a switch even within a Windows path.
+            let link = if nested {
+                d.path().join("reports").join("linked")
+            } else {
+                d.path().join("reports")
+            };
+            junction(&link, outside.path());
+            let ordinary = read(d.path(), &contract(relative, false), context(), None);
+            assert_no_payload(&ordinary.artifacts[0], ArtifactState::UnsafePath);
+            let sensitive = contract(relative, true);
+            let hidden = read(d.path(), &sensitive, context(), None);
+            assert_no_payload(&hidden.artifacts[0], ArtifactState::Hidden);
+            let revealed = read(d.path(), &sensitive, context(), Some("plan"));
+            assert_no_payload(&revealed.artifacts[0], ArtifactState::UnsafePath);
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn rejects_windows_junctions_at_project_root_and_in_its_ancestors() {
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let real_project = outside.path().join("project");
+        std::fs::create_dir_all(real_project.join("reports")).unwrap();
+        std::fs::write(real_project.join("reports/plan.json"), "{}").unwrap();
+        junction(&parent.path().join("project-alias"), &real_project);
+        junction(&parent.path().join("ancestor-alias"), outside.path());
+        for relative in ["project-alias", "ancestor-alias/project"] {
+            let result = read(
+                &parent.path().join(relative),
+                &contract("reports/plan.json", false),
+                context(),
+                None,
+            );
+            assert_no_payload(&result.artifacts[0], ArtifactState::UnsafePath);
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn hidden_sensitive_report_stays_hidden_when_windows_denies_file_access() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = fixture();
+        let path = d.path().join("reports/plan.json");
+        std::fs::write(&path, "{\"sensitive\":true}").unwrap();
+        let _exclusive = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+        let sensitive = contract("reports/plan.json", true);
+        let hidden = read(d.path(), &sensitive, context(), None);
+        assert_no_payload(&hidden.artifacts[0], ArtifactState::Hidden);
+        let revealed = read(d.path(), &sensitive, context(), Some("plan"));
+        assert_no_payload(&revealed.artifacts[0], ArtifactState::Unreadable);
+    }
     #[test]
     fn rejects_executable_and_unknown_contract_fields() {
         for json in [
