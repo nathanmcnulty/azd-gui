@@ -27,14 +27,6 @@ struct GraphOrganization {
     id: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GraphContext {
-    tenant_id: String,
-    #[serde(default)]
-    scopes: Vec<String>,
-}
-
 fn registered_provider(id: &str) -> Option<&'static str> {
     match id {
         "azure-subscription-access" => Some("azure"),
@@ -154,20 +146,6 @@ async fn graph_organization(subscription_id: &str) -> Result<GraphOrganizationEn
     json(graph_organization_spec(subscription_id)).await
 }
 
-async fn graph_context() -> Result<GraphContext, String> {
-    json(CommandSpec::new(
-        Executable::PowerShell,
-        [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$c=Get-MgContext -ErrorAction SilentlyContinue; if(!$c){exit 3}; [pscustomobject]@{tenantId=$c.TenantId;scopes=@($c.Scopes)}|ConvertTo-Json -Compress",
-        ],
-    ))
-    .await
-}
-
 fn evaluate_azure(
     check: &PermissionCheck,
     evidence: &Result<AzureSubscription, String>,
@@ -239,63 +217,18 @@ fn evaluate_directory(
     }
 }
 
-fn evaluate_scopes(
-    check: &PermissionCheck,
-    evidence: &Result<GraphContext, String>,
-    tenant_id: &str,
-    required_scopes: &[String],
-) -> PermissionCheckResult {
-    match evidence {
-        Ok(context) if !context.tenant_id.eq_ignore_ascii_case(tenant_id) => result(
-            check,
-            "failed",
-            "Microsoft Graph PowerShell is connected to a different tenant.",
-        ),
-        Ok(context) => {
-            if required_scopes.is_empty() {
-                return result(
-                    check,
-                    "failed",
-                    "The manifest did not declare delegated Microsoft Graph scopes for this check.",
-                );
-            }
-            let missing: Vec<_> = required_scopes
-                .iter()
-                .filter(|required| {
-                    !context
-                        .scopes
-                        .iter()
-                        .any(|actual| actual.eq_ignore_ascii_case(required))
-                })
-                .cloned()
-                .collect();
-            if missing.is_empty() {
-                result(
-                    check,
-                    "passed",
-                    "Microsoft Graph PowerShell has every manifest-requested delegated scope.",
-                )
-            } else {
-                result(
-                    check,
-                    "failed",
-                    format!(
-                        "Reconnect Microsoft Graph PowerShell with: {}",
-                        missing.join(", ")
-                    ),
-                )
-            }
-        }
-        Err(error) => result(
-            check,
-            "failed",
-            format!("Microsoft Graph PowerShell check failed: {error}"),
-        ),
-    }
-}
-
 pub async fn run(request: PermissionCheckRequest) -> AppResult<Vec<PermissionCheckResult>> {
     validate(&request.checks)?;
+    if request
+        .checks
+        .iter()
+        .any(|check| check.id == "graph-delegated-scopes")
+    {
+        return Err(AppError::Invalid(
+            "Graph scope checks require the owned process adapter and native requirement snapshot."
+                .into(),
+        ));
+    }
     Uuid::parse_str(&request.tenant_id)
         .map_err(|_| AppError::Invalid("Tenant ID must be a GUID.".into()))?;
     Uuid::parse_str(&request.subscription_id)
@@ -321,11 +254,7 @@ pub async fn run(request: PermissionCheckRequest) -> AppResult<Vec<PermissionChe
         .checks
         .iter()
         .any(|check| check.id == "graph-directory-read" || check.id == "entra-directory-access");
-    let needs_scopes = request
-        .checks
-        .iter()
-        .any(|check| check.id == "graph-delegated-scopes");
-    let (azure, directory, scopes) = tokio::join!(
+    let (azure, directory) = tokio::join!(
         async {
             if needs_azure {
                 Some(azure_subscription(&request.subscription_id).await)
@@ -336,13 +265,6 @@ pub async fn run(request: PermissionCheckRequest) -> AppResult<Vec<PermissionChe
         async {
             if needs_directory {
                 Some(graph_organization(&request.subscription_id).await)
-            } else {
-                None
-            }
-        },
-        async {
-            if needs_scopes {
-                Some(graph_context().await)
             } else {
                 None
             }
@@ -363,12 +285,6 @@ pub async fn run(request: PermissionCheckRequest) -> AppResult<Vec<PermissionChe
                 check,
                 directory.as_ref().expect("required directory evidence"),
                 &request.tenant_id,
-            ),
-            "graph-delegated-scopes" => evaluate_scopes(
-                check,
-                scopes.as_ref().expect("required Graph scope evidence"),
-                &request.tenant_id,
-                &request.required_graph_scopes,
             ),
             _ => unreachable!("validated permission check"),
         })
@@ -412,38 +328,19 @@ mod tests {
         assert!(output.blocking);
     }
 
-    #[test]
-    fn graph_scope_comparison_is_case_insensitive_and_reports_missing_scopes() {
-        let evidence = Ok(GraphContext {
-            tenant_id: "22222222-2222-2222-2222-222222222222".into(),
-            scopes: vec!["application.readwrite.all".into()],
-        });
-        let output = evaluate_scopes(
-            &check("graph-delegated-scopes", "graph"),
-            &evidence,
-            "22222222-2222-2222-2222-222222222222",
-            &[
-                "Application.ReadWrite.All".into(),
-                "RoleManagement.ReadWrite.Directory".into(),
-            ],
-        );
-        assert_eq!(output.state, "failed");
-        assert!(output.detail.contains("RoleManagement.ReadWrite.Directory"));
-    }
-
-    #[test]
-    fn graph_scope_check_requires_manifest_declared_scopes() {
-        let output = evaluate_scopes(
-            &check("graph-delegated-scopes", "graph"),
-            &Ok(GraphContext {
-                tenant_id: "22222222-2222-2222-2222-222222222222".into(),
-                scopes: vec!["Application.ReadWrite.All".into()],
-            }),
-            "22222222-2222-2222-2222-222222222222",
-            &[],
-        );
-        assert_eq!(output.state, "failed");
-        assert!(output.blocking);
+    #[tokio::test]
+    async fn legacy_scope_route_cannot_probe_an_unrelated_process() {
+        let result = run(PermissionCheckRequest {
+            tenant_id: "11111111-1111-4111-8111-111111111111".into(),
+            subscription_id: "33333333-3333-4333-8333-333333333333".into(),
+            checks: vec![check("graph-delegated-scopes", "graph")],
+            required_graph_scopes: vec!["Directory.Read.All".into()],
+        })
+        .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("owned process adapter"));
     }
 
     #[test]

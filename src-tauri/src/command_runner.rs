@@ -30,7 +30,7 @@ const MAX_STREAM_LINE_BYTES: usize = 64 * 1024;
 const OUTPUT_TRUNCATED_MARKER: &str = "\n[output truncated]\n";
 
 #[cfg(windows)]
-struct ProcessTree {
+pub(crate) struct ProcessTree {
     job: std::os::windows::io::OwnedHandle,
 }
 
@@ -86,7 +86,7 @@ impl ProcessTree {
 }
 
 #[cfg(unix)]
-struct ProcessTree {
+pub(crate) struct ProcessTree {
     process_group: i32,
 }
 
@@ -113,7 +113,9 @@ impl Drop for ProcessTree {
     }
 }
 
-fn attach_process_tree(child: &mut tokio::process::Child) -> AppResult<Option<ProcessTree>> {
+pub(crate) fn attach_process_tree(
+    child: &mut tokio::process::Child,
+) -> AppResult<Option<ProcessTree>> {
     match ProcessTree::attach(child) {
         Ok(tree) => Ok(Some(tree)),
         Err(_) if child.try_wait()?.is_some() => Ok(None),

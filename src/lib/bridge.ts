@@ -446,6 +446,17 @@ export async function checkRequirementPermissions(
     requiredGraphScopes: snapshot.requirements.connections.filter((connection) => connection.id === "graphPowerShell").flatMap((connection) => connection.scopes ?? []) });
 }
 
+export async function requestGraphSession(
+  selection: RequirementSelection, snapshot: RequirementSnapshot, account: string, clientId: string
+): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("request_graph_session", { selection, expectedDigest: snapshot.digest, account, clientId });
+}
+
+export async function disposeGraphSession(): Promise<void> {
+  if (isTauri()) await invoke("dispose_graph_session");
+}
+
 export async function getProjectTemplate(projectPath: string): Promise<ProjectTemplateSnapshot | null> {
   if (!isTauri()) {
     const saved = previewProjectTemplates.get(projectPath);

@@ -10,6 +10,7 @@ mod deployment_receipt;
 mod error;
 mod evidence;
 mod execution_approval;
+mod graph_session;
 mod local_source;
 mod manifest;
 mod models;
@@ -59,6 +60,7 @@ pub struct AppState {
     catalog_reviews: CatalogReviews,
     execution_approvals: execution_approval::ExecutionApprovals,
     tool_install_approvals: tools::ToolInstallApprovals,
+    graph_sessions: graph_session::GraphSessions,
 }
 
 #[derive(Clone)]
@@ -186,6 +188,7 @@ async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> App
         std::fs::remove_dir_all(&state.template_cache)?;
     }
     std::fs::create_dir_all(&state.template_cache)?;
+    state.graph_sessions.dispose().await;
     state.database.clear_local_data()?;
     state
         .inspected_manifests
@@ -331,9 +334,38 @@ fn install_tool(
 }
 
 #[tauri::command]
-async fn check_connections(target: Option<ConnectionTarget>) -> AppResult<Vec<ConnectionStatus>> {
+async fn check_connections(
+    state: State<'_, AppState>,
+    target: Option<ConnectionTarget>,
+) -> AppResult<Vec<ConnectionStatus>> {
     connections::validate_target(target.as_ref())?;
-    Ok(connections::check_all(target.as_ref()).await)
+    let mut statuses = connections::check_all(target.as_ref()).await;
+    let verified = match state.graph_sessions.verified_binding().await {
+        Ok(verified) => verified,
+        Err(_) => {
+            state.execution_approvals.clear()?;
+            None
+        }
+    };
+    if let Some((binding, observation)) = verified {
+        if target
+            .as_ref()
+            .is_some_and(|target| !target.tenant_id.eq_ignore_ascii_case(&binding.tenant_id))
+        {
+            state.graph_sessions.invalidate();
+            state.execution_approvals.clear()?;
+        } else if let Some(graph) = statuses
+            .iter_mut()
+            .find(|status| status.id == "graphPowerShell")
+        {
+            graph.state = "connected".into();
+            graph.account = Some(binding.account);
+            graph.tenant_id = Some(binding.tenant_id);
+            graph.granted_scopes = observation.scopes;
+            graph.detail=Some("Fresh owned-process Graph read verified. This evidence cannot authorize separate azd hooks.".into());
+        }
+    }
+    Ok(statuses)
 }
 
 #[tauri::command]
@@ -364,6 +396,15 @@ async fn search_security_groups(
 async fn run_permission_checks(
     request: PermissionCheckRequest,
 ) -> AppResult<Vec<PermissionCheckResult>> {
+    if request
+        .checks
+        .iter()
+        .any(|check| check.id == "graph-delegated-scopes")
+    {
+        return Err(AppError::Invalid(
+            "Graph checks require an owned process session and native requirement snapshot.".into(),
+        ));
+    }
     permissions::run(request).await
 }
 
@@ -375,6 +416,9 @@ fn start_login(
     scopes: Vec<String>,
     target: Option<ConnectionTarget>,
 ) -> AppResult<String> {
+    if provider_id == "graphPowerShell" {
+        return Err(AppError::Invalid("Graph sign-in requires the owned session adapter with an exact account, tenant, client and requirement snapshot.".into()));
+    }
     let spec = connections::login_spec(&provider_id, &scopes, target.as_ref())?;
     spawn_operation(
         app,
@@ -482,6 +526,7 @@ where
             let snapshot = resolve_project_template(&state.database, project)?;
             ensure_registered_project_lifecycle_contract(&action, snapshot.as_ref())?;
             if let Some(snapshot) = &snapshot {
+                graph_session::reject_unadapted_execution(snapshot)?;
                 ensure_project_lifecycle_route(&action, snapshot)?;
             }
             snapshot
@@ -666,9 +711,15 @@ async fn cancel_operation(state: State<'_, AppState>, operation_id: String) -> A
 
 #[tauri::command]
 fn open_external_terminal(
+    state: State<'_, AppState>,
     project_path: String,
     environment: Option<String>,
 ) -> AppResult<terminal::TerminalLaunch> {
+    if let Some(project) = state.database.project_by_path(&project_path)? {
+        if let Some(contract) = state.database.project_template_exact(&project.path)? {
+            graph_session::reject_unadapted_execution(&contract)?;
+        }
+    }
     terminal::open(&project_path, environment.as_deref())
 }
 
@@ -805,14 +856,18 @@ fn get_effective_requirements(
     environment_values: Option<HashMap<String, String>>,
     target: Option<ExecutionTarget>,
 ) -> AppResult<requirements::RequirementSnapshot> {
-    resolve_effective_requirements(
+    let snapshot = resolve_effective_requirements(
         state.inner(),
         reviewed_contract_digest,
         project_path,
         environment,
         environment_values,
         target,
-    )
+    )?;
+    if state.graph_sessions.requirements_changed(&snapshot.digest) {
+        state.execution_approvals.clear()?;
+    }
+    Ok(snapshot)
 }
 
 fn resolve_effective_requirements(
@@ -892,6 +947,9 @@ fn selected_requirements(
         selection.environment_values.clone(),
         selection.target.clone(),
     )?;
+    if state.graph_sessions.requirements_changed(&snapshot.digest) {
+        state.execution_approvals.clear()?;
+    }
     if snapshot.digest != expected_digest {
         return Err(AppError::Invalid(
             "Requirements changed. Review the effective requirements and run checks again.".into(),
@@ -996,13 +1054,114 @@ async fn check_requirement_permissions(
     selection: requirements::RequirementSelection,
     expected_digest: String,
 ) -> AppResult<Vec<PermissionCheckResult>> {
-    check_selected_requirements(
-        state.inner(),
-        &selection,
-        &expected_digest,
-        |snapshot| async move { permissions::run(snapshot.permission_request()?).await },
-    )
+    check_selected_requirements(state.inner(), &selection, &expected_digest, |snapshot| {
+        let state = state.inner();
+        async move { run_owned_permission_checks(state, &snapshot).await }
+    })
     .await
+}
+
+async fn run_owned_permission_checks(
+    state: &AppState,
+    snapshot: &requirements::RequirementSnapshot,
+) -> AppResult<Vec<PermissionCheckResult>> {
+    let graph_checks = snapshot
+        .requirements
+        .permission_checks
+        .iter()
+        .filter(|check| check.id == "graph-delegated-scopes")
+        .collect::<Vec<_>>();
+    let mut results = Vec::new();
+    if !graph_checks.is_empty() {
+        let binding = match state.graph_sessions.binding_for(snapshot) {
+            Ok(binding) => binding,
+            Err(error) => {
+                state.execution_approvals.clear()?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = state.graph_sessions.probe(&binding).await {
+            state.execution_approvals.clear()?;
+            return Err(error);
+        }
+        for check in graph_checks {
+            results.push(PermissionCheckResult {id:check.id.clone(),name:check.name.clone(),provider:check.provider.clone(),required:check.required,
+                description:check.description.clone(),state:"passed".into(),blocking:false,
+                detail:"The owned Graph PowerShell process matched the exact selected account, tenant, client, resource and requested delegated scopes, and completed its registered read. This is not proof for separate azd hook processes or write authority.".into()});
+        }
+    }
+    let other = snapshot
+        .requirements
+        .permission_checks
+        .iter()
+        .filter(|check| check.id != "graph-delegated-scopes")
+        .cloned()
+        .collect::<Vec<_>>();
+    if !other.is_empty() {
+        let mut request = snapshot.permission_request()?;
+        request.checks = other;
+        results.extend(permissions::run(request).await?);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+async fn request_graph_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    selection: requirements::RequirementSelection,
+    expected_digest: String,
+    account: String,
+    client_id: String,
+) -> AppResult<graph_session::GraphBinding> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let snapshot = selected_requirements(state.inner(), &selection, &expected_digest)?;
+    let binding = graph_session::GraphBinding::from_requirements(&snapshot, account, client_id)?;
+    let ticket = state.graph_sessions.begin(&binding)?;
+    state.execution_approvals.clear()?;
+    let approved=app.dialog().message(format!(
+        "Approve Graph sign-in in one owned PowerShell session.\n\nAccount: {}\nTenant: {}\nClient: {}\nResource: {}\nRequested delegated scopes: {}\nRead probe: {}\nRequirement snapshot: {}\n\nNo tokens are exported. Separate azd hooks cannot use this session's evidence. Do not accept unexpected consent or alternate authentication flows.",
+        binding.account,binding.tenant_id,binding.client_id,binding.resource,binding.scopes.join(", "),binding.probe_uri,binding.requirements_digest))
+        .title("Confirm exact Graph session sign-in").kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Sign in to owned session".into(),"Cancel".into())).blocking_show();
+    if !approved {
+        state.graph_sessions.invalidate_ticket(ticket);
+        return Err(AppError::Invalid(
+            "Graph sign-in approval cancelled.".into(),
+        ));
+    }
+    selected_requirements(state.inner(), &selection, &expected_digest)?;
+    let _authentication_guard = match state.operations.begin_preparation() {
+        Ok(guard) => guard,
+        Err(error) => {
+            state.graph_sessions.invalidate_ticket(ticket);
+            return Err(error);
+        }
+    };
+    state.execution_approvals.clear()?;
+    let worker = graph_session::GraphWorker::spawn(binding.clone()).await?;
+    state.graph_sessions.install(ticket, worker.clone()).await?;
+    let result = async {
+        state.graph_sessions.ensure_current(ticket, &worker)?;
+        worker.authenticate().await?;
+        state.graph_sessions.probe(&binding).await?;
+        selected_requirements(state.inner(), &selection, &expected_digest)?;
+        state.graph_sessions.ensure_current(ticket, &worker)?;
+        Ok(binding)
+    }
+    .await;
+    if result.is_err() {
+        state.graph_sessions.invalidate_worker(&worker);
+        worker.close().await;
+    }
+    result
+}
+
+#[tauri::command]
+async fn dispose_graph_session(state: State<'_, AppState>) -> AppResult<()> {
+    state.execution_approvals.clear()?;
+    state.graph_sessions.dispose().await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1021,6 +1180,7 @@ mod requirement_snapshot_caller_tests {
             catalog_reviews: CatalogReviews::default(),
             execution_approvals: execution_approval::ExecutionApprovals::default(),
             tool_install_approvals: tools::ToolInstallApprovals::default(),
+            graph_sessions: crate::graph_session::GraphSessions::default(),
         };
         let mut entry = catalog::entry_by_id("myworkid").unwrap();
         entry.manifest = Some(
@@ -1112,7 +1272,26 @@ mod requirement_snapshot_caller_tests {
     #[tokio::test]
     async fn actual_lifecycle_requirement_change_during_probes_never_launches_or_reuses_approval() {
         for (from, to) in [("enforced", "plan"), ("plan", "enforced")] {
-            let (root, state, contract, path) = fixture();
+            let (root, state, mut contract, path) = fixture();
+            // Generic azd no longer borrows a Graph worker's context. Exercise
+            // its existing select-mode reread with a conditional tool instead.
+            let manifest = contract.entry.manifest.as_mut().unwrap();
+            manifest
+                .connections
+                .retain(|connection| connection.id != "graphPowerShell");
+            manifest
+                .permission_checks
+                .retain(|check| check.id != "graph-delegated-scopes");
+            manifest.prerequisites[0].condition = Some(
+                serde_json::from_value(serde_json::json!({"field":"mode","equals":"enforced"}))
+                    .unwrap(),
+            );
+            contract = ProjectTemplateSnapshot::new(contract.entry).unwrap();
+            let project = state.database.project_by_path(&path).unwrap().unwrap();
+            state
+                .database
+                .save_project_template(&project, &contract)
+                .unwrap();
             let dotenv = root.path().join(".azure/dev/.env");
             let original = std::fs::read_to_string(&dotenv).unwrap();
             std::fs::write(
@@ -1167,6 +1346,79 @@ mod requirement_snapshot_caller_tests {
             .await
             .is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn actual_graph_lifecycle_never_borrows_check_worker_proof_for_separate_hooks() {
+        for action in ["preview", "up", "provision", "deploy", "down"] {
+            let (_root, state, contract, path) = fixture();
+            let mut request = approval(&state, &contract, &path);
+            request.action = action.into();
+            let grant = state.execution_approvals.issue(request).unwrap();
+            let error = start_azd_operation_with_probe(
+                &state,
+                action.into(),
+                path,
+                Some("dev".into()),
+                Some(grant.token),
+                |_| async {
+                    panic!("Separate hook route must reject before worker proof is consulted");
+                    #[allow(unreachable_code)]
+                    Ok(())
+                },
+                |_, _, _| panic!("Unadapted Graph hook must not launch"),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("process-bound Graph execution"),
+                "{error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_graph_evidence_revokes_an_outstanding_execution_approval() {
+        let (_root, state, contract, path) = fixture();
+        let request = approval(&state, &contract, &path);
+        let snapshot = request.requirements.clone().unwrap();
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        assert!(run_owned_permission_checks(&state, &snapshot)
+            .await
+            .is_err());
+        assert!(state
+            .execution_approvals
+            .consume(&grant.token, request)
+            .is_err());
+    }
+
+    #[test]
+    fn a_new_native_snapshot_revokes_pending_graph_sign_in_and_execution_approval() {
+        let (_root, state, contract, path) = fixture();
+        let request = approval(&state, &contract, &path);
+        let snapshot = request.requirements.clone().unwrap();
+        let mut binding = graph_session::GraphBinding::from_requirements(
+            &snapshot,
+            "operator@example.test".into(),
+            "22222222-2222-4222-8222-222222222222".into(),
+        )
+        .unwrap();
+        binding.requirements_digest = "b".repeat(64);
+        state.graph_sessions.begin(&binding).unwrap();
+        let grant = state.execution_approvals.issue(request.clone()).unwrap();
+        let selection = requirements::RequirementSelection {
+            reviewed_contract_digest: None,
+            project_path: Some(path),
+            environment: "dev".into(),
+            environment_values: None,
+            target: None,
+        };
+        selected_requirements(&state, &selection, &snapshot.digest).unwrap();
+        assert!(state
+            .execution_approvals
+            .consume(&grant.token, request)
+            .is_err());
+        assert!(!state.graph_sessions.requirements_changed(&snapshot.digest));
     }
 
     #[test]
@@ -1736,6 +1988,8 @@ async fn select_project_environment(
 ) -> AppResult<Vec<ProjectEnvironment>> {
     let _environment_lock = state.environment_writes.lock().await;
     let _environment_change = state.operations.begin_environment_change()?;
+    state.graph_sessions.invalidate();
+    state.execution_approvals.clear()?;
     let canonical = std::fs::canonicalize(project_path)?;
     if !canonical.join("azure.yaml").is_file() {
         return Err(AppError::Invalid(format!(
@@ -1809,6 +2063,8 @@ async fn refresh_project_template(
             "Wait for active operations before replacing a project contract.".into(),
         ));
     }
+    state.graph_sessions.invalidate();
+    state.execution_approvals.clear()?;
     let canonical = std::fs::canonicalize(project_path)?;
     state
         .database
@@ -1966,6 +2222,7 @@ async fn set_project_environment_values(
     }
     // A GUI edit is a new intent boundary even if the user later restores the
     // previous values. Never revive a native grant across an A -> B -> A edit.
+    state.graph_sessions.invalidate();
     state.execution_approvals.clear()?;
     let values = values
         .into_iter()
@@ -2140,6 +2397,7 @@ pub fn run() {
                 catalog_reviews: CatalogReviews::default(),
                 execution_approvals: execution_approval::ExecutionApprovals::default(),
                 tool_install_approvals: tools::ToolInstallApprovals::default(),
+                graph_sessions: crate::graph_session::GraphSessions::default(),
             });
             Ok(())
         })
@@ -2169,6 +2427,8 @@ pub fn run() {
             remove_catalog_source,
             reviewed_contract_digest,
             get_effective_requirements,
+            request_graph_session,
+            dispose_graph_session,
             check_requirement_prerequisites,
             check_requirement_permissions,
             prepare_deployment,
@@ -2584,6 +2844,7 @@ mod draft_tests {
             catalog_reviews: CatalogReviews::default(),
             execution_approvals: crate::execution_approval::ExecutionApprovals::default(),
             tool_install_approvals: crate::tools::ToolInstallApprovals::default(),
+            graph_sessions: crate::graph_session::GraphSessions::default(),
         };
 
         let (allowed, sensitive) = draft_keys(&state, "entra-health-monitoring").unwrap();
@@ -2634,6 +2895,7 @@ mod acknowledgement_caller_tests {
             catalog_reviews: CatalogReviews::default(),
             execution_approvals: execution_approval::ExecutionApprovals::default(),
             tool_install_approvals: tools::ToolInstallApprovals::default(),
+            graph_sessions: crate::graph_session::GraphSessions::default(),
         };
         let mut entry = catalog::entry_by_id("myworkid").unwrap();
         entry.manifest = Some(fixture_manifest());

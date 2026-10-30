@@ -3,6 +3,10 @@ dist/
 target/
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/graph-adapter/bin/
+src-tauri/graph-adapter/obj/
+src-tauri/graph-adapter-tests/bin/
+src-tauri/graph-adapter-tests/obj/
 .vite/
 .DS_Store
 *.log

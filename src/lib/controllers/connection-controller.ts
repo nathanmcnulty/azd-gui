@@ -1,15 +1,12 @@
 import { refreshConnections } from "../bridge";
-import {
-  connectionMeetsTarget,
-  retainGrantedGraphScopes
-} from "../connections";
+import { connectionMeetsTarget } from "../connections";
 import type { ConnectionStatus, ConnectionTarget } from "../types";
 
 export async function refreshConnectionList(
   current: ConnectionStatus[],
   target?: ConnectionTarget
 ): Promise<ConnectionStatus[]> {
-  return retainGrantedGraphScopes(current, await refreshConnections(target));
+  return refreshConnections(target);
 }
 
 export async function verifyConnectionContext(
