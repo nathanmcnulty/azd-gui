@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { cancelPimPlan, connectPimPlan, reviewPimPlan, runPimPlan, type PimPlanArtifact, type PimPlanConfiguration, type PimPlanInput, type PimPlanReview } from '../lib/pim-plan';
+  import { cancelPimPlan, connectPimPlan, getPimPlanEvidence, reviewPimPlan, runPimPlan, type PimProcessEvidence, type PimPlanArtifact, type PimPlanConfiguration, type PimPlanInput, type PimPlanReview } from '../lib/pim-plan';
 
   let account = '';
   let tenantId = '';
@@ -14,22 +14,72 @@
   let review: PimPlanReview | null = null;
   let reviewedInput: PimPlanInput | null = null;
   let artifact: PimPlanArtifact | null = null;
+  let evidence: PimProcessEvidence | null = null;
+  let copyStatus = '';
+  let cancellationReceipt: PimProcessEvidence | null = null;
+  let explicitCancellationEpoch = -1;
+  const pollers = new Set<ReturnType<typeof setInterval>>();
   let connected = false;
   let busy = '';
   let error = '';
   let epoch = 0;
+  let pollGeneration = 0;
   let disposal: Promise<void> = Promise.resolve();
 
   function invalidate() {
     const digest = review?.binding.requirementsDigest;
     epoch += 1;
+    const cancelledEpoch = epoch;
+    pollGeneration += 1;
     review = null;
     reviewedInput = null;
     artifact = null;
+    evidence = null;
+    copyStatus = '';
+    cancellationReceipt = null;
+    for (const timer of pollers) clearInterval(timer);
+    pollers.clear();
     connected = false;
     busy = '';
     error = '';
-    if (digest) disposal = disposal.catch(() => {}).then(() => cancelPimPlan(digest));
+    if (digest) disposal = disposal.catch(() => {}).then(async () => {
+      const receipt = await cancelPimPlan(digest);
+      if (cancelledEpoch === epoch && explicitCancellationEpoch === cancelledEpoch) cancellationReceipt = receipt;
+    });
+  }
+  function cancelExplicitly() { explicitCancellationEpoch = epoch + 1; invalidate(); }
+  function acceptEvidence(value: PimProcessEvidence, selected: PimPlanReview) {
+    const context = value.context;
+    if (context.account.toLowerCase() !== selected.binding.account || context.tenantId.toLowerCase() !== selected.binding.tenantId.toLowerCase() ||
+        context.clientId.toLowerCase() !== selected.binding.clientId.toLowerCase() || context.resource !== 'https://graph.microsoft.com' ||
+        !/^[a-f0-9]{64}$/.test(context.principalFingerprint) || context.verificationReads !== 1 ||
+        selected.binding.scopes.some(scope => !context.scopes.some(actual => actual.toLowerCase() === scope.toLowerCase()))) {
+      throw new Error('Observed Graph evidence does not match the reviewed identity and permissions.');
+    }
+    if (evidence && (value.sessionId !== evidence.sessionId || value.processId !== evidence.processId || context.principalFingerprint !== evidence.context.principalFingerprint)) {
+      throw new Error('The owned Graph process changed. Review and sign in again.');
+    }
+    if (evidence && !evidence.active && value.active) throw new Error('A terminal process receipt cannot become active again.');
+    if (!evidence || context.pimReadsAttempted >= evidence.context.pimReadsAttempted && context.pimReadsCompleted >= evidence.context.pimReadsCompleted) evidence = value;
+  }
+  async function stopAfterFailure(cause: unknown, current: number, selected: PimPlanReview) {
+    if (current !== epoch) return;
+    pollGeneration += 1;
+    for (const timer of pollers) clearInterval(timer);
+    pollers.clear();
+    error = String(cause); connected = false;
+    review = null; reviewedInput = null;
+    let terminal: PimProcessEvidence | null = null;
+    disposal = disposal.catch(() => {}).then(async () => { terminal = await cancelPimPlan(selected.binding.requirementsDigest); });
+    try {
+      await disposal;
+      if (current === epoch) {
+        if (evidence) evidence = { ...evidence, active: false };
+        if (terminal) acceptEvidence(terminal, selected);
+      }
+    } catch {
+      if (current === epoch) { evidence = null; error += ' Session cleanup could not be confirmed.'; }
+    }
   }
   onDestroy(invalidate);
 
@@ -66,9 +116,12 @@
     try {
       await disposal;
       if (current !== epoch) return;
-      await connectPimPlan(candidate, selected.binding.requirementsDigest);
-      if (current === epoch) connected = true;
-    } catch (cause) { if (current === epoch) { error = String(cause); connected = false; } }
+      const observed = await connectPimPlan(candidate, selected.binding.requirementsDigest);
+      if (current === epoch) {
+        if (!observed.active) throw new Error('The Graph process is no longer active. Review and sign in again.');
+        acceptEvidence(observed, selected); connected = true;
+      }
+    } catch (cause) { await stopAfterFailure(cause, current, selected); }
     finally { if (current === epoch) busy = ''; }
   }
   async function generate() {
@@ -78,15 +131,36 @@
     busy = 'Reading current policies and building the plan…';
     error = '';
     artifact = null;
+    copyStatus = '';
+    const polling = ++pollGeneration;
+    const timer = setInterval(() => {
+      void getPimPlanEvidence(selected.binding.requirementsDigest).then(value => {
+        if (current === epoch && polling === pollGeneration && value) acceptEvidence(value, selected);
+      }).catch(() => { /* Final operation reply remains authoritative; polling never probes Graph. */ });
+    }, 500);
+    pollers.add(timer);
     try {
       const result = await runPimPlan(reviewedInput, selected.binding.requirementsDigest);
       if (current !== epoch) return;
-      if (result.requirementsDigest !== selected.binding.requirementsDigest || result.sourceCommit !== selected.sourceCommit || result.plan.mode !== 'plan') {
+      if (result.requirementsDigest !== selected.binding.requirementsDigest || result.sourceCommit !== selected.sourceCommit || result.plan.mode !== 'plan' || !result.executionEvidence.active) {
         throw new Error('The returned plan does not match this review. Review the configuration again.');
       }
+      acceptEvidence(result.executionEvidence, selected);
       artifact = result;
-    } catch (cause) { if (current === epoch) { error = String(cause); connected = false; } }
-    finally { if (current === epoch) busy = ''; }
+    } catch (cause) { await stopAfterFailure(cause, current, selected); }
+    finally { clearInterval(timer); pollers.delete(timer); if (current === epoch) busy = ''; }
+  }
+  async function copyArtifact() {
+    if (!artifact) return;
+    const current = epoch;
+    try { await navigator.clipboard.writeText(JSON.stringify(artifact, null, 2)); if (current === epoch) copyStatus = 'Complete plan JSON copied. Keep tenant details private.'; }
+    catch { if (current === epoch) copyStatus = 'Copy failed. Select the complete JSON below to copy it manually.'; }
+  }
+  async function copyCancellation() {
+    if (!cancellationReceipt) return;
+    const current = epoch;
+    try { await navigator.clipboard.writeText(JSON.stringify(cancellationReceipt, null, 2)); if (current === epoch) copyStatus = 'Cancellation receipt copied. Keep tenant details private.'; }
+    catch { if (current === epoch) copyStatus = 'Copy failed. The session remains closed.'; }
   }
 </script>
 
@@ -109,9 +183,28 @@
     {/each}
   </div>
   <div class="hero-actions"><button class="secondary" disabled={!!busy} on:click={prepare}>Review configuration</button>
-    {#if busy || connected}<button class="secondary" on:click={invalidate}>{busy ? 'Cancel' : 'Disconnect and clear plan'}</button>{/if}</div>
+    {#if busy || connected}<button class="secondary" on:click={cancelExplicitly}>{busy ? 'Cancel' : 'Disconnect and clear plan'}</button>{/if}</div>
   {#if error}<p role="alert">{error}</p>{/if}
   {#if busy}<p role="status">{busy}</p>{/if}
+  {#if cancellationReceipt}
+    <section class="pim-review" aria-label="PIM cancellation receipt"><h2>Session closed</h2>
+      <p>At cancellation request: {cancellationReceipt.context.pimReadsAttempted} plan dispatch attempts, {cancellationReceipt.context.pimReadsCompleted} validated completions. Worker PID: {cancellationReceipt.processId}.</p>
+      <p>This historical receipt cannot authorize another read. Dispatch counters do not independently prove network traffic.</p>
+      <button class="secondary" on:click={copyCancellation}>Copy cancellation receipt</button>
+      {#if copyStatus}<p role="status">{copyStatus}</p>{/if}
+    </section>
+  {/if}
+  {#if evidence}
+    <p aria-live="polite">Protected plan reads: {evidence.context.pimReadsAttempted} started, {evidence.context.pimReadsCompleted} completed.</p>
+    <details class="pim-review"><summary>Verified process evidence</summary>
+      <p>Observed account: {evidence.context.account}<br />Tenant: {evidence.context.tenantId}<br />Client: {evidence.context.clientId}</p>
+      <p>Worker PID: {evidence.processId}; session: <code>{evidence.sessionId}</code></p>
+      <p>{evidence.active ? 'The native session remains available for its registered reads.' : 'Historical failure receipt; this process cannot authorize more reads.'}</p>
+      <p>Principal fingerprint: <code>{evidence.context.principalFingerprint}</code></p>
+      <p>Verification reads: {evidence.context.verificationReads}. Actual granted scopes: {evidence.context.scopes.join(', ')}</p>
+      <p>Existing consent can return a broader grant set. This operation uses only its registered read routes and changes no consent.</p>
+    </details>
+  {/if}
   {#if review}
     <section aria-label="PIM plan review" class="pim-review"><h2>Read-only plan review</h2>
       <p>Account: {review.binding.account}<br />Tenant: {review.binding.tenantId}<br />Client: {review.binding.clientId}</p>
@@ -132,6 +225,8 @@
         <p>Conditional Access proposals: {details.conditionalAccessPolicies.map(policy => policy.action).join(', ') || 'none'}</p>
       {/each}
       <ul>{#each artifact.plan.warnings as warning}<li>{warning}</li>{/each}</ul>
+      <button class="secondary" on:click={copyArtifact}>Copy complete plan JSON</button>
+      {#if copyStatus}<p role="status">{copyStatus}</p>{/if}
       <details><summary>Complete plan JSON</summary><pre>{JSON.stringify(artifact, null, 2)}</pre></details>
     </section>
   {/if}

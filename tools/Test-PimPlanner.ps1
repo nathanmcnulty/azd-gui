@@ -23,6 +23,7 @@ $control = Join-Path $fixtures 'control.json'
 @{ account = 'operator@example.test'; mode = 'pim'; delayMs = 0 } | ConvertTo-Json | Set-Content $control
 $binding = @{
     requirementsDigest = 'offline-pim-fixture'
+    purpose = 'pimPlan'
     account = 'operator@example.test'
     tenantId = '11111111-1111-4111-8111-111111111111'
     clientId = '22222222-2222-4222-8222-222222222222'
@@ -54,15 +55,16 @@ try {
     $configuration.PrivilegedRoleIds = @($role)
     $owned = [AzdGui.GraphAdapter.Tests.TestFactory]::Create($binding, $control)
     $owned.Authenticate()
+    $owned.Probe()
     $plan = New-AzdPimReadPlan -Configuration $configuration -ReadContext $owned
     if ($plan.tiers.privileged.roles.Count -ne 1 -or $plan.tiers.privileged.context.action -ne 'create' -or
         $plan.tiers.privileged.conditionalAccessPolicies[0].action -ne 'create') { throw 'Real planner did not produce expected proposals.' }
     Write-AzdPimPlanReport -Plan $plan -Path (Join-Path $fixtures 'plan.json')
     $calls = @(Get-Content (Join-Path $fixtures 'calls.jsonl') | ConvertFrom-Json)
     $reads = @($calls | Where-Object kind -eq 'protected-read-start')
-    if ($reads.Count -ne 7 -or @($calls.pid | Sort-Object -Unique).Count -ne 1 -or $calls[0].pid -ne $PID) { throw 'Planner reads escaped the owning process or missed pagination.' }
+    if ($reads.Count -ne 8 -or @($calls.pid | Sort-Object -Unique).Count -ne 1 -or $calls[0].pid -ne $PID) { throw 'Planner reads escaped the owning process or missed pagination.' }
     try { $owned.ReadPimJson('https://graph.microsoft.com/v1.0/users'); throw 'Unregistered endpoint accepted.' }
-    catch { if ($_.Exception.Message -notlike '*Unregistered PIM read*') { throw } }
+    catch { if ($_.Exception.Message -notlike '*UnregisteredPimRead*') { throw } }
     Write-Host 'Real planner, managed credential validation, same-process GETs, pagination and endpoint rejection passed without cloud access.'
 } finally {
     if ($null -ne $owned) { $owned.Dispose() }

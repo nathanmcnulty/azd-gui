@@ -34,11 +34,13 @@ try {
             }
             elseif ($request.action -eq 'probe') {
                 if (-not $connected) { throw 'No owned authenticated session.' }
+                if ($binding.PSObject.Properties['purpose'] -and $binding.purpose -ceq 'pimPlan') { $owned.BeginPimPlanAudit($session, [long]$sequence) }
                 $owned.Probe()
             }
             elseif ($request.action -eq 'pimPlan') {
                 if (-not $connected) { throw 'No owned authenticated session.' }
                 $requiredScopes = @('AuthenticationContext.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory')
+                if ($binding.purpose -cne 'pimPlan') { throw 'PIM session purpose required.' }
                 if ((($binding.scopes | Sort-Object) -join ',') -cne ($requiredScopes -join ',')) { throw 'PIM read-only scope contract mismatch.' }
                 # These modules are embedded from the pinned public template by
                 # the native host. No renderer-selected script or hook is run.
@@ -50,6 +52,7 @@ try {
                     if ($property.Name -notin @('privilegedRoleIds', 'lessPrivilegedRoleIds', 'privilegedAuthenticationProfile', 'lessPrivilegedAuthenticationProfile', 'privilegedDeviceRequirement', 'lessPrivilegedDeviceRequirement')) { throw 'Unsupported PIM configuration.' }
                     $configuration.($property.Name) = $property.Value
                 }
+                $owned.BeginPimPlanAudit($session, [long]$sequence)
                 $plan = New-AzdPimReadPlan -Configuration $configuration -ReadContext $owned
                 $planJson = $plan | ConvertTo-Json -Depth 100 -Compress
                 if ([Text.Encoding]::UTF8.GetByteCount($planJson) -gt 8MB) { throw 'PIM plan artifact exceeds limit.' }
@@ -64,7 +67,22 @@ try {
         }
         catch {
             # Never serialize raw SDK errors, AuthenticationResult or HTTP data.
+            $code = if ($request -and $request.action -eq 'authenticate') { 'GraphAuthenticationFailed' } elseif ($request -and $request.action -eq 'pimPlan') { 'PimPlannerRejectedConfiguration' } else { 'PimReadFailed' }
+            $exception = $_.Exception
+            for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
+                if ($exception -is [AzdGui.GraphAdapter.GraphBoundaryException]) {
+                    if ($exception.Code -in @('GraphReadDenied', 'GraphDelegatedScopeMissing', 'GraphIdentityMismatch', 'GraphIdentityOrGrantsChanged', 'PimVerificationBudgetExceeded', 'PimReadBudgetOrSessionRejected', 'PimResponseLimitExceeded', 'GraphRedirectRejected', 'GraphReadFailed')) { $code = $exception.Code }
+                    else { $code = 'PimReadFailed' }
+                    break
+                }
+                if ($exception -is [System.Text.Json.JsonException] -or $exception -is [System.OperationCanceledException]) { $code = 'PimReadFailed'; break }
+                if ($exception -is [Microsoft.Identity.Client.MsalUiRequiredException]) { $code = 'GraphInteractionRequired'; break }
+                if ($exception -is [Microsoft.Identity.Client.MsalException]) { if ($request.action -ne 'authenticate') { $code = 'GraphTokenRefreshFailed' }; break }
+                if ($exception -is [System.Net.Http.HttpRequestException]) { $code = 'GraphReadFailed'; break }
+                $exception = $exception.InnerException
+            }
             $reply = [ordered]@{ sequence=$sequence; sessionId=$session; requirementsDigest=if($binding){$binding.requirementsDigest}else{''}; processId=$PID; action=if($request){[string]$request.action}else{''}; ok=$false; evidence=$null }
+            $reply.errorCode = $code
             [Console]::Out.WriteLine('AZD_GRAPH_RPC:' + ($reply | ConvertTo-Json -Depth 12 -Compress))
             [Console]::Out.Flush()
             exit 1

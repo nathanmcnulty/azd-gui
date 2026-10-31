@@ -119,6 +119,7 @@ impl Input {
             tenant_id: self.tenant_id,
             client_id: self.client_id,
             resource: "https://graph.microsoft.com".into(),
+            purpose: Some("pimPlan".into()),
             scopes: SCOPES.iter().map(|s| (*s).into()).collect(),
             probe_uri: "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=1&$select=id".into(),
         };

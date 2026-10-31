@@ -1171,12 +1171,14 @@ fn review_pim_plan(input: pim_plan::Input) -> AppResult<pim_plan::Review> {
 }
 
 #[tauri::command]
-async fn cancel_pim_plan(state: State<'_, AppState>, expected_digest: String) -> AppResult<()> {
+async fn cancel_pim_plan(
+    state: State<'_, AppState>,
+    expected_digest: String,
+) -> AppResult<Option<graph_session::ProcessEvidence>> {
     state
         .graph_sessions
-        .dispose_matching(&expected_digest)
-        .await;
-    Ok(())
+        .dispose_pim_with_receipt(&expected_digest)
+        .await
 }
 
 #[tauri::command]
@@ -1185,7 +1187,7 @@ async fn request_pim_plan_session(
     state: State<'_, AppState>,
     input: pim_plan::Input,
     expected_digest: String,
-) -> AppResult<graph_session::GraphBinding> {
+) -> AppResult<graph_session::ProcessEvidence> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     let review = input.review()?;
     review.expect_digest(&expected_digest)?;
@@ -1216,11 +1218,12 @@ async fn request_pim_plan_session(
         worker.authenticate().await?;
         state.graph_sessions.probe(&binding).await?;
         state.graph_sessions.ensure_current(ticket, &worker)?;
-        Ok(binding)
+        worker.process_evidence()
     }
     .await;
     drop(guard);
     if result.is_err() {
+        state.graph_sessions.retain_pim_failure(&worker);
         state.graph_sessions.invalidate_worker(&worker);
         worker.close().await;
     }
@@ -1237,6 +1240,14 @@ async fn run_pim_plan(
     review.expect_digest(&expected_digest)?;
     let _guard = state.operations.begin_preparation()?;
     state.graph_sessions.pim_plan(&review).await
+}
+
+#[tauri::command]
+fn get_pim_plan_evidence(
+    state: State<'_, AppState>,
+    expected_digest: String,
+) -> AppResult<Option<graph_session::ProcessEvidence>> {
+    state.graph_sessions.pim_evidence(&expected_digest)
 }
 
 #[cfg(test)]
@@ -2508,6 +2519,7 @@ pub fn run() {
             cancel_pim_plan,
             request_pim_plan_session,
             run_pim_plan,
+            get_pim_plan_evidence,
             check_requirement_prerequisites,
             check_requirement_permissions,
             prepare_deployment,

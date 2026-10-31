@@ -23,6 +23,7 @@ export interface PimPlanReview {
 export interface PimPlanArtifact {
   sourceCommit: string;
   requirementsDigest: string;
+  executionEvidence: PimProcessEvidence;
   plan: {
     mode: string;
     generatedAt: string;
@@ -35,6 +36,15 @@ export interface PimPlanArtifact {
     }>;
   };
 }
+export interface PimProcessEvidence {
+  active: boolean;
+  processId: number;
+  sessionId: string;
+  context: {
+    account: string; tenantId: string; clientId: string; resource: string; scopes: string[];
+    principalFingerprint: string; verificationReads: number; pimReadsAttempted: number; pimReadsCompleted: number;
+  };
+}
 function native() {
   if (!isTauri()) throw new Error('Open the Windows desktop app to review and run a PIM plan.');
 }
@@ -42,14 +52,19 @@ export async function reviewPimPlan(input: PimPlanInput): Promise<PimPlanReview>
   native();
   return invoke('review_pim_plan', { input });
 }
-export async function connectPimPlan(input: PimPlanInput, expectedDigest: string): Promise<void> {
+export async function connectPimPlan(input: PimPlanInput, expectedDigest: string): Promise<PimProcessEvidence> {
   native();
-  await invoke('request_pim_plan_session', { input, expectedDigest });
+  return invoke('request_pim_plan_session', { input, expectedDigest });
+}
+export async function getPimPlanEvidence(expectedDigest: string): Promise<PimProcessEvidence | null> {
+  native();
+  return invoke('get_pim_plan_evidence', { expectedDigest });
 }
 export async function runPimPlan(input: PimPlanInput, expectedDigest: string): Promise<PimPlanArtifact> {
   native();
   return invoke('run_pim_plan', { input, expectedDigest });
 }
-export async function cancelPimPlan(expectedDigest: string): Promise<void> {
-  if (isTauri()) await invoke('cancel_pim_plan', { expectedDigest });
+export async function cancelPimPlan(expectedDigest: string): Promise<PimProcessEvidence | null> {
+  if (isTauri()) return invoke('cancel_pim_plan', { expectedDigest });
+  return null;
 }

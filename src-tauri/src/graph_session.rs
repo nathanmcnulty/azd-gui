@@ -57,6 +57,8 @@ pub struct GraphBinding {
     pub resource: String,
     pub scopes: Vec<String>,
     pub probe_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<String>,
 }
 
 impl GraphBinding {
@@ -97,12 +99,20 @@ impl GraphBinding {
             resource: "https://graph.microsoft.com".into(),
             scopes,
             probe_uri: probe.into(),
+            purpose: None,
         };
         binding.validate()?;
         Ok(binding)
     }
 
     pub(crate) fn validate(&self) -> AppResult<()> {
+        if self
+            .purpose
+            .as_deref()
+            .is_some_and(|purpose| purpose != "pimPlan")
+        {
+            return Err(invalid("Unknown Graph session purpose."));
+        }
         if self.requirements_digest.len() != 64
             || !self
                 .requirements_digest
@@ -136,7 +146,7 @@ impl GraphBinding {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ContextEvidence {
     account: String,
@@ -147,6 +157,34 @@ pub(crate) struct ContextEvidence {
     auth_type: String,
     context_scope: String,
     environment: String,
+    #[serde(default)]
+    principal_fingerprint: Option<String>,
+    #[serde(default)]
+    verification_reads: u32,
+    #[serde(default)]
+    pim_reads_attempted: u32,
+    #[serde(default)]
+    pim_reads_completed: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProcessEvidence {
+    active: bool,
+    process_id: u32,
+    session_id: String,
+    context: ContextEvidence,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProgressFrame {
+    sequence: u64,
+    session_id: String,
+    requirements_digest: String,
+    process_id: u32,
+    kind: String,
+    evidence: ContextEvidence,
 }
 
 #[derive(Debug, Deserialize)]
@@ -161,6 +199,8 @@ struct Reply {
     evidence: Option<ContextEvidence>,
     #[serde(default)]
     pim_plan: Option<serde_json::Value>,
+    #[serde(default)]
+    error_code: Option<String>,
 }
 
 struct Transport {
@@ -172,6 +212,19 @@ struct Transport {
     _files: tempfile::TempDir,
 }
 
+// An aborted request also revokes cached availability before Transport drops.
+struct RequestRevocation {
+    cancel: watch::Sender<bool>,
+    armed: bool,
+}
+impl Drop for RequestRevocation {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cancel.send_replace(true);
+        }
+    }
+}
+
 pub struct GraphWorker {
     created: Instant,
     session_id: String,
@@ -179,6 +232,7 @@ pub struct GraphWorker {
     binding: GraphBinding,
     transport: AsyncMutex<Option<Transport>>,
     cancel: watch::Sender<bool>,
+    observed: Mutex<Option<ContextEvidence>>,
 }
 
 impl GraphWorker {
@@ -259,6 +313,7 @@ impl GraphWorker {
                 _files: files,
             })),
             cancel,
+            observed: Mutex::new(None),
         });
         worker.request("initialize", false).await?;
         Ok(worker)
@@ -325,6 +380,10 @@ impl GraphWorker {
         let mut transport = guard
             .take()
             .ok_or_else(|| invalid("Graph session is closed or cancelled."))?;
+        let mut revocation = RequestRevocation {
+            cancel: self.cancel.clone(),
+            armed: true,
+        };
         let mut cancelled = self.cancel.subscribe();
         if *cancelled.borrow() || self.created.elapsed() >= SESSION_LIFETIME {
             return Err(invalid("Graph session cancelled."));
@@ -343,7 +402,7 @@ impl GraphWorker {
             };
             transport.input.write_all(&bytes).await?;
             transport.input.flush().await?;
-            for _ in 0..64 {
+            for _ in 0..if action == "pimPlan" { 512 } else { 64 } {
                 let mut line = Vec::new();
                 let count = (&mut transport.output)
                     .take(limit)
@@ -351,6 +410,18 @@ impl GraphWorker {
                     .await?;
                 if count == 0 || count as u64 >= limit {
                     return Err(invalid("Graph worker closed or returned oversized output."));
+                }
+                if let Some(data) = line.strip_prefix(b"AZD_GRAPH_PROGRESS:") {
+                    if self.binding.purpose.as_deref() != Some("pimPlan")
+                        || !matches!(action, "pimPlan" | "probe")
+                        || data.len() > LIMIT as usize
+                    {
+                        return Err(invalid("Unexpected Graph progress frame."));
+                    }
+                    let progress: ProgressFrame = serde_json::from_slice(data)
+                        .map_err(|_| invalid("Invalid Graph progress frame."))?;
+                    self.validate_progress(progress, action, sequence)?;
+                    continue;
                 }
                 if let Some(data) = line.strip_prefix(b"AZD_GRAPH_RPC:") {
                     // Do not expose unexpected SDK output or raw parse errors.
@@ -378,6 +449,7 @@ impl GraphWorker {
                     ));
                 }
                 *guard = Some(transport);
+                revocation.armed = false;
                 Ok(reply)
             }
             Err(error) => {
@@ -392,8 +464,7 @@ impl GraphWorker {
     }
 
     fn validate_reply(&self, reply: Reply, action: &str, sequence: u64) -> AppResult<Reply> {
-        if !reply.ok
-            || reply.sequence != sequence
+        if reply.sequence != sequence
             || reply.session_id != self.session_id
             || reply.process_id != self.pid
             || reply.requirements_digest != self.binding.requirements_digest
@@ -402,6 +473,21 @@ impl GraphWorker {
             return Err(invalid(
                 "Graph worker evidence did not match this operation/session.",
             ));
+        }
+        if !reply.ok {
+            let message = match reply.error_code.as_deref() {
+                Some("GraphReadDenied") => "Graph read denied; stop and review the existing account's access. No permissions were changed.",
+                Some("GraphDelegatedScopeMissing") => "The returned delegated grant does not include the required read permission. Do not grant consent automatically.",
+                Some("GraphIdentityMismatch" | "GraphIdentityOrGrantsChanged") => "Graph identity or delegated grants did not match the approved session.",
+                Some("PimVerificationBudgetExceeded" | "PimReadBudgetOrSessionRejected" | "PimResponseLimitExceeded") => "PIM read budget or response limit rejected the operation.",
+                Some("GraphRedirectRejected" | "GraphReadFailed") => "The protected Graph read failed or attempted a redirect; no retry was made.",
+                Some("PimPlannerRejectedConfiguration") => "PIM planner rejected the configuration or current tenant policy state. Review conflicts before changing any settings.",
+                Some("PimReadFailed") => "PIM read failed validation or exceeded its time limit; the session was discarded.",
+                Some("GraphAuthenticationFailed") => "Graph sign-in failed. Stop on consent, unexpected identity or an alternate authentication flow.",
+                Some("GraphInteractionRequired" | "GraphTokenRefreshFailed") => "Silent Graph refresh could not complete. No interactive fallback was attempted; review the account before another approved sign-in.",
+                _ => "Graph worker rejected the operation; session discarded.",
+            };
+            return Err(invalid(message));
         }
         if action != "initialize" {
             let evidence = reply
@@ -429,8 +515,129 @@ impl GraphWorker {
                     "Graph identity/resource/scopes changed; session discarded.",
                 ));
             }
+            self.observe(evidence)?;
         }
         Ok(reply)
+    }
+
+    fn observe(&self, evidence: &ContextEvidence) -> AppResult<()> {
+        let mut observed = self
+            .observed
+            .lock()
+            .map_err(|_| invalid("Graph evidence unavailable."))?;
+        if self.binding.purpose.as_deref() == Some("pimPlan")
+            && (evidence.principal_fingerprint.as_ref().map_or(true, |s| {
+                s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit())
+            }) || evidence.verification_reads > 1
+                || evidence.pim_reads_attempted > 100
+                || evidence.pim_reads_completed > evidence.pim_reads_attempted
+                || evidence.pim_reads_attempted - evidence.pim_reads_completed > 1)
+        {
+            return Err(invalid("Invalid PIM execution evidence."));
+        }
+        if let Some(previous) = observed.as_ref() {
+            if evidence.principal_fingerprint != previous.principal_fingerprint
+                || evidence.scopes.len() != previous.scopes.len()
+                || evidence
+                    .scopes
+                    .iter()
+                    .zip(&previous.scopes)
+                    .any(|(actual, prior)| !actual.eq_ignore_ascii_case(prior))
+                || evidence.verification_reads < previous.verification_reads
+                || evidence.pim_reads_attempted < previous.pim_reads_attempted
+                || evidence.pim_reads_completed < previous.pim_reads_completed
+            {
+                return Err(invalid(
+                    "Observed Graph identity, grants or counters changed unexpectedly.",
+                ));
+            }
+        }
+        *observed = Some(evidence.clone());
+        Ok(())
+    }
+
+    fn validate_progress(
+        &self,
+        progress: ProgressFrame,
+        action: &str,
+        sequence: u64,
+    ) -> AppResult<()> {
+        let previous = self
+            .observed
+            .lock()
+            .map_err(|_| invalid("Graph evidence unavailable."))?
+            .clone()
+            .ok_or_else(|| invalid("No prior verified Graph evidence."))?;
+        let evidence = &progress.evidence;
+        let valid = evidence.verification_reads == 1
+            && match progress.kind.as_str() {
+                "verificationStarted" => {
+                    action == "probe"
+                        && previous.verification_reads == 0
+                        && evidence.pim_reads_attempted == 0
+                        && evidence.pim_reads_completed == 0
+                }
+                "verificationCompleted" => {
+                    action == "probe"
+                        && previous.verification_reads == 1
+                        && evidence.pim_reads_attempted == 0
+                        && evidence.pim_reads_completed == 0
+                }
+                "readStarted" if action == "pimPlan" => {
+                    evidence.pim_reads_attempted == previous.pim_reads_attempted + 1
+                        && evidence.pim_reads_completed == previous.pim_reads_completed
+                }
+                "readCompleted" if action == "pimPlan" => {
+                    evidence.pim_reads_completed == previous.pim_reads_completed + 1
+                        && evidence.pim_reads_attempted == previous.pim_reads_attempted
+                }
+                _ => false,
+            };
+        if !valid {
+            return Err(invalid("Invalid PIM read progress sequence."));
+        }
+        self.validate_reply(
+            Reply {
+                sequence: progress.sequence,
+                session_id: progress.session_id,
+                requirements_digest: progress.requirements_digest,
+                process_id: progress.process_id,
+                action: action.into(),
+                ok: true,
+                evidence: Some(progress.evidence),
+                pim_plan: None,
+                error_code: None,
+            },
+            action,
+            sequence,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn process_evidence(&self) -> AppResult<ProcessEvidence> {
+        let context = self
+            .observed
+            .lock()
+            .map_err(|_| invalid("Graph evidence unavailable."))?
+            .clone()
+            .ok_or_else(|| invalid("Verified Graph evidence absent."))?;
+        let exited = self.transport.try_lock().ok().is_some_and(|mut transport| {
+            transport.as_mut().map_or(true, |transport| {
+                transport
+                    .child
+                    .try_wait()
+                    .map_or(true, |status| status.is_some())
+            })
+        });
+        if exited || self.created.elapsed() >= SESSION_LIFETIME {
+            self.cancel();
+        }
+        Ok(ProcessEvidence {
+            active: !*self.cancel.borrow(),
+            process_id: self.pid,
+            session_id: self.session_id.clone(),
+            context,
+        })
     }
 
     pub fn cancel(&self) {
@@ -475,9 +682,70 @@ impl Registry {
 #[derive(Default)]
 pub struct GraphSessions {
     current: Mutex<Registry>,
+    last_pim_failure: Mutex<Option<(String, ProcessEvidence)>>,
 }
 
 impl GraphSessions {
+    pub async fn dispose_pim_with_receipt(
+        &self,
+        digest: &str,
+    ) -> AppResult<Option<ProcessEvidence>> {
+        // Authentication may not have produced evidence yet. Metadata lookup
+        // must never prevent revoking a pending or in-flight authentication.
+        let mut receipt = self.pim_evidence(digest).ok().flatten();
+        self.dispose_matching(digest).await;
+        if let Some(receipt) = &mut receipt {
+            receipt.active = false;
+        }
+        Ok(receipt)
+    }
+    pub fn pim_evidence(&self, digest: &str) -> AppResult<Option<ProcessEvidence>> {
+        let registry = self
+            .current
+            .lock()
+            .map_err(|_| invalid("Graph sessions unavailable."))?;
+        let active = registry
+            .worker
+            .as_ref()
+            .filter(|w| {
+                w.binding.purpose.as_deref() == Some("pimPlan")
+                    && w.binding.requirements_digest == digest
+            })
+            .map(|w| w.process_evidence())
+            .transpose()?;
+        if active.is_some() {
+            return Ok(active);
+        }
+        Ok(self
+            .last_pim_failure
+            .lock()
+            .map_err(|_| invalid("PIM receipt unavailable."))?
+            .as_ref()
+            .filter(|(owner, _)| owner == digest)
+            .map(|(_, evidence)| evidence.clone()))
+    }
+
+    pub fn retain_pim_failure(&self, worker: &GraphWorker) {
+        if worker.binding.purpose.as_deref() != Some("pimPlan") {
+            return;
+        }
+        let Ok(registry) = self.current.lock() else {
+            return;
+        };
+        if !registry
+            .worker
+            .as_ref()
+            .is_some_and(|current| std::ptr::eq(current.as_ref(), worker))
+        {
+            return;
+        }
+        if let (Ok(mut cache), Ok(mut evidence)) =
+            (self.last_pim_failure.lock(), worker.process_evidence())
+        {
+            evidence.active = false;
+            *cache = Some((worker.binding.requirements_digest.clone(), evidence));
+        }
+    }
     pub async fn dispose_matching(&self, digest: &str) {
         let worker = self.current.lock().ok().and_then(|mut registry| {
             if registry.requirements_digest.as_deref() == Some(digest) {
@@ -486,6 +754,11 @@ impl GraphSessions {
                 None
             }
         });
+        if let Ok(mut cache) = self.last_pim_failure.lock() {
+            if cache.as_ref().is_some_and(|(owner, _)| owner == digest) {
+                *cache = None;
+            }
+        }
         if let Some(worker) = worker {
             worker.close().await;
         }
@@ -514,6 +787,7 @@ impl GraphSessions {
         };
         let result = worker.pim_plan(&review.configuration).await;
         if result.is_err() {
+            self.retain_pim_failure(&worker);
             self.invalidate_worker(&worker);
         }
         let plan = result?;
@@ -529,10 +803,14 @@ impl GraphSessions {
             self.invalidate_worker(&worker);
             return Err(invalid("PIM plan identity or mode mismatch."));
         }
+        let execution_evidence = worker.process_evidence()?;
+        if !execution_evidence.active {
+            return Err(invalid("PIM session was cancelled; artifact discarded."));
+        }
         Ok(
             serde_json::json!({ "schemaVersion": "1.0", "sourceCommit": review.source_commit,
             "requirementsDigest": review.binding.requirements_digest, "identity": review.binding,
-            "configuration": review.configuration, "plan": plan }),
+            "configuration": review.configuration, "executionEvidence": execution_evidence, "plan": plan }),
         )
     }
     // Reserve intent BEFORE a dialog or asynchronous process startup. A cancel
@@ -673,6 +951,9 @@ impl GraphSessions {
             .lock()
             .ok()
             .and_then(|mut registry| registry.revoke());
+        if let Ok(mut cache) = self.last_pim_failure.lock() {
+            *cache = None;
+        }
         if let Some(worker) = worker {
             worker.close().await;
         }
@@ -838,6 +1119,200 @@ mod tests {
         })).unwrap().review().unwrap()
     }
 
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM evidence; substitutes MSAL and HTTP"]
+    async fn pim_observed_receipt_and_polling_never_add_reads_or_authorize_after_failure() {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        let control = fixture.root.path().join("control.json");
+        std::fs::write(
+            &control,
+            json!({"account":"operator@example.test","mode":"pim","delayMs":0,"extraGrants":true})
+                .to_string(),
+        )
+        .unwrap();
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        let calls = fixture.calls().len();
+        for _ in 0..20 {
+            let receipt = sessions
+                .pim_evidence(&review.binding.requirements_digest)
+                .unwrap()
+                .unwrap();
+            assert!(receipt.active);
+            assert_eq!(receipt.context.verification_reads, 1);
+            assert!(receipt.context.scopes.contains(&"User.Read".into()));
+            assert!(!review.binding.scopes.contains(&"User.Read".into()));
+            assert_eq!(
+                receipt
+                    .context
+                    .principal_fingerprint
+                    .as_ref()
+                    .unwrap()
+                    .len(),
+                64
+            );
+        }
+        assert_eq!(fixture.calls().len(), calls);
+        std::fs::write(&control, json!({"account":"operator@example.test","mode":"pim","delayMs":0,"extraGrants":true,"responseStatus":403}).to_string()).unwrap();
+        let error = sessions.pim_plan(&review).await.unwrap_err().to_string();
+        assert!(error.contains("Graph read denied"), "{error}");
+        let receipt = sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .unwrap();
+        assert!(!receipt.active);
+        assert_eq!(receipt.context.pim_reads_attempted, 1);
+        assert_eq!(receipt.context.pim_reads_completed, 0);
+        assert!(sessions.pim_plan(&review).await.is_err());
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|v| v["kind"] == "protected-read-start")
+                .count(),
+            2
+        );
+        sessions
+            .dispose_matching(&review.binding.requirements_digest)
+            .await;
+        assert!(sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM evidence; substitutes MSAL and HTTP"]
+    async fn pim_purpose_allows_only_one_verification_and_rejects_foreign_progress() {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        assert!(worker
+            .probe()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("PIM read budget"));
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|v| v["kind"] == "protected-read-start")
+                .count(),
+            1
+        );
+
+        let fixture = Fixture::new();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        std::fs::write(fixture.root.path().join("control.json"), json!({"account":"operator@example.test","mode":"pim","delayMs":0,"spoofPimProgress":true}).to_string()).unwrap();
+        assert!(worker.pim_plan(&review.configuration).await.is_err());
+        assert!(!worker.process_evidence().unwrap().active);
+        assert!(worker.pim_plan(&review.configuration).await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM diagnostics; substitutes MSAL and HTTP"]
+    async fn silent_pim_refresh_failure_is_distinguished_without_interactive_fallback_or_dispatch()
+    {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker).await.unwrap();
+        fixture.control("silentRequired", 0);
+        let error = sessions.pim_plan(&review).await.unwrap_err().to_string();
+        assert!(error.contains("Silent Graph refresh"), "{error}");
+        let receipt = sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .unwrap();
+        assert!(!receipt.active);
+        assert_eq!(receipt.context.pim_reads_attempted, 0);
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|v| v["kind"] == "connect")
+                .count(),
+            1
+        );
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|v| v["kind"] == "protected-read-start")
+                .count(),
+            1
+        );
+        sessions.dispose().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM evidence; substitutes MSAL and HTTP"]
+    async fn aborted_pim_read_revokes_cached_availability_and_global_disposal_clears_failure_receipt(
+    ) {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        fixture.control("pim", 10000);
+        let task_worker = worker.clone();
+        let configuration = review.configuration.clone();
+        let task = tokio::spawn(async move { task_worker.pim_plan(&configuration).await });
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while worker
+                .process_evidence()
+                .unwrap()
+                .context
+                .pim_reads_attempted
+                < 1
+            {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert!(task.await.is_err());
+        assert!(
+            !sessions
+                .pim_evidence(&review.binding.requirements_digest)
+                .unwrap()
+                .unwrap()
+                .active
+        );
+        assert!(worker.pim_plan(&review.configuration).await.is_err());
+        sessions.retain_pim_failure(&worker);
+        sessions.invalidate_worker(&worker);
+        assert!(sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .is_some());
+        sessions.dispose().await;
+        assert!(sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .is_none());
+        sessions.retain_pim_failure(&worker);
+        assert!(sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .is_none());
+    }
+
     impl Fixture {
         async fn pim_worker(&self, review: &crate::pim_plan::Review) -> Arc<GraphWorker> {
             self.control("pim", 0);
@@ -856,12 +1331,74 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "offline real PowerShell PIM cancellation; substitutes MSAL and HTTP"]
+    async fn scoped_pim_cancellation_without_evidence_revokes_pending_and_inflight_authentication()
+    {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let sessions = GraphSessions::default();
+        let ticket = sessions.begin(&review.binding).unwrap();
+        assert!(sessions
+            .dispose_pim_with_receipt(&review.binding.requirements_digest)
+            .await
+            .unwrap()
+            .is_none());
+        let worker = fixture.pim_worker(&review).await;
+        assert!(sessions.install(ticket, worker.clone()).await.is_err());
+        assert!(worker.authenticate().await.is_err());
+        assert!(fixture.calls().is_empty());
+        worker.close().await;
+
+        let fixture = Fixture::new();
+        let worker = fixture.pim_worker(&review).await;
+        std::fs::write(
+            fixture.root.path().join("control.json"),
+            json!({
+                "account":"operator@example.test", "mode":"pim", "delayMs":0, "authDelayMs":10000
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        let authenticating = worker.clone();
+        let task = tokio::spawn(async move { authenticating.authenticate().await });
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while !fixture
+                .calls()
+                .iter()
+                .any(|v| v["kind"] == "authenticate-start")
+            {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(sessions
+            .dispose_pim_with_receipt(&review.binding.requirements_digest)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(task.await.unwrap().is_err());
+        assert!(!fixture
+            .calls()
+            .iter()
+            .any(|v| v["kind"] == "connect" || v["kind"] == "protected-read-start"));
+        assert!(sessions
+            .pim_evidence(&review.binding.requirements_digest)
+            .unwrap()
+            .is_none());
+        assert!(worker.probe().await.is_err());
+    }
+
+    #[tokio::test]
     #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
     async fn pinned_pim_planner_returns_real_artifact_from_owned_reads() {
         let fixture = Fixture::new();
         let review = pim_review();
         let worker = fixture.pim_worker(&review).await;
         worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
         let sessions = GraphSessions::default();
         sessions.replace(worker.clone()).await.unwrap();
         let artifact = sessions.pim_plan(&review).await.unwrap();
@@ -870,6 +1407,19 @@ mod tests {
             review.binding.requirements_digest
         );
         assert_eq!(artifact["sourceCommit"], crate::pim_plan::SOURCE);
+        assert_eq!(artifact["executionEvidence"]["processId"], worker.pid);
+        assert_eq!(
+            artifact["executionEvidence"]["context"]["verificationReads"],
+            1
+        );
+        assert_eq!(
+            artifact["executionEvidence"]["context"]["pimReadsAttempted"],
+            7
+        );
+        assert_eq!(
+            artifact["executionEvidence"]["context"]["pimReadsCompleted"],
+            7
+        );
         assert_eq!(
             artifact["plan"]["tiers"]["privileged"]["context"]["action"],
             "create"
@@ -885,7 +1435,7 @@ mod tests {
                 .iter()
                 .filter(|v| v["kind"] == "protected-read-start")
                 .count(),
-            7
+            8
         );
         assert!(calls.iter().all(|v| v["pid"] == worker.pid));
         assert_eq!(calls[0]["scopes"], json!(crate::pim_plan::SCOPES));
@@ -903,6 +1453,7 @@ mod tests {
             crate::pim_plan::DeviceRequirement::CompliantOrHybrid;
         let worker = fixture.pim_worker(&review).await;
         worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
         let plan = worker.pim_plan(&review.configuration).await.unwrap();
         assert_eq!(
             plan["tiers"]["privileged"]["authenticationStrength"]["policyType"],
@@ -929,6 +1480,7 @@ mod tests {
         new.binding.requirements_digest = "a".repeat(64);
         let worker = fixture.pim_worker(&new).await;
         worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
         let sessions = GraphSessions::default();
         sessions.replace(worker).await.unwrap();
         sessions
@@ -948,18 +1500,49 @@ mod tests {
         let review = pim_review();
         let worker = fixture.pim_worker(&review).await;
         worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
         fixture.control("pim", 10000);
         let task_worker = worker.clone();
         let configuration = review.configuration.clone();
         let task = tokio::spawn(async move { task_worker.pim_plan(&configuration).await });
-        fixture.wait_for_read().await;
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while fixture
+                .calls()
+                .iter()
+                .filter(|v| v["kind"] == "protected-read-start")
+                .count()
+                < 2
+                || worker
+                    .process_evidence()
+                    .unwrap()
+                    .context
+                    .pim_reads_attempted
+                    < 1
+            {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            worker
+                .process_evidence()
+                .unwrap()
+                .context
+                .pim_reads_attempted,
+            1
+        );
         worker.cancel();
         assert!(task.await.unwrap().is_err());
         assert!(worker.pim_plan(&review.configuration).await.is_err());
-        assert!(!fixture
-            .calls()
-            .iter()
-            .any(|v| v["kind"] == "protected-read-end"));
+        assert_eq!(
+            fixture
+                .calls()
+                .iter()
+                .filter(|v| v["kind"] == "protected-read-end")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -969,13 +1552,14 @@ mod tests {
         let review = pim_review();
         let worker = fixture.pim_worker(&review).await;
         worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
         let sessions = GraphSessions::default();
         sessions.replace(worker.clone()).await.unwrap();
         let mut changed = pim_review();
         changed.binding.requirements_digest = "a".repeat(64);
         assert!(sessions.pim_plan(&changed).await.is_err());
         assert!(sessions.pim_plan(&review).await.is_err());
-        assert_eq!(fixture.calls().len(), 1);
+        assert_eq!(fixture.calls().len(), 3);
         worker.close().await;
     }
 
@@ -996,8 +1580,9 @@ mod tests {
             responses[INITIAL]["@odata.nextLink"] = json!(next);
             std::fs::write(fixture.root.path().join("responses.json"), responses.to_string()).unwrap();
             worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
             assert!(worker.pim_plan(&review.configuration).await.is_err(), "{next}");
-            assert_eq!(fixture.calls().iter().filter(|v| v["kind"] == "protected-read-start").count(), 1);
+            assert_eq!(fixture.calls().iter().filter(|v| v["kind"] == "protected-read-start").count(), 2);
             assert!(worker.probe().await.is_err());
         }
     }
@@ -1360,6 +1945,7 @@ mod tests {
         let mut worker = fixture.worker().await;
         worker.authenticate().await.unwrap();
         Arc::get_mut(&mut worker).unwrap().created = Instant::now() - SESSION_LIFETIME;
+        assert!(!worker.process_evidence().unwrap().active);
         assert!(worker.probe().await.is_err());
         assert_eq!(fixture.calls().len(), 1);
         let fixture = Fixture::new();
@@ -1371,6 +1957,7 @@ mod tests {
             transport.child.kill().await.unwrap();
             transport.child.wait().await.unwrap();
         }
+        assert!(!worker.process_evidence().unwrap().active);
         assert!(worker.probe().await.is_err());
         assert_eq!(fixture.calls().len(), 1);
     }

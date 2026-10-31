@@ -3,6 +3,8 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.Loader;
 using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Identity.Client;
 
 [assembly: InternalsVisibleTo("AzdGui.GraphAdapter.Tests")]
@@ -26,8 +28,13 @@ public static class Bootstrap
     internal static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
 }
 
-public sealed record SessionOptions(string RequirementsDigest, string Account, string TenantId, string ClientId, string Resource, string[] Scopes, string ProbeUri);
-public sealed record GraphObservation(string Account, string TenantId, string ClientId, string Resource, string[] Scopes, string AuthType = "Delegated", string ContextScope = "Process", string Environment = "Global");
+public sealed record SessionOptions(string RequirementsDigest, string Account, string TenantId, string ClientId, string Resource, string[] Scopes, string ProbeUri, string? Purpose = null);
+public sealed record GraphObservation(string Account, string TenantId, string ClientId, string Resource, string[] Scopes, string AuthType = "Delegated", string ContextScope = "Process", string Environment = "Global", string? PrincipalFingerprint = null, int VerificationReads = 0, int PimReadsAttempted = 0, int PimReadsCompleted = 0);
+
+public sealed class GraphBoundaryException(string code) : InvalidOperationException(code)
+{
+    public string Code { get; } = code;
+}
 
 // This seam replaces public SDK/network dependencies in offline tests, while
 // exercising the same result validation and protected HTTP dispatch as production.
@@ -74,6 +81,34 @@ public sealed class OwnedGraphSession : IDisposable
     private readonly Dictionary<string, string> pimContinuations = new(StringComparer.Ordinal);
     private int pimReads;
     private int pimBytes;
+    private int verificationReads;
+    private int pimReadsAttempted;
+    private int pimReadsCompleted;
+    private string? auditSession;
+    private long auditSequence;
+
+    public void BeginPimPlanAudit(string sessionId, long sequence)
+    {
+        if (options.Purpose != "pimPlan" || disposed || account is null || !Guid.TryParse(sessionId, out _) || sequence < 1)
+            throw new GraphBoundaryException("InvalidPimSession");
+        auditSession = sessionId;
+        auditSequence = sequence;
+    }
+
+    private GraphObservation Observe(string[] grants) => new(options.Account, options.TenantId, options.ClientId, options.Resource, grants,
+        PrincipalFingerprint: principal is null ? null : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(principal))).ToLowerInvariant(),
+        VerificationReads: verificationReads, PimReadsAttempted: pimReadsAttempted, PimReadsCompleted: pimReadsCompleted);
+
+    private void Progress(string kind, string[] grants)
+    {
+        observation = Observe(grants);
+        if (auditSession is null) return;
+        Console.Out.WriteLine("AZD_GRAPH_PROGRESS:" + JsonSerializer.Serialize(new {
+            sequence = auditSequence, sessionId = auditSession, requirementsDigest = options.RequirementsDigest,
+            processId = Environment.ProcessId, kind, evidence = observation
+        }, Bootstrap.JsonOptions));
+        Console.Out.Flush();
+    }
 
     // The planner receives this reader, never the credential or an access token.
     public string TenantId => options.TenantId;
@@ -96,7 +131,7 @@ public sealed class OwnedGraphSession : IDisposable
         {
             var pair = part.Split('=', 2);
             if (pair.Length != 2 || !query.TryAdd(Uri.UnescapeDataString(pair[0]), Uri.UnescapeDataString(pair[1].Replace("+", " "))))
-                throw new InvalidOperationException("Invalid PIM continuation query.");
+                throw new GraphBoundaryException("InvalidPimResponse");
         }
         return query;
     }
@@ -116,13 +151,13 @@ public sealed class OwnedGraphSession : IDisposable
         string? body = null;
         Guard(() =>
         {
-            if (disposed || account is null || ++pimReads > 100)
-                throw new InvalidOperationException("No active bounded PIM reader.");
+            if (options.Purpose != "pimPlan" || disposed || account is null || verificationReads != 1 || ++pimReads > 100)
+                throw new GraphBoundaryException("PimReadBudgetOrSessionRejected");
             string? requiredScope;
             if (!PimReads.TryGetValue(uri, out requiredScope) && !pimContinuations.Remove(uri, out requiredScope))
-                throw new InvalidOperationException("Unregistered PIM read.");
+                throw new GraphBoundaryException("UnregisteredPimRead");
             if (!options.Scopes.Contains(requiredScope, StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException("PIM read scope was not requested.");
+                throw new GraphBoundaryException("GraphDelegatedScopeMissing");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             timeout.CancelAfter(TimeSpan.FromSeconds(30));
             var result = credential.RefreshAsync(RequestedScopes, account, timeout.Token).GetAwaiter().GetResult();
@@ -130,8 +165,10 @@ public sealed class OwnedGraphSession : IDisposable
             using var request = new HttpRequestMessage(HttpMethod.Get, uri);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", result.AccessToken);
             request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            pimReadsAttempted++;
+            Progress("readStarted", grants);
             using var response = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).GetAwaiter().GetResult();
-            response.EnsureSuccessStatusCode();
+            RequireReadSuccess(response);
             using var stream = response.Content.ReadAsStreamAsync(timeout.Token).GetAwaiter().GetResult();
             using var bytes = new MemoryStream();
             var buffer = new byte[8192];
@@ -140,28 +177,29 @@ public sealed class OwnedGraphSession : IDisposable
             {
                 pimBytes += count;
                 if (bytes.Length + count > 4 * 1024 * 1024 || pimBytes > 16 * 1024 * 1024)
-                    throw new InvalidOperationException("PIM response limit exceeded.");
+                    throw new GraphBoundaryException("PimResponseLimitExceeded");
                 bytes.Write(buffer, 0, count);
             }
             using var json = JsonDocument.Parse(bytes.ToArray());
             if (json.RootElement.ValueKind != JsonValueKind.Object ||
                 !json.RootElement.TryGetProperty("value", out var values) || values.ValueKind != JsonValueKind.Array)
-                throw new InvalidOperationException("Invalid PIM collection response.");
+                throw new GraphBoundaryException("InvalidPimResponse");
             if (json.RootElement.TryGetProperty("@odata.nextLink", out var next) && next.ValueKind != JsonValueKind.Null)
             {
-                var link = next.GetString() ?? throw new InvalidOperationException("Invalid PIM continuation.");
+                var link = next.GetString() ?? throw new GraphBoundaryException("InvalidPimResponse");
                 var current = new Uri(uri);
                 if (link.Length > 8192 || !Uri.TryCreate(link, UriKind.Absolute, out var target) ||
                     target.Scheme != "https" || target.Host != "graph.microsoft.com" || target.Port != 443 ||
                     target.UserInfo.Length != 0 || target.Fragment.Length != 0 || target.AbsolutePath != current.AbsolutePath ||
                     link == uri || pimContinuations.ContainsKey(link) || !SameCollectionQuery(current, target))
-                    throw new InvalidOperationException("Unregistered PIM continuation.");
+                    throw new GraphBoundaryException("InvalidPimResponse");
                 // Only the exact continuation returned by this protected response
                 // may be used, for the same collection and permission.
                 pimContinuations.Add(link, requiredScope);
             }
             Validate(result);
-            observation = new(options.Account, options.TenantId, options.ClientId, options.Resource, grants);
+            pimReadsCompleted++;
+            Progress("readCompleted", grants);
             body = json.RootElement.GetRawText();
         });
         return body!;
@@ -182,6 +220,10 @@ public sealed class OwnedGraphSession : IDisposable
 
     private void ValidateOptions()
     {
+        if (options.Purpose is not null && options.Purpose != "pimPlan") throw new GraphBoundaryException("InvalidPimSession");
+        if (options.Purpose == "pimPlan" && (options.ProbeUri != "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=1&$select=id" ||
+            options.Scopes.Any(s => s is not ("AuthenticationContext.Read.All" or "Policy.Read.All" or "RoleManagement.Read.Directory"))))
+            throw new GraphBoundaryException("InvalidPimSession");
         if (!Guid.TryParse(options.ClientId, out var client) || client == Guid.Empty ||
             !Guid.TryParse(options.TenantId, out var tenant) || tenant == Guid.Empty ||
             options.Resource != "https://graph.microsoft.com" || options.Scopes.Length is < 1 or > 64 ||
@@ -199,6 +241,14 @@ public sealed class OwnedGraphSession : IDisposable
         if (!allowed) throw new InvalidOperationException("No registered read covered by the requested scopes.");
     }
 
+    private static void RequireReadSuccess(HttpResponseMessage response)
+    {
+        if (response.IsSuccessStatusCode) return;
+        throw new GraphBoundaryException((int)response.StatusCode switch {
+            401 or 403 => "GraphReadDenied", >= 300 and < 400 => "GraphRedirectRejected", _ => "GraphReadFailed"
+        });
+    }
+
     private string[] RequestedScopes => options.Scopes.Select(scope => options.Resource + "/" + scope).ToArray();
 
     private string[] Validate(AuthenticationResult result)
@@ -211,13 +261,13 @@ public sealed class OwnedGraphSession : IDisposable
             string.IsNullOrEmpty(result.UniqueId) ||
             result.ExpiresOn <= DateTimeOffset.UtcNow.AddSeconds(30) || string.IsNullOrEmpty(result.AccessToken) ||
             !string.Equals(result.TokenType, "Bearer", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("Graph credential identity/client/expiry mismatch.");
+            throw new GraphBoundaryException("GraphIdentityMismatch");
         var grants = result.Scopes.Select(scope => scope.StartsWith(options.Resource + "/", StringComparison.OrdinalIgnoreCase)
             ? scope[(options.Resource.Length + 1)..] : scope).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
         if (grants.Any(scope => scope.Contains('/') || scope.Contains(':')) || options.Scopes.Any(scope => !grants.Contains(scope, StringComparer.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("Actual granted delegated scopes do not cover the request.");
+            throw new GraphBoundaryException("GraphDelegatedScopeMissing");
         if (principal is not null && (principal != result.Account.HomeAccountId!.Identifier + "|" + result.UniqueId || approvedGrants is null || !approvedGrants.SequenceEqual(grants, StringComparer.OrdinalIgnoreCase)))
-            throw new InvalidOperationException("Graph principal or granted scopes changed after approval.");
+            throw new GraphBoundaryException("GraphIdentityOrGrantsChanged");
         return grants;
     }
 
@@ -234,12 +284,13 @@ public sealed class OwnedGraphSession : IDisposable
         approvedGrants = Validate(result);
         account = result.Account;
         principal = result.Account.HomeAccountId.Identifier + "|" + result.UniqueId;
-        observation = new(options.Account, options.TenantId, options.ClientId, options.Resource, approvedGrants);
+        observation = Observe(approvedGrants);
     });
 
     public void Probe() => Guard(() =>
     {
         if (disposed || account is null) throw new InvalidOperationException("No owned authenticated credential.");
+        if (options.Purpose == "pimPlan" && verificationReads != 0) throw new GraphBoundaryException("PimVerificationBudgetExceeded");
         // Silent refresh never falls back to interaction. Validate the actual
         // result (including granted scopes), then send THIS result's token in
         // THIS process. No SDK context/client is reconstructed from shared state.
@@ -248,10 +299,12 @@ public sealed class OwnedGraphSession : IDisposable
         using var request = new HttpRequestMessage(HttpMethod.Get, options.ProbeUri);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", result.AccessToken);
         request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+        verificationReads++;
+        Progress("verificationStarted", grants);
         using var response = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, lifetime.Token).GetAwaiter().GetResult();
-        response.EnsureSuccessStatusCode();
+        RequireReadSuccess(response);
         Validate(result);
-        observation = new(options.Account, options.TenantId, options.ClientId, options.Resource, grants);
+        Progress("verificationCompleted", grants);
     });
 
     // Authentication evidence contains whitelist-only metadata. PIM collection

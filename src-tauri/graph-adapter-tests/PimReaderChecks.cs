@@ -27,6 +27,8 @@ public static class PimReaderChecks
         {
             Check(request.Method == HttpMethod.Get, "Reader attempted a write.");
             Check(request.Headers.Authorization?.Scheme == "Bearer", "Reader omitted its managed authorization.");
+            if (request.RequestUri?.AbsoluteUri == "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=1&$select=id")
+                return Task.FromResult(Json("{\"value\":[]}"));
             return Task.FromResult(respond(++Calls));
         }
     }
@@ -44,10 +46,11 @@ public static class PimReaderChecks
             var options = new SessionOptions("offline-fixture", "operator@example.test",
                 "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222",
                 "https://graph.microsoft.com", scopes ?? ["RoleManagement.Read.Directory", "Policy.Read.All", "AuthenticationContext.Read.All"],
-                "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=1&$select=id");
+                "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=1&$select=id", "pimPlan");
             Http = new Handler(response);
             Session = new OwnedGraphSession(options, new FakeMsalSession(options, control), new HttpClient(Http));
             Session.Authenticate();
+            Session.Probe();
         }
         public void Mode(string mode) => File.WriteAllText(control, JsonSerializer.Serialize(new Control("operator@example.test", mode, 0), Bootstrap.JsonOptions));
         public void Dispose() => Session.Dispose();
@@ -131,6 +134,21 @@ public static class PimReaderChecks
             using var fixture = new Fixture(root, _ => Json("{\"value\":[]}"), ["Policy.Read.All"]);
             Reject(() => fixture.Session.ReadPimJson(Initial));
             Check(fixture.Http.Calls == 0, "Unrequested scope dispatched a read.");
+            checks++;
+        }
+        {
+            using var fixture = new Fixture(root, _ => Json("{\"value\":[]}"));
+            var evidence = JsonSerializer.Deserialize<GraphObservation>(fixture.Session.EvidenceJson(), Bootstrap.JsonOptions)!;
+            Check(evidence.VerificationReads == 1 && evidence.PimReadsAttempted == 0 && evidence.PrincipalFingerprint?.Length == 64, "Verification receipt missing actual process evidence.");
+            Reject(() => fixture.Session.Probe());
+            Check(fixture.Http.Calls == 0, "Repeated verification dispatched a PIM read.");
+            checks++;
+        }
+        {
+            using var fixture = new Fixture(root, _ => Json("{\"value\":[]}"));
+            fixture.Session.ReadPimJson(Initial);
+            var evidence = JsonSerializer.Deserialize<GraphObservation>(fixture.Session.EvidenceJson(), Bootstrap.JsonOptions)!;
+            Check(evidence.PimReadsAttempted == 1 && evidence.PimReadsCompleted == 1 && evidence.VerificationReads == 1, "Read counters did not reflect completed protected dispatch.");
             checks++;
         }
         return checks;

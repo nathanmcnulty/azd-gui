@@ -13,6 +13,30 @@ an unrelated wizard's session. A cancelled/failed credential process is never re
 There is no enforcement action, Azure provisioning, notification configuration,
 emergency-group lookup, session revocation or deployment-state adoption in this flow.
 
+After sign-in, **Verified process evidence** shows the observed account, tenant,
+client, actual returned grant set, a principal fingerprint, worker/session identity
+and read counters. Existing client consent can return more grants than requested;
+the requested permission list and the actual grant set are shown separately. A PIM
+session permits exactly one verification GET and at most 100 PIM GET attempts.
+Trying to probe it again fails before dispatch and revokes the session.
+
+During planning, native code validates metadata-only progress frames from the owned
+worker. The screen polls that cached metadata without making another Graph request.
+Started/completed counters provide evidence for cancelling an in-flight read. They
+describe dispatch attempts and validated completions, not a network packet capture.
+Counters and observed identity also accompany the complete plan JSON. **Copy complete
+plan JSON** copies it only on request; retain tenant results privately.
+An explicit cancellation also offers a separate inactive receipt with the counters
+at the cancellation request. It clears the plan and cannot authorize another read.
+
+Failed reads return fixed diagnostic categories for access denial, missing scopes,
+identity/grant changes, budgets, redirects or planner rejection. Raw SDK exceptions,
+tokens and response bodies are never used as error messages. The last safe failure
+receipt may remain visible as inactive historical metadata; it cannot authorize
+another read. Disposal clears the matching receipt; a terminal failure requires a
+fresh review before another explicit sign-in. Existing template policy/context conflicts remain intentional rejections;
+the GUI does not adopt objects or relax configuration to force qualification.
+
 ## Pinned planner and process boundary
 
 `src-tauri/pim-template/source.json` pins azd-pim commit
