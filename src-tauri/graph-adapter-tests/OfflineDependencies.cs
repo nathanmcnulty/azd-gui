@@ -68,7 +68,7 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
             : control.Mode == "authority" ? new Account(options.Account, selected!.HomeAccountId.Identifier, "login.microsoftonline.us")
             : control.Mode == "principal" ? new Account(options.Account, "different-home-account.11111111-1111-4111-8111-111111111111") : selected!;
         var grants = options.Scopes.ToList();
-        if (control.Mode is "extraScopes" or "initialExtra") grants.Add("Policy.Read.All");
+        if (control.Mode is "extraScopes" or "initialExtra") grants.Add(options.Scopes.Contains("Policy.Read.All") ? "User.Read" : "Policy.Read.All");
         if (control.Mode == "scopes") grants.Clear();
         if (control.Mode == "resource") grants = ["https://graph.microsoft.us/Directory.Read.All"];
         lastToken = "offline-only-token-" + owner + "-" + (++tokenGeneration);
@@ -79,7 +79,7 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
 
     internal async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
     {
-        if (request.Method != HttpMethod.Get || request.RequestUri?.AbsoluteUri != options.ProbeUri ||
+        if (request.RequestUri is null || request.Method != HttpMethod.Get || (Control.Mode != "pim" && request.RequestUri.AbsoluteUri != options.ProbeUri) ||
             request.Headers.Authorization?.Scheme != "Bearer" || request.Headers.Authorization.Parameter != lastToken)
             throw new InvalidOperationException("Protected HTTP request used another credential or resource.");
         var control = Control;
@@ -91,7 +91,13 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
         if (control.Mode == "oversized") Console.WriteLine(new string('X', 70000));
         if (control.Mode == "malformed") Console.WriteLine("AZD_GRAPH_RPC:{");
         Log(new { kind = "protected-read-end", pid = Environment.ProcessId, owner });
-        return new HttpResponseMessage(control.Mode == "denied" ? HttpStatusCode.Forbidden : control.Mode == "redirect" ? HttpStatusCode.Found : HttpStatusCode.OK);
+        var response = new HttpResponseMessage(control.Mode == "denied" ? HttpStatusCode.Forbidden : control.Mode == "redirect" ? HttpStatusCode.Found : HttpStatusCode.OK);
+        if (control.Mode == "pim")
+        {
+            var fixtures = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(Path.Combine(Path.GetDirectoryName(controlFile)!, "responses.json")))!;
+            response.Content = new StringContent(fixtures[request.RequestUri!.OriginalString].GetRawText());
+        }
+        return response;
     }
 }
 

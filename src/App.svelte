@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import AppSidebar from "./components/AppSidebar.svelte";
+  import PimPlan from "./components/PimPlan.svelte";
   import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
   import ConfigurationFieldControl from "./components/ConfigurationFieldControl.svelte";
@@ -115,7 +116,7 @@
 
   import { acknowledgementControllerFields, acknowledgementFields, acknowledgementIssues, acknowledgementMatches, assertAcknowledgements, canAcknowledge, changeAcknowledgementValues, withAcknowledgementControllerValues, withoutAcknowledgements } from "./lib/acknowledgements";
 
-  type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
+  type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings" | "pimPlan";
   type IconName = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
   type ProjectDeploymentResult = {
     event: OperationEvent;
@@ -3054,6 +3055,7 @@
             <div class="hero-actions">
               <button class="primary large" on:click={() => navigate("catalog")}><Icon name="catalog" size={17} /> Browse catalog</button>
               <button class="secondary large" on:click={() => openLocalProject(false)}><Icon name="folder" size={17} /> Open project</button>
+              <button class="secondary large" on:click={() => navigate("pimPlan")}>Plan PIM solution</button>
             </div>
           </div>
           <div class="readiness-card">
@@ -3077,6 +3079,8 @@
           </div>
         </div>
       </section>
+    {:else if activeNav === "pimPlan"}
+      <PimPlan />
     {:else if activeNav === "catalog"}
       <section class="page">
         <div class="page-header">

@@ -16,6 +16,7 @@ mod manifest;
 mod models;
 mod permissions;
 mod persistence;
+mod pim_plan;
 mod redaction;
 mod requirements;
 mod security_groups;
@@ -1162,6 +1163,80 @@ async fn dispose_graph_session(state: State<'_, AppState>) -> AppResult<()> {
     state.execution_approvals.clear()?;
     state.graph_sessions.dispose().await;
     Ok(())
+}
+
+#[tauri::command]
+fn review_pim_plan(input: pim_plan::Input) -> AppResult<pim_plan::Review> {
+    input.review()
+}
+
+#[tauri::command]
+async fn cancel_pim_plan(state: State<'_, AppState>, expected_digest: String) -> AppResult<()> {
+    state
+        .graph_sessions
+        .dispose_matching(&expected_digest)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn request_pim_plan_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    input: pim_plan::Input,
+    expected_digest: String,
+) -> AppResult<graph_session::GraphBinding> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let review = input.review()?;
+    review.expect_digest(&expected_digest)?;
+    let binding = review.binding;
+    let ticket = state.graph_sessions.begin(&binding)?;
+    state.execution_approvals.clear()?;
+    let approved = app.dialog().message(format!(
+        "Approve sign-in for the pinned azd-pim read-only planner.\n\nAccount: {}\nTenant: {}\nClient: {}\nTemplate commit: {}\nRequested read permissions: {}\nVerification GET after sign-in: {}\nReview digest: {}\n\nThe planner can propose policy changes but cannot apply them. Stop if the browser asks for new consent or unexpected permissions.",
+        binding.account, binding.tenant_id, binding.client_id, pim_plan::SOURCE, binding.scopes.join(", "), binding.probe_uri, binding.requirements_digest))
+        .title("Confirm PIM planner sign-in")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Sign in to plan".into(), "Cancel".into())).blocking_show();
+    if !approved {
+        state.graph_sessions.invalidate_ticket(ticket);
+        return Err(AppError::Invalid("PIM planner sign-in cancelled.".into()));
+    }
+    let guard = match state.operations.begin_preparation() {
+        Ok(guard) => guard,
+        Err(error) => {
+            state.graph_sessions.invalidate_ticket(ticket);
+            return Err(error);
+        }
+    };
+    let worker = graph_session::GraphWorker::spawn(binding.clone()).await?;
+    state.graph_sessions.install(ticket, worker.clone()).await?;
+    let result = async {
+        state.graph_sessions.ensure_current(ticket, &worker)?;
+        worker.authenticate().await?;
+        state.graph_sessions.probe(&binding).await?;
+        state.graph_sessions.ensure_current(ticket, &worker)?;
+        Ok(binding)
+    }
+    .await;
+    drop(guard);
+    if result.is_err() {
+        state.graph_sessions.invalidate_worker(&worker);
+        worker.close().await;
+    }
+    result
+}
+
+#[tauri::command]
+async fn run_pim_plan(
+    state: State<'_, AppState>,
+    input: pim_plan::Input,
+    expected_digest: String,
+) -> AppResult<serde_json::Value> {
+    let review = input.review()?;
+    review.expect_digest(&expected_digest)?;
+    let _guard = state.operations.begin_preparation()?;
+    state.graph_sessions.pim_plan(&review).await
 }
 
 #[cfg(test)]
@@ -2429,6 +2504,10 @@ pub fn run() {
             get_effective_requirements,
             request_graph_session,
             dispose_graph_session,
+            review_pim_plan,
+            cancel_pim_plan,
+            request_pim_plan_session,
+            run_pim_plan,
             check_requirement_prerequisites,
             check_requirement_permissions,
             prepare_deployment,

@@ -102,7 +102,7 @@ impl GraphBinding {
         Ok(binding)
     }
 
-    fn validate(&self) -> AppResult<()> {
+    pub(crate) fn validate(&self) -> AppResult<()> {
         if self.requirements_digest.len() != 64
             || !self
                 .requirements_digest
@@ -159,6 +159,8 @@ struct Reply {
     action: String,
     ok: bool,
     evidence: Option<ContextEvidence>,
+    #[serde(default)]
+    pim_plan: Option<serde_json::Value>,
 }
 
 struct Transport {
@@ -199,6 +201,18 @@ impl GraphWorker {
         )?;
         let script = files.path().join("graph-worker.ps1");
         std::fs::write(&script, include_str!("graph_worker.ps1"))?;
+        for (name, content) in [
+            (
+                "AzdPim.Common.psm1",
+                include_str!("../pim-template/AzdPim.Common.psm1"),
+            ),
+            (
+                "AzdPim.Graph.psm1",
+                include_str!("../pim-template/AzdPim.Graph.psm1"),
+            ),
+        ] {
+            std::fs::write(files.path().join(name), content)?;
+        }
         let executable = resolve_system_executable("pwsh")?;
         let mut command = Command::new(executable);
         command
@@ -281,6 +295,32 @@ impl GraphWorker {
         allow_interactive: bool,
         timeout: Duration,
     ) -> AppResult<Reply> {
+        self.request_parameters(action, allow_interactive, timeout, None)
+            .await
+    }
+
+    pub async fn pim_plan(
+        &self,
+        configuration: &crate::pim_plan::Configuration,
+    ) -> AppResult<serde_json::Value> {
+        self.request_parameters(
+            "pimPlan",
+            false,
+            Duration::from_secs(180),
+            Some(serde_json::to_value(configuration)?),
+        )
+        .await?
+        .pim_plan
+        .ok_or_else(|| invalid("PIM plan artifact absent."))
+    }
+
+    async fn request_parameters(
+        &self,
+        action: &str,
+        allow_interactive: bool,
+        timeout: Duration,
+        parameters: Option<serde_json::Value>,
+    ) -> AppResult<Reply> {
         let mut guard = self.transport.lock().await;
         let mut transport = guard
             .take()
@@ -292,19 +332,24 @@ impl GraphWorker {
         transport.sequence += 1;
         let sequence = transport.sequence;
         let request = serde_json::json!({"action":action,"sequence":sequence,"sessionId":self.session_id,
-            "requirementsDigest":self.binding.requirements_digest,"binding":self.binding,"allowInteractive":allow_interactive});
+            "requirementsDigest":self.binding.requirements_digest,"binding":self.binding,"allowInteractive":allow_interactive,"parameters":parameters});
         let mut bytes = serde_json::to_vec(&request)?;
         bytes.push(b'\n');
         let io = async {
+            let limit = if action == "pimPlan" {
+                16 * 1024 * 1024
+            } else {
+                LIMIT
+            };
             transport.input.write_all(&bytes).await?;
             transport.input.flush().await?;
             for _ in 0..64 {
                 let mut line = Vec::new();
                 let count = (&mut transport.output)
-                    .take(LIMIT)
+                    .take(limit)
                     .read_until(b'\n', &mut line)
                     .await?;
-                if count == 0 || count as u64 >= LIMIT {
+                if count == 0 || count as u64 >= limit {
                     return Err(invalid("Graph worker closed or returned oversized output."));
                 }
                 if let Some(data) = line.strip_prefix(b"AZD_GRAPH_RPC:") {
@@ -433,6 +478,63 @@ pub struct GraphSessions {
 }
 
 impl GraphSessions {
+    pub async fn dispose_matching(&self, digest: &str) {
+        let worker = self.current.lock().ok().and_then(|mut registry| {
+            if registry.requirements_digest.as_deref() == Some(digest) {
+                registry.revoke()
+            } else {
+                None
+            }
+        });
+        if let Some(worker) = worker {
+            worker.close().await;
+        }
+    }
+    pub async fn pim_plan(&self, review: &crate::pim_plan::Review) -> AppResult<serde_json::Value> {
+        let (worker, ticket) = {
+            let mut registry = self
+                .current
+                .lock()
+                .map_err(|_| invalid("Graph sessions unavailable."))?;
+            if registry
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.binding != review.binding)
+            {
+                registry.revoke();
+            }
+            let worker = registry
+                .worker
+                .clone()
+                .filter(|w| w.binding == review.binding)
+                .ok_or_else(|| {
+                    invalid("Approve an owned session for this exact PIM configuration first.")
+                })?;
+            (worker, registry.generation)
+        };
+        let result = worker.pim_plan(&review.configuration).await;
+        if result.is_err() {
+            self.invalidate_worker(&worker);
+        }
+        let plan = result?;
+        self.ensure_current(ticket, &worker)?;
+        if plan
+            .get("tenantId")
+            .and_then(|v| v.as_str())
+            .map_or(true, |tenant| {
+                !tenant.eq_ignore_ascii_case(&review.binding.tenant_id)
+            })
+            || plan.get("mode").and_then(|v| v.as_str()) != Some("plan")
+        {
+            self.invalidate_worker(&worker);
+            return Err(invalid("PIM plan identity or mode mismatch."));
+        }
+        Ok(
+            serde_json::json!({ "schemaVersion": "1.0", "sourceCommit": review.source_commit,
+            "requirementsDigest": review.binding.requirements_digest, "identity": review.binding,
+            "configuration": review.configuration, "plan": plan }),
+        )
+    }
     // Reserve intent BEFORE a dialog or asynchronous process startup. A cancel
     // with no installed worker still revokes this pending authentication ticket.
     pub fn begin(&self, binding: &GraphBinding) -> AppResult<Uuid> {
@@ -723,6 +825,181 @@ mod tests {
         let mut invalid_binding = expected;
         invalid_binding.scopes = vec![".default".into()];
         assert!(invalid_binding.validate().is_err());
+    }
+
+    fn pim_review() -> crate::pim_plan::Review {
+        serde_json::from_value::<crate::pim_plan::Input>(json!({
+            "reviewId":"99999999-9999-4999-8999-999999999999", "account":"operator@example.test", "tenantId":"11111111-1111-4111-8111-111111111111",
+            "clientId":"22222222-2222-4222-8222-222222222222", "configuration": {
+                "privilegedRoleIds":["33333333-3333-4333-8333-333333333333"], "lessPrivilegedRoleIds":[],
+                "privilegedAuthenticationProfile":"mfa", "lessPrivilegedAuthenticationProfile":"mfa",
+                "privilegedDeviceRequirement":"none", "lessPrivilegedDeviceRequirement":"none"
+            }
+        })).unwrap().review().unwrap()
+    }
+
+    impl Fixture {
+        async fn pim_worker(&self, review: &crate::pim_plan::Review) -> Arc<GraphWorker> {
+            self.control("pim", 0);
+            std::fs::write(
+                self.root.path().join("responses.json"),
+                include_str!("../graph-adapter-tests/pim-responses.json"),
+            )
+            .unwrap();
+            GraphWorker::spawn_with_module(
+                review.binding.clone(),
+                Some(&self.root.path().join("Fake.Graph.psm1")),
+            )
+            .await
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
+    async fn pinned_pim_planner_returns_real_artifact_from_owned_reads() {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        let artifact = sessions.pim_plan(&review).await.unwrap();
+        assert_eq!(
+            artifact["requirementsDigest"],
+            review.binding.requirements_digest
+        );
+        assert_eq!(artifact["sourceCommit"], crate::pim_plan::SOURCE);
+        assert_eq!(
+            artifact["plan"]["tiers"]["privileged"]["context"]["action"],
+            "create"
+        );
+        assert_eq!(
+            artifact["plan"]["tiers"]["privileged"]["roles"][0]["displayName"],
+            "Offline privileged role"
+        );
+        assert!(!artifact.to_string().contains("offline-only-token"));
+        let calls = fixture.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|v| v["kind"] == "protected-read-start")
+                .count(),
+            7
+        );
+        assert!(calls.iter().all(|v| v["pid"] == worker.pid));
+        assert_eq!(calls[0]["scopes"], json!(crate::pim_plan::SCOPES));
+        sessions.dispose().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
+    async fn phishing_resistant_plan_reuses_strength_reader_without_extra_permissions() {
+        let fixture = Fixture::new();
+        let mut review = pim_review();
+        review.configuration.privileged_authentication_profile =
+            crate::pim_plan::AuthenticationProfile::PhishingResistant;
+        review.configuration.privileged_device_requirement =
+            crate::pim_plan::DeviceRequirement::CompliantOrHybrid;
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        let plan = worker.pim_plan(&review.configuration).await.unwrap();
+        assert_eq!(
+            plan["tiers"]["privileged"]["authenticationStrength"]["policyType"],
+            "builtIn"
+        );
+        assert_eq!(
+            plan["tiers"]["privileged"]["conditionalAccessPolicies"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(fixture.calls().iter().any(|v| v["uri"] == "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies?$top=100"));
+        assert_eq!(fixture.calls()[0]["scopes"], json!(crate::pim_plan::SCOPES));
+        worker.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
+    async fn late_pim_disposal_cannot_revoke_a_new_review_session() {
+        let fixture = Fixture::new();
+        let old = pim_review();
+        let mut new = pim_review();
+        new.binding.requirements_digest = "a".repeat(64);
+        let worker = fixture.pim_worker(&new).await;
+        worker.authenticate().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker).await.unwrap();
+        sessions
+            .dispose_matching(&old.binding.requirements_digest)
+            .await;
+        assert!(sessions.pim_plan(&new).await.is_ok());
+        sessions
+            .dispose_matching(&new.binding.requirements_digest)
+            .await;
+        assert!(sessions.pim_plan(&new).await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
+    async fn cancelling_pim_plan_discards_late_artifact_and_revokes_worker() {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        fixture.control("pim", 10000);
+        let task_worker = worker.clone();
+        let configuration = review.configuration.clone();
+        let task = tokio::spawn(async move { task_worker.pim_plan(&configuration).await });
+        fixture.wait_for_read().await;
+        worker.cancel();
+        assert!(task.await.unwrap().is_err());
+        assert!(worker.pim_plan(&review.configuration).await.is_err());
+        assert!(!fixture
+            .calls()
+            .iter()
+            .any(|v| v["kind"] == "protected-read-end"));
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
+    async fn changed_pim_configuration_revokes_existing_session_before_dispatch() {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        let mut changed = pim_review();
+        changed.binding.requirements_digest = "a".repeat(64);
+        assert!(sessions.pim_plan(&changed).await.is_err());
+        assert!(sessions.pim_plan(&review).await.is_err());
+        assert_eq!(fixture.calls().len(), 1);
+        worker.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
+    async fn pim_pagination_cannot_change_host_collection_or_query_contract() {
+        const INITIAL: &str = "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true";
+        for next in [
+            "https://example.invalid/beta/roleManagement/directory/roleDefinitions?$skiptoken=x",
+            "https://graph.microsoft.com/v1.0/users?$skiptoken=x",
+            "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20false&$skiptoken=x",
+            "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true&$expand=roleAssignments&$skiptoken=x",
+        ] {
+            let fixture = Fixture::new();
+            let review = pim_review();
+            let worker = fixture.pim_worker(&review).await;
+            let mut responses: Value = serde_json::from_str(include_str!("../graph-adapter-tests/pim-responses.json")).unwrap();
+            responses[INITIAL]["@odata.nextLink"] = json!(next);
+            std::fs::write(fixture.root.path().join("responses.json"), responses.to_string()).unwrap();
+            worker.authenticate().await.unwrap();
+            assert!(worker.pim_plan(&review.configuration).await.is_err(), "{next}");
+            assert_eq!(fixture.calls().iter().filter(|v| v["kind"] == "protected-read-start").count(), 1);
+            assert!(worker.probe().await.is_err());
+        }
     }
 
     #[tokio::test]

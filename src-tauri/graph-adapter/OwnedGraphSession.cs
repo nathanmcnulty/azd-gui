@@ -71,6 +71,101 @@ public sealed class OwnedGraphSession : IDisposable
     private string[]? approvedGrants;
     private GraphObservation? observation;
     private bool disposed;
+    private readonly Dictionary<string, string> pimContinuations = new(StringComparer.Ordinal);
+    private int pimReads;
+    private int pimBytes;
+
+    // The planner receives this reader, never the credential or an access token.
+    public string TenantId => options.TenantId;
+
+    private static readonly Dictionary<string, string> PimReads = new(StringComparer.Ordinal)
+    {
+        ["https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true"] = "RoleManagement.Read.Directory",
+        ["https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20false"] = "RoleManagement.Read.Directory",
+        ["https://graph.microsoft.com/v1.0/policies/roleManagementPolicyAssignments?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$top=999"] = "RoleManagement.Read.Directory",
+        ["https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999"] = "RoleManagement.Read.Directory",
+        ["https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences"] = "AuthenticationContext.Read.All",
+        ["https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999"] = "Policy.Read.All",
+        ["https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies?$top=100"] = "Policy.Read.All"
+    };
+
+    private static Dictionary<string, string> Query(Uri uri)
+    {
+        var query = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var part in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2);
+            if (pair.Length != 2 || !query.TryAdd(Uri.UnescapeDataString(pair[0]), Uri.UnescapeDataString(pair[1].Replace("+", " "))))
+                throw new InvalidOperationException("Invalid PIM continuation query.");
+        }
+        return query;
+    }
+
+    private static bool SameCollectionQuery(Uri current, Uri next)
+    {
+        var original = Query(current);
+        var continuation = Query(next);
+        static bool Paging(string key) => key is "$skiptoken" or "$skip";
+        return continuation.Keys.Any(Paging) &&
+            original.Where(p => !Paging(p.Key)).All(p => continuation.TryGetValue(p.Key, out var value) && value == p.Value) &&
+            continuation.All(p => Paging(p.Key) || original.TryGetValue(p.Key, out var value) && value == p.Value);
+    }
+
+    public string ReadPimJson(string uri)
+    {
+        string? body = null;
+        Guard(() =>
+        {
+            if (disposed || account is null || ++pimReads > 100)
+                throw new InvalidOperationException("No active bounded PIM reader.");
+            string? requiredScope;
+            if (!PimReads.TryGetValue(uri, out requiredScope) && !pimContinuations.Remove(uri, out requiredScope))
+                throw new InvalidOperationException("Unregistered PIM read.");
+            if (!options.Scopes.Contains(requiredScope, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("PIM read scope was not requested.");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(30));
+            var result = credential.RefreshAsync(RequestedScopes, account, timeout.Token).GetAwaiter().GetResult();
+            var grants = Validate(result);
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", result.AccessToken);
+            request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            using var response = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).GetAwaiter().GetResult();
+            response.EnsureSuccessStatusCode();
+            using var stream = response.Content.ReadAsStreamAsync(timeout.Token).GetAwaiter().GetResult();
+            using var bytes = new MemoryStream();
+            var buffer = new byte[8192];
+            int count;
+            while ((count = stream.ReadAsync(buffer, timeout.Token).AsTask().GetAwaiter().GetResult()) != 0)
+            {
+                pimBytes += count;
+                if (bytes.Length + count > 4 * 1024 * 1024 || pimBytes > 16 * 1024 * 1024)
+                    throw new InvalidOperationException("PIM response limit exceeded.");
+                bytes.Write(buffer, 0, count);
+            }
+            using var json = JsonDocument.Parse(bytes.ToArray());
+            if (json.RootElement.ValueKind != JsonValueKind.Object ||
+                !json.RootElement.TryGetProperty("value", out var values) || values.ValueKind != JsonValueKind.Array)
+                throw new InvalidOperationException("Invalid PIM collection response.");
+            if (json.RootElement.TryGetProperty("@odata.nextLink", out var next) && next.ValueKind != JsonValueKind.Null)
+            {
+                var link = next.GetString() ?? throw new InvalidOperationException("Invalid PIM continuation.");
+                var current = new Uri(uri);
+                if (link.Length > 8192 || !Uri.TryCreate(link, UriKind.Absolute, out var target) ||
+                    target.Scheme != "https" || target.Host != "graph.microsoft.com" || target.Port != 443 ||
+                    target.UserInfo.Length != 0 || target.Fragment.Length != 0 || target.AbsolutePath != current.AbsolutePath ||
+                    link == uri || pimContinuations.ContainsKey(link) || !SameCollectionQuery(current, target))
+                    throw new InvalidOperationException("Unregistered PIM continuation.");
+                // Only the exact continuation returned by this protected response
+                // may be used, for the same collection and permission.
+                pimContinuations.Add(link, requiredScope);
+            }
+            Validate(result);
+            observation = new(options.Account, options.TenantId, options.ClientId, options.Resource, grants);
+            body = json.RootElement.GetRawText();
+        });
+        return body!;
+    }
 
     internal OwnedGraphSession(SessionOptions options) : this(options, new MsalSession(options), new HttpClient(new SocketsHttpHandler
     {
@@ -159,7 +254,8 @@ public sealed class OwnedGraphSession : IDisposable
         observation = new(options.Account, options.TenantId, options.ClientId, options.Resource, grants);
     });
 
-    // Whitelist-only metadata is the only managed output available to PowerShell.
+    // Authentication evidence contains whitelist-only metadata. PIM collection
+    // JSON stays inside the worker until transformed by the pinned planner.
     public string EvidenceJson() => JsonSerializer.Serialize(observation ?? throw new InvalidOperationException("No evidence."), Bootstrap.JsonOptions);
 
     public void Dispose()
@@ -168,6 +264,7 @@ public sealed class OwnedGraphSession : IDisposable
         disposed = true;
         lifetime.Cancel(); http.Dispose(); lifetime.Dispose();
         account = null; principal = null; approvedGrants = null; observation = null;
+        pimContinuations.Clear();
         // The owning process exits next, disposing its solely in-memory SDK cache.
     }
 }

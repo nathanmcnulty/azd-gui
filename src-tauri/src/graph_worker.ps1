@@ -13,6 +13,7 @@ try {
     Import-Module $AdapterModule -ErrorAction Stop
     while ($null -ne ($line = [Console]::ReadLine())) {
         $request = $null
+        $plan = $null
         try {
             if ($line.Length -gt 65536) { throw 'Oversized request.' }
             $request = $line | ConvertFrom-Json -Depth 16
@@ -35,11 +36,30 @@ try {
                 if (-not $connected) { throw 'No owned authenticated session.' }
                 $owned.Probe()
             }
+            elseif ($request.action -eq 'pimPlan') {
+                if (-not $connected) { throw 'No owned authenticated session.' }
+                $requiredScopes = @('AuthenticationContext.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory')
+                if ((($binding.scopes | Sort-Object) -join ',') -cne ($requiredScopes -join ',')) { throw 'PIM read-only scope contract mismatch.' }
+                # These modules are embedded from the pinned public template by
+                # the native host. No renderer-selected script or hook is run.
+                Import-Module (Join-Path $PSScriptRoot 'AzdPim.Common.psm1') -Force
+                Import-Module (Join-Path $PSScriptRoot 'AzdPim.Graph.psm1') -Force
+                Get-ChildItem Env:AZD_PIM_* | Remove-Item
+                $configuration = Get-AzdPimConfiguration
+                foreach ($property in $request.parameters.PSObject.Properties) {
+                    if ($property.Name -notin @('privilegedRoleIds', 'lessPrivilegedRoleIds', 'privilegedAuthenticationProfile', 'lessPrivilegedAuthenticationProfile', 'privilegedDeviceRequirement', 'lessPrivilegedDeviceRequirement')) { throw 'Unsupported PIM configuration.' }
+                    $configuration.($property.Name) = $property.Value
+                }
+                $plan = New-AzdPimReadPlan -Configuration $configuration -ReadContext $owned
+                $planJson = $plan | ConvertTo-Json -Depth 100 -Compress
+                if ([Text.Encoding]::UTF8.GetByteCount($planJson) -gt 8MB) { throw 'PIM plan artifact exceeds limit.' }
+            }
             elseif ($request.action -eq 'dispose') { break }
             else { throw 'Unsupported Graph operation.' }
             $evidence = if ($connected) { $owned.EvidenceJson() | ConvertFrom-Json -Depth 12 } else { $null }
             $reply = [ordered]@{ sequence=$sequence; sessionId=$session; requirementsDigest=$binding.requirementsDigest; processId=$PID; action=[string]$request.action; ok=$true; evidence=$evidence }
-            [Console]::Out.WriteLine('AZD_GRAPH_RPC:' + ($reply | ConvertTo-Json -Depth 12 -Compress))
+            if ($null -ne $plan) { $reply.pimPlan = $plan }
+            [Console]::Out.WriteLine('AZD_GRAPH_RPC:' + ($reply | ConvertTo-Json -Depth 100 -Compress))
             [Console]::Out.Flush()
         }
         catch {

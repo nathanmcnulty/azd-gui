@@ -1,0 +1,65 @@
+{
+  "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences": {
+    "value": []
+  },
+  "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true": {
+    "@odata.nextLink": "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true&$skiptoken=offline-fixture",
+    "value": []
+  },
+  "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20false": {
+    "value": []
+  },
+  "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true&$skiptoken=offline-fixture": {
+    "value": [
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "isPrivileged": true,
+        "displayName": "Offline privileged role",
+        "description": "",
+        "isEnabled": true,
+        "isBuiltIn": true
+      }
+    ]
+  },
+  "https://graph.microsoft.com/v1.0/policies/roleManagementPolicyAssignments?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$top=999": {
+    "value": [
+      {
+        "roleDefinitionId": "33333333-3333-4333-8333-333333333333",
+        "policyId": "fixture-policy"
+      }
+    ]
+  },
+  "https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999": {
+    "value": []
+  },
+  "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999": {
+    "value": [
+      {
+        "rules": [
+          {
+            "id": "AuthenticationContext_EndUser_Assignment",
+            "claimValue": "",
+            "isEnabled": false
+          },
+          {
+            "enabledRules": [
+              "MultiFactorAuthentication",
+              "Justification"
+            ],
+            "id": "Enablement_EndUser_Assignment"
+          }
+        ],
+        "id": "fixture-policy"
+      }
+    ]
+  },
+  "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies?$top=100": {
+    "value": [
+      {
+        "id": "00000000-0000-0000-0000-000000000004",
+        "policyType": "builtIn",
+        "displayName": "Phishing-resistant MFA"
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/nathanmcnulty/azd-pim",
+  "commit": "61343388256a2f1cd520f2a61f345b54859e9634",
+  "files": {
+    "AzdPim.Common.psm1": {
+      "source": "scripts/AzdPim.Common.psm1",
+      "sha256": "63cccca5fe098586308edc31fba405da492ebcbfd011cc39e87cbacfe2ddd806"
+    },
+    "AzdPim.Graph.psm1": {
+      "source": "scripts/AzdPim.Graph.psm1",
+      "sha256": "11cef12c636a88d270d18041330eb1e14471aa9ee6faed036f3c145dc38d9409"
+    },
+    "LICENSE": {
+      "source": "LICENSE",
+      "sha256": "6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e"
+    }
+  }
+}
