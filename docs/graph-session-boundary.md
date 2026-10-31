@@ -22,6 +22,12 @@ client flow. No broker, device-code fallback, shared cache registration or cache
 serialization is installed. The adapter does not call `Connect-MgGraph`,
 `Get-MgContext` or `Invoke-MgGraphRequest`, or read/write `mg.authrecord.json`.
 
+The explicit expected account is sent as the login hint. `Prompt.NoPrompt` lets
+the identity service use that hint and existing browser cookies instead of MSAL's
+default forced account picker. This can avoid another account selection; it does
+not guarantee automatic sign-in or suppress required MFA, consent or policy UI.
+The native approval and exact result validation still apply before any read.
+
 Initial authentication validates the actual MSAL result's account, home-account
 identity, tenant-local user identity, tenant, public authority, token type, expiry,
 client configuration and actual delegated grant set. Every probe forces a silent

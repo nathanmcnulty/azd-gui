@@ -52,7 +52,10 @@ internal sealed class MsalSession : IMsalSession
     }
     public string ClientId => application.AppConfig.ClientId;
     public Task<AuthenticationResult> AuthenticateAsync(string[] scopes, string account, CancellationToken cancellation) =>
-        application.AcquireTokenInteractive(scopes).WithLoginHint(account).WithUseEmbeddedWebView(false).ExecuteAsync(cancellation);
+        // MSAL defaults to SelectAccount, which overrides the expected account's
+        // browser SSO experience. Keep the hint and let the identity service use
+        // its existing session; the returned identity is still checked exactly.
+        application.AcquireTokenInteractive(scopes).WithLoginHint(account).WithPrompt(Prompt.NoPrompt).WithUseEmbeddedWebView(false).ExecuteAsync(cancellation);
     public Task<AuthenticationResult> RefreshAsync(string[] scopes, IAccount account, CancellationToken cancellation) =>
         application.AcquireTokenSilent(scopes, account).WithForceRefresh(true).ExecuteAsync(cancellation);
 }
