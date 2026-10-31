@@ -2,8 +2,10 @@
 
 Implementation follow-up to the 12 September 2026 review. Local development checks, signed-package verification, and live CLI/template evidence are tracked separately from full Windows GUI acceptance.
 
-Use [EXECUTION-PLAN.md](EXECUTION-PLAN.md) for ordered task packets, model assignments,
-acceptance checks, and bounded handoffs. This roadmap retains the historical context.
+Use the [30 October milestone checkpoint](EXECUTION-CONTINUATION-20261030.md) for
+current work ordering and the next PR-sized outcome. [EXECUTION-PLAN.md](EXECUTION-PLAN.md)
+retains the original task packets and historical baseline. This roadmap retains
+the historical context.
 
 The [20 September acceptance follow-up](windows-acceptance-20260920.md) records the named starter, native draft fixes, historical installer failure, and remaining authentication/upgrade gates.
 
