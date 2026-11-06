@@ -481,7 +481,7 @@ impl GraphWorker {
                 Some("GraphIdentityMismatch" | "GraphIdentityOrGrantsChanged") => "Graph identity or delegated grants did not match the approved session.",
                 Some("PimVerificationBudgetExceeded" | "PimReadBudgetOrSessionRejected" | "PimResponseLimitExceeded") => "PIM read budget or response limit rejected the operation.",
                 Some("GraphRedirectRejected" | "GraphReadFailed") => "The protected Graph read failed or attempted a redirect; no retry was made.",
-                Some("PimPlannerRejectedConfiguration") => "PIM planner rejected the configuration or current tenant policy state. Review conflicts before changing any settings.",
+                Some("PimPlannerRejectedConfiguration") => "PIM planner could not build a plan from the selected configuration and returned policy data. No plan was accepted; the session was discarded.",
                 Some("PimReadFailed") => "PIM read failed validation or exceeded its time limit; the session was discarded.",
                 Some("GraphAuthenticationFailed") => "Graph sign-in failed. Stop on consent, unexpected identity or an alternate authentication flow.",
                 Some("GraphInteractionRequired" | "GraphTokenRefreshFailed") => "Silent Graph refresh could not complete. No interactive fallback was attempted; review the account before another approved sign-in.",

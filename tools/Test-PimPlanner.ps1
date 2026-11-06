@@ -44,7 +44,11 @@ $responses = @{
         @{ id = 'Enablement_EndUser_Assignment'; enabledRules = @('MultiFactorAuthentication', 'Justification') }
     ) }) }
     'https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences' = @{ value = @() }
-    'https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999' = @{ value = @() }
+    # Graph omits optional authentication-context references on ordinary policies.
+    # Exercise the real parser/reader/planner path against that shape as well.
+    'https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999' = @{ value = @(
+        @{ id = 'ordinary-policy'; displayName = 'Unrelated policy'; conditions = @{ applications = @{ includeApplications = @('All'); excludeApplications = @() } } }
+    ) }
 }
 $responses | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $fixtures 'responses.json')
 $saved = @{}
