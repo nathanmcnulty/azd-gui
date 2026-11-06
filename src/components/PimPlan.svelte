@@ -11,6 +11,7 @@
   let lessPrivilegedProfile: PimPlanConfiguration['lessPrivilegedAuthenticationProfile'] = 'mfa';
   let privilegedDevice: PimPlanConfiguration['privilegedDeviceRequirement'] = 'none';
   let lessPrivilegedDevice: PimPlanConfiguration['lessPrivilegedDeviceRequirement'] = 'none';
+  let previewExistingObjects = false;
   let review: PimPlanReview | null = null;
   let reviewedInput: PimPlanInput | null = null;
   let artifact: PimPlanArtifact | null = null;
@@ -88,7 +89,8 @@
     return { reviewId: crypto.randomUUID(), account, tenantId, clientId, configuration: {
       privilegedRoleIds: ids(privilegedIds), lessPrivilegedRoleIds: ids(lessPrivilegedIds),
       privilegedAuthenticationProfile: privilegedProfile, lessPrivilegedAuthenticationProfile: lessPrivilegedProfile,
-      privilegedDeviceRequirement: privilegedDevice, lessPrivilegedDeviceRequirement: lessPrivilegedDevice
+      privilegedDeviceRequirement: privilegedDevice, lessPrivilegedDeviceRequirement: lessPrivilegedDevice,
+      previewExistingObjects
     } };
   }
   async function prepare() {
@@ -145,6 +147,13 @@
       if (result.requirementsDigest !== selected.binding.requirementsDigest || result.sourceCommit !== selected.sourceCommit || result.plan.mode !== 'plan' || !result.executionEvidence.active) {
         throw new Error('The returned plan does not match this review. Review the configuration again.');
       }
+      const preview = selected.configuration.previewExistingObjects;
+      if (result.previewExistingObjects !== preview || result.configuration.previewExistingObjects !== preview || result.plan.previewExistingObjects !== preview ||
+          result.ownershipReviewRequired !== true || result.ownershipEstablished !== false || result.executionAuthorized !== false ||
+          result.plan.ownershipReviewRequired !== true || result.plan.ownershipEstablished !== false || result.plan.executionAuthorized !== false ||
+          result.plan.configuration.Mode !== 'plan' || result.plan.configuration.AdoptExisting !== preview || result.plan.configuration.AdoptRoleContexts !== preview) {
+        throw new Error('The returned preview choice or ownership status does not match this read-only review.');
+      }
       acceptEvidence(result.executionEvidence, selected);
       artifact = result;
     } catch (cause) { await stopAfterFailure(cause, current, selected); }
@@ -181,6 +190,10 @@
         <label>Device requirement{#if tier === 'privileged'}<select bind:value={privilegedDevice}><option value="none">None</option><option value="compliant">Compliant</option><option value="hybridJoined">Hybrid joined</option><option value="compliantOrHybrid">Compliant or hybrid joined</option></select>{:else}<select bind:value={lessPrivilegedDevice}><option value="none">None</option><option value="compliant">Compliant</option><option value="hybridJoined">Hybrid joined</option><option value="compliantOrHybrid">Compliant or hybrid joined</option></select>{/if}</label>
       </fieldset>
     {/each}
+    <fieldset class="pim-existing-objects"><legend>Existing objects</legend>
+      <label class="pim-preview-choice"><input type="checkbox" bind:checked={previewExistingObjects} />Preview changes to existing PIM objects (read-only)</label>
+      <small>Off by default. Preview can show proposed updates to existing contexts, policies and role-context links. It does not establish ownership, adopt objects or apply changes.</small>
+    </fieldset>
   </div>
   <div class="hero-actions"><button class="secondary" disabled={!!busy} on:click={prepare}>Review configuration</button>
     {#if busy || connected}<button class="secondary" on:click={cancelExplicitly}>{busy ? 'Cancel' : 'Disconnect and clear plan'}</button>{/if}</div>
@@ -210,6 +223,8 @@
       <p>Account: {review.binding.account}<br />Tenant: {review.binding.tenantId}<br />Client: {review.binding.clientId}</p>
       <p>Required read permissions: {review.binding.scopes.join(', ')}</p>
       <p>Pinned template: <code>{review.sourceCommit}</code></p>
+      <p>Existing-object preview: <strong>{review.configuration.previewExistingObjects ? 'On — ownership review required' : 'Off — existing conflicts stop planning'}</strong></p>
+      {#if review.configuration.previewExistingObjects}<p>Existing objects remain unchanged. Any adoption/update labels in the planner JSON describe proposals only. No ownership or execution approval is granted.</p>{/if}
       <p>Emergency groups, notifications and session revocation are excluded.</p>
       <div class="hero-actions"><button class="secondary" disabled={!!busy || connected} on:click={connect}>Approve sign-in</button>
         <button class="primary" disabled={!!busy || !connected} on:click={generate}>Generate read-only plan</button></div>
@@ -218,11 +233,15 @@
   {#if artifact}
     <section aria-label="PIM plan artifact" class="pim-review"><h2>Proposed changes</h2>
       <p>Generated {artifact.plan.generatedAt}. Review these proposals before considering enforcement elsewhere.</p>
+      <p role="note">Ownership review is required. This artifact establishes no ownership and authorizes no execution.</p>
+      <p>{artifact.ownershipReviewNotice}</p>
+      {#if artifact.previewExistingObjects}<p>Existing-object actions below are proposals only. Context proposals also enable availability and replace the description with azd-pim's managed description; review the existing context and intended settings before enforcement elsewhere.</p>{/if}
       {#each Object.entries(artifact.plan.tiers) as [tier, details]}
         <h3>{tier === 'privileged' ? 'Privileged roles' : 'Less-privileged roles'}: {details.roles.length}</h3>
-        {#if details.context}<p>Authentication context: {details.context.action} — {details.context.displayName}</p>{/if}
-        <ul>{#each details.roleRules as rule}<li>{rule.role.displayName}: context rule {rule.action}; legacy activation MFA {rule.activationMfa.action}</li>{/each}</ul>
+        {#if details.context}<p>Authentication context: {artifact.previewExistingObjects && details.context.action === 'adoptAndUpdate' ? 'proposed update — ownership not established' : details.context.action} — {details.context.displayName}{details.context.id ? ` (${details.context.id})` : ''}</p>{/if}
+        <ul>{#each details.roleRules as rule}<li>{rule.role.displayName}: context rule {rule.action}; legacy activation MFA {rule.activationMfa.action}{#if artifact.previewExistingObjects && rule.existing?.claimValue} — existing context {rule.existing.claimValue}; proposed context {rule.desiredContextId}{/if}</li>{/each}</ul>
         <p>Conditional Access proposals: {details.conditionalAccessPolicies.map(policy => policy.action).join(', ') || 'none'}</p>
+        {#if artifact.previewExistingObjects}<ul>{#each details.conditionalAccessPolicies as policy}<li>{policy.body?.displayName || policy.displayName || 'Conditional Access policy'}{policy.id ? ` (${policy.id})` : ''}: {policy.action === 'adoptAndUpdate' ? 'proposed update — ownership not established' : policy.action}</li>{/each}</ul>{/if}
       {/each}
       <ul>{#each artifact.plan.warnings as warning}<li>{warning}</li>{/each}</ul>
       <button class="secondary" on:click={copyArtifact}>Copy complete plan JSON</button>
@@ -238,6 +257,9 @@
   label { display: grid; gap: 8px; margin: 14px 0; }
   input, textarea, select { width: 100%; box-sizing: border-box; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--input); color: var(--text); font: inherit; }
   input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  .pim-preview-choice { display: flex; align-items: flex-start; }
+  .pim-existing-objects { grid-column: 1 / -1; }
+  .pim-preview-choice input { width: auto; margin-top: 3px; }
   small { color: var(--muted); line-height: 1.5; }
   .pim-review { margin-top: 24px; padding: 20px; border: 1px solid var(--border, #364152); border-radius: 10px; overflow-wrap: anywhere; }
   pre { max-height: 560px; overflow: auto; white-space: pre-wrap; font-size: 12px; }

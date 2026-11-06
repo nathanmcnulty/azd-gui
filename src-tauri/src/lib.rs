@@ -1192,12 +1192,13 @@ async fn request_pim_plan_session(
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
     let review = input.review()?;
     review.expect_digest(&expected_digest)?;
+    let existing_objects_notice = review.configuration.existing_objects_notice();
     let binding = review.binding;
     let ticket = state.graph_sessions.begin(&binding)?;
     state.execution_approvals.clear()?;
     let approved = app.dialog().message(format!(
-        "Approve sign-in for the pinned azd-pim read-only planner.\n\nAccount: {}\nTenant: {}\nClient: {}\nTemplate commit: {}\nRequested read permissions: {}\nVerification GET after sign-in: {}\nReview digest: {}\n\nThe planner can propose policy changes but cannot apply them. Stop if the browser asks for new consent or unexpected permissions.",
-        binding.account, binding.tenant_id, binding.client_id, pim_plan::SOURCE, binding.scopes.join(", "), binding.probe_uri, binding.requirements_digest))
+        "Approve sign-in for the pinned azd-pim read-only planner.\n\nAccount: {}\nTenant: {}\nClient: {}\nTemplate commit: {}\nRequested read permissions: {}\nVerification GET after sign-in: {}\nReview digest: {}\n\n{}\n\nThe planner can propose policy changes but cannot apply them. Stop if the browser asks for new consent or unexpected permissions.",
+        binding.account, binding.tenant_id, binding.client_id, pim_plan::SOURCE, binding.scopes.join(", "), binding.probe_uri, binding.requirements_digest, existing_objects_notice))
         .title("Confirm PIM planner sign-in")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom("Sign in to plan".into(), "Cancel".into())).blocking_show();

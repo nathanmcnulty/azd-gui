@@ -9,7 +9,7 @@ const review: api.PimPlanReview = {
     requirementsDigest: 'reviewed-config', account: 'operator@example.test',
     tenantId: '11111111-1111-4111-8111-111111111111', clientId: '22222222-2222-4222-8222-222222222222',
     scopes: ['AuthenticationContext.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory']
-  }, configuration: { privilegedRoleIds: ['33333333-3333-4333-8333-333333333333'], lessPrivilegedRoleIds: [],
+  }, configuration: { previewExistingObjects: false, privilegedRoleIds: ['33333333-3333-4333-8333-333333333333'], lessPrivilegedRoleIds: [],
     privilegedAuthenticationProfile: 'mfa', lessPrivilegedAuthenticationProfile: 'mfa',
     privilegedDeviceRequirement: 'none', lessPrivilegedDeviceRequirement: 'none' }
 };
@@ -19,8 +19,11 @@ const observed: api.PimProcessEvidence = { active: true, processId: 1234, sessio
   verificationReads: 1, pimReadsAttempted: 0, pimReadsCompleted: 0
 } };
 const artifact: api.PimPlanArtifact = { sourceCommit: review.sourceCommit, requirementsDigest: review.binding.requirementsDigest,
+  configuration: review.configuration, previewExistingObjects: false, ownershipReviewRequired: true, ownershipEstablished: false, executionAuthorized: false,
+  ownershipReviewNotice: 'Existing-object preview is off. Review ownership before any enforcement.',
   executionEvidence: { ...observed, context: { ...observed.context, pimReadsAttempted: 7, pimReadsCompleted: 7 } },
-  plan: { mode: 'plan', generatedAt: '2026-10-30T00:00:00Z', warnings: ['Review the proposals'], tiers: {
+  plan: { mode: 'plan', previewExistingObjects: false, ownershipReviewRequired: true, ownershipEstablished: false, executionAuthorized: false,
+    configuration: { Mode: 'plan', AdoptExisting: false, AdoptRoleContexts: false }, generatedAt: '2026-10-30T00:00:00Z', warnings: ['Review the proposals'], tiers: {
     privileged: { roles: [{ id: 'role', displayName: '<script>fixture</script>' }],
       context: { action: 'create', displayName: 'PIM Privileged Roles' }, conditionalAccessPolicies: [{ action: 'create' }],
       roleRules: [{ action: 'update', role: { displayName: 'Fixture role' }, activationMfa: { action: 'remove' } }] }
@@ -35,12 +38,13 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-async function prepare() {
+async function prepare(preview = false) {
   render(PimPlan);
   await fireEvent.input(screen.getByLabelText('Account'), { target: { value: review.binding.account } });
   await fireEvent.input(screen.getByLabelText('Tenant ID'), { target: { value: review.binding.tenantId } });
   await fireEvent.input(screen.getByLabelText('Existing client ID'), { target: { value: review.binding.clientId } });
   await fireEvent.input(screen.getAllByLabelText('Role definition IDs')[0], { target: { value: review.configuration.privilegedRoleIds.join(',') } });
+  if (preview) await fireEvent.click(screen.getByRole('checkbox', { name: 'Preview changes to existing PIM objects (read-only)' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Review configuration' }));
   await screen.findByRole('region', { name: 'PIM plan review' });
 }
@@ -68,7 +72,7 @@ describe('PIM read-only workflow', () => {
     expect(screen.queryByRole('region', { name: 'PIM plan review' })).not.toBeInTheDocument();
   });
 
-  it.each(['cancel', 'account', 'tenant', 'client', 'roles', 'profile', 'device'])('discards late sign-in after %s', async change => {
+  it.each(['cancel', 'account', 'tenant', 'client', 'roles', 'profile', 'device', 'preview'])('discards late sign-in after %s', async change => {
     let resolve!: (value: api.PimProcessEvidence) => void;
     vi.mocked(api.connectPimPlan).mockImplementationOnce(() => new Promise<api.PimProcessEvidence>(done => { resolve = done; }));
     await prepare();
@@ -78,6 +82,7 @@ describe('PIM read-only workflow', () => {
     else if (change === 'roles') await fireEvent.input(screen.getAllByLabelText('Role definition IDs')[0], { target: { value: 'other' } });
     else if (change === 'profile') await fireEvent.change(screen.getAllByLabelText('Authentication')[0], { target: { value: 'phishingResistant' } });
     else if (change === 'device') await fireEvent.change(screen.getAllByLabelText('Device requirement')[0], { target: { value: 'compliant' } });
+    else if (change === 'preview') await fireEvent.click(screen.getByRole('checkbox', { name: 'Preview changes to existing PIM objects (read-only)' }));
     else await fireEvent.input(screen.getByLabelText(change === 'account' ? 'Account' : change === 'tenant' ? 'Tenant ID' : 'Existing client ID'), { target: { value: 'changed' } });
     resolve(observed);
     await waitFor(() => expect(screen.queryByRole('region', { name: 'PIM plan review' })).not.toBeInTheDocument());
@@ -100,6 +105,70 @@ describe('PIM read-only workflow', () => {
     await prepare(); await connect();
     await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
     await screen.findByRole('alert');
+    expect(screen.queryByRole('region', { name: 'PIM plan artifact' })).not.toBeInTheDocument();
+  });
+
+  it('defaults to strict planning and requires a fresh review when preview changes', async () => {
+    await prepare();
+    expect(screen.getByRole('checkbox', { name: 'Preview changes to existing PIM objects (read-only)' })).not.toBeChecked();
+    expect(api.reviewPimPlan).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({ previewExistingObjects: false }) }));
+    await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('region', { name: 'PIM plan artifact' });
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Preview changes to existing PIM objects (read-only)' }));
+    expect(screen.queryByRole('region', { name: 'PIM plan artifact' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'PIM plan review' })).not.toBeInTheDocument();
+    await waitFor(() => expect(api.cancelPimPlan).toHaveBeenCalledWith(review.binding.requirementsDigest));
+  });
+
+  it('labels existing-object proposals and preserves the ownership warning in complete JSON', async () => {
+    const previewReview = structuredClone(review);
+    previewReview.configuration.previewExistingObjects = true;
+    const previewArtifact = structuredClone(artifact);
+    previewArtifact.configuration.previewExistingObjects = true;
+    previewArtifact.previewExistingObjects = true;
+    previewArtifact.ownershipReviewNotice = 'Preview proposes updates only; ownership is not established.';
+    previewArtifact.plan.previewExistingObjects = true;
+    previewArtifact.plan.configuration.AdoptExisting = true;
+    previewArtifact.plan.configuration.AdoptRoleContexts = true;
+    previewArtifact.plan.tiers.privileged.context = { id: 'c1', displayName: 'Existing context', action: 'adoptAndUpdate', adopted: true, existing: { description: 'Existing description' } };
+    previewArtifact.plan.tiers.privileged.conditionalAccessPolicies = [{ id: 'existing-policy', action: 'adoptAndUpdate', body: { displayName: 'Existing policy' }, existing: { state: 'disabled' } }];
+    vi.mocked(api.reviewPimPlan).mockResolvedValueOnce(previewReview);
+    vi.mocked(api.runPimPlan).mockResolvedValueOnce(previewArtifact);
+    await prepare(true); await connect();
+    expect(api.connectPimPlan).toHaveBeenCalledWith(expect.objectContaining({ configuration: expect.objectContaining({ previewExistingObjects: true }) }), review.binding.requirementsDigest);
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('region', { name: 'PIM plan artifact' });
+    expect(screen.getByText('Ownership review is required. This artifact establishes no ownership and authorizes no execution.')).toBeInTheDocument();
+    expect(screen.getByText(/Existing context \(c1\)/)).toHaveTextContent('proposed update — ownership not established');
+    expect(screen.getByText(/Existing policy \(existing-policy\)/)).toHaveTextContent('proposed update — ownership not established');
+    expect(document.querySelector('pre')?.textContent).toContain('"ownershipEstablished": false');
+    expect(document.querySelector('pre')?.textContent).toContain('Existing description');
+  });
+
+  it.each(['preview', 'configuration', 'plan', 'ownership', 'execution', 'plannerFlags'])('rejects a mismatched or unsafe %s marker', async change => {
+    const invalid = structuredClone(artifact);
+    if (change === 'preview') invalid.previewExistingObjects = true;
+    else if (change === 'configuration') invalid.configuration.previewExistingObjects = true;
+    else if (change === 'plan') invalid.plan.previewExistingObjects = true;
+    else if (change === 'ownership') invalid.ownershipEstablished = true;
+    else if (change === 'execution') invalid.executionAuthorized = true;
+    else invalid.plan.configuration.AdoptExisting = true;
+    vi.mocked(api.runPimPlan).mockResolvedValueOnce(invalid);
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('alert');
+    expect(screen.queryByRole('region', { name: 'PIM plan artifact' })).not.toBeInTheDocument();
+  });
+
+  it('discards a late strict plan after enabling existing-object preview', async () => {
+    let finish!: (value: api.PimPlanArtifact) => void;
+    vi.mocked(api.runPimPlan).mockImplementationOnce(() => new Promise(done => { finish = done; }));
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await waitFor(() => expect(api.runPimPlan).toHaveBeenCalledTimes(1));
+    await fireEvent.click(screen.getByRole('checkbox', { name: 'Preview changes to existing PIM objects (read-only)' }));
+    finish(artifact); await Promise.resolve(); await tick();
     expect(screen.queryByRole('region', { name: 'PIM plan artifact' })).not.toBeInTheDocument();
   });
 

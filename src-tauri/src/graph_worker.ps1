@@ -103,12 +103,26 @@ try {
                 Import-Module (Join-Path $PSScriptRoot 'AzdPim.Graph.psm1') -Force
                 Get-ChildItem Env:AZD_PIM_* | Remove-Item
                 $configuration = Get-AzdPimConfiguration
+                $previewExistingObjects = $false
                 foreach ($property in $request.parameters.PSObject.Properties) {
+                    if ($property.Name -ceq 'previewExistingObjects') {
+                        if ($property.Value -isnot [bool]) { throw 'PIM existing-object preview requires a boolean.' }
+                        $previewExistingObjects = $property.Value
+                        continue
+                    }
                     if ($property.Name -notin @('privilegedRoleIds', 'lessPrivilegedRoleIds', 'privilegedAuthenticationProfile', 'lessPrivilegedAuthenticationProfile', 'privilegedDeviceRequirement', 'lessPrivilegedDeviceRequirement')) { throw 'Unsupported PIM configuration.' }
                     $configuration.($property.Name) = $property.Value
                 }
+                # These flags affect proposals only: the pinned read-only entry
+                # point enforces plan mode, null state and the owned GET reader.
+                $configuration.AdoptExisting = $previewExistingObjects
+                $configuration.AdoptRoleContexts = $previewExistingObjects
                 $owned.BeginPimPlanAudit($session, [long]$sequence)
                 $plan = New-AzdPimReadPlan -Configuration $configuration -ReadContext $owned
+                $plan | Add-Member NoteProperty previewExistingObjects $previewExistingObjects
+                $plan | Add-Member NoteProperty ownershipReviewRequired $true
+                $plan | Add-Member NoteProperty ownershipEstablished $false
+                $plan | Add-Member NoteProperty executionAuthorized $false
                 $planJson = $plan | ConvertTo-Json -Depth 100 -Compress
                 if ([Text.Encoding]::UTF8.GetByteCount($planJson) -gt 8MB) { throw 'PIM plan artifact exceeds limit.' }
             }

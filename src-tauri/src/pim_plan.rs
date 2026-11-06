@@ -27,12 +27,62 @@ pub struct Input {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Configuration {
+    #[serde(default)]
+    pub preview_existing_objects: bool,
     pub privileged_role_ids: Vec<String>,
     pub less_privileged_role_ids: Vec<String>,
     pub privileged_authentication_profile: AuthenticationProfile,
     pub less_privileged_authentication_profile: AuthenticationProfile,
     pub privileged_device_requirement: DeviceRequirement,
     pub less_privileged_device_requirement: DeviceRequirement,
+}
+
+impl Configuration {
+    pub fn existing_objects_notice(&self) -> &'static str {
+        if self.preview_existing_objects {
+            "Existing-object preview: ON. Proposed updates may include existing contexts, policies and role-context links. This does not establish ownership, adopt objects or apply changes. Proposed context updates also enable availability and replace the description with azd-pim's managed description. Review ownership and all current/desired settings before any enforcement elsewhere."
+        } else {
+            "Existing-object preview: OFF. Existing ownership or role-context conflicts stop this plan."
+        }
+    }
+
+    pub fn validate_preview_result(&self, plan: &serde_json::Value) -> AppResult<()> {
+        let expected = Some(self.preview_existing_objects);
+        if plan
+            .get("previewExistingObjects")
+            .and_then(|value| value.as_bool())
+            != expected
+            || plan
+                .get("ownershipReviewRequired")
+                .and_then(|value| value.as_bool())
+                != Some(true)
+            || plan
+                .get("ownershipEstablished")
+                .and_then(|value| value.as_bool())
+                != Some(false)
+            || plan
+                .get("executionAuthorized")
+                .and_then(|value| value.as_bool())
+                != Some(false)
+            || plan
+                .pointer("/configuration/AdoptExisting")
+                .and_then(|value| value.as_bool())
+                != expected
+            || plan
+                .pointer("/configuration/AdoptRoleContexts")
+                .and_then(|value| value.as_bool())
+                != expected
+            || plan
+                .pointer("/configuration/Mode")
+                .and_then(|value| value.as_str())
+                != Some("plan")
+        {
+            return Err(AppError::Invalid(
+                "PIM plan preview choice or mode does not match this review.".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -205,6 +255,62 @@ mod tests {
         }
         assert_eq!(original.binding.scopes, SCOPES);
         assert!(original.binding.scopes.iter().all(|s| !s.contains("Write")));
+        let mut preview = input();
+        preview["configuration"]["previewExistingObjects"] = json!(true);
+        assert!(review(preview)
+            .expect_digest(&original.binding.requirements_digest)
+            .is_err());
+        assert!(!original.configuration.preview_existing_objects);
+    }
+
+    #[test]
+    fn preview_is_typed_and_result_flags_must_match_the_reviewed_choice() {
+        for invalid in [json!(null), json!("true"), json!(1), json!({})] {
+            let mut value = input();
+            value["configuration"]["previewExistingObjects"] = invalid;
+            assert!(serde_json::from_value::<Input>(value).is_err());
+        }
+        for enabled in [false, true] {
+            let mut value = input();
+            value["configuration"]["previewExistingObjects"] = json!(enabled);
+            let selected = review(value);
+            let valid = json!({"mode":"plan","previewExistingObjects":enabled,"ownershipReviewRequired":true,"ownershipEstablished":false,"executionAuthorized":false,
+                "configuration":{"Mode":"plan","AdoptExisting":enabled,"AdoptRoleContexts":enabled}});
+            assert!(selected
+                .configuration
+                .validate_preview_result(&valid)
+                .is_ok());
+            for pointer in [
+                "/previewExistingObjects",
+                "/configuration/AdoptExisting",
+                "/configuration/AdoptRoleContexts",
+            ] {
+                let mut changed = valid.clone();
+                *changed.pointer_mut(pointer).unwrap() = json!(!enabled);
+                assert!(selected
+                    .configuration
+                    .validate_preview_result(&changed)
+                    .is_err());
+            }
+            for (pointer, invalid) in [
+                ("/ownershipReviewRequired", false),
+                ("/ownershipEstablished", true),
+                ("/executionAuthorized", true),
+            ] {
+                let mut changed = valid.clone();
+                *changed.pointer_mut(pointer).unwrap() = json!(invalid);
+                assert!(selected
+                    .configuration
+                    .validate_preview_result(&changed)
+                    .is_err());
+            }
+            let mut enforced = valid;
+            enforced["configuration"]["Mode"] = json!("enforced");
+            assert!(selected
+                .configuration
+                .validate_preview_result(&enforced)
+                .is_err());
+        }
     }
 
     #[test]

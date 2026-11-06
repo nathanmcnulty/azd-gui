@@ -7,6 +7,25 @@ the exact sign-in, then choose **Generate read-only plan**. The screen shows pro
 context, Conditional Access and role-policy changes, warnings and the complete JSON
 artifact. This plans deployment of azd-pim; it does not activate the operator's roles.
 
+**Preview changes to existing PIM objects (read-only)** is off by default. The default
+retains ownership and role-context conflict rejections. When explicitly selected
+and reviewed, preview can propose updates for a single matching existing context,
+matching Conditional Access policies and different existing role-context links.
+It establishes no ownership, adopts nothing, authorizes no execution and writes no
+deployment state. Duplicate names, malformed data and read-boundary failures still
+stop planning. Changing this choice clears the review, session and any result.
+
+The complete artifact preserves existing and desired policy/rule data. Its
+`previewExistingObjects` choice must match the reviewed configuration;
+`ownershipReviewRequired` is always true, while `ownershipEstablished` and
+`executionAuthorized` are always false. Raw planner labels such as `adoptAndUpdate`
+and `adopted: true` describe proposed future handling, not completed adoption.
+Authentication-context proposals also enable availability and replace the context's
+description with azd-pim's managed description. The context summary is not a complete
+enforcement diff; review ownership and all intended settings before enforcement
+through a separately authorized workflow. The pinned apply entry rejects a plan-mode
+preview before any Graph request or state callback.
+
 Changing any field, cancelling or leaving the screen clears the review and result.
 Each review has a unique identity; its cancellation cannot close a newer review or
 an unrelated wizard's session. A cancelled/failed credential process is never reused.
@@ -34,8 +53,9 @@ identity/grant changes, budgets, redirects or planner rejection. Raw SDK excepti
 tokens and response bodies are never used as error messages. The last safe failure
 receipt may remain visible as inactive historical metadata; it cannot authorize
 another read. Disposal clears the matching receipt; a terminal failure requires a
-fresh review before another explicit sign-in. Existing template policy/context conflicts remain intentional rejections;
-the GUI does not adopt objects or relax configuration to force qualification.
+fresh review before another explicit sign-in. Existing template policy/context
+conflicts remain intentional rejections in the default mode. Preview is an explicit
+read-only review choice, not adoption or a way to authorize enforcement.
 
 ## Pinned planner and process boundary
 
@@ -49,8 +69,10 @@ these exact public modules; there is no runtime download or renderer-selected sc
 Publish/review the companion PR before publishing the GUI PR that pins it.
 
 The native review digest binds the review ID, identity, full typed configuration,
-template commit and permissions. The native session registry checks that binding
-before and after the fixed `pimPlan` RPC. The same PowerShell process owns the pinned
+template commit and permissions, including the preview choice. The native session
+registry checks that binding before and after the fixed `pimPlan` RPC and verifies
+the returned planner mode and both proposal flags match it. The native sign-in
+confirmation states that choice. The same PowerShell process owns the pinned
 planner and managed MSAL credential. Every protected GET silently refreshes that same
 account and validates identity, client, resource, expiry and the complete original
 grant set before sending that result's token. Tokens remain in managed code.
@@ -101,6 +123,10 @@ the test MSAL/network substitutes and runs the real worker integration tests. PI
 cases run the actual pinned planner through Rust, PowerShell and managed HTTP,
 including pagination, phishing-resistant/device planning, cancellation, changed
 configuration and scoped late disposal. It also preserves the existing Graph tests.
+Existing-object preview cases preserve default conflict rejection, compare existing
+objects with proposed updates, check unchanged GET permissions and no deployment
+state writes, and invoke the real apply entry under offline Graph/state tripwires
+to prove plan-mode previews cannot execute.
 
 `tools/Test-PimPlanner.ps1 -BuildRoot <private-build-directory> -PlannerRoot <azd-pim-checkout>`
 checks the managed reader's negative boundaries, then runs the actual consumer

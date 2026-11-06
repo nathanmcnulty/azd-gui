@@ -815,6 +815,10 @@ impl GraphSessions {
             self.invalidate_worker(&worker);
             return Err(invalid("PIM plan identity or mode mismatch."));
         }
+        if let Err(error) = review.configuration.validate_preview_result(&plan) {
+            self.invalidate_worker(&worker);
+            return Err(error);
+        }
         let execution_evidence = worker.process_evidence()?;
         if !execution_evidence.active {
             return Err(invalid("PIM session was cancelled; artifact discarded."));
@@ -822,7 +826,10 @@ impl GraphSessions {
         Ok(
             serde_json::json!({ "schemaVersion": "1.0", "sourceCommit": review.source_commit,
             "requirementsDigest": review.binding.requirements_digest, "identity": review.binding,
-            "configuration": review.configuration, "executionEvidence": execution_evidence, "plan": plan }),
+            "configuration": review.configuration, "previewExistingObjects": review.configuration.preview_existing_objects,
+            "ownershipReviewRequired": true, "ownershipEstablished": false, "executionAuthorized": false,
+            "ownershipReviewNotice": review.configuration.existing_objects_notice(),
+            "executionEvidence": execution_evidence, "plan": plan }),
         )
     }
     // Reserve intent BEFORE a dialog or asynchronous process startup. A cancel
@@ -1121,9 +1128,14 @@ mod tests {
     }
 
     fn pim_review() -> crate::pim_plan::Review {
+        pim_review_with_preview(false)
+    }
+
+    fn pim_review_with_preview(preview: bool) -> crate::pim_plan::Review {
         serde_json::from_value::<crate::pim_plan::Input>(json!({
             "reviewId":"99999999-9999-4999-8999-999999999999", "account":"operator@example.test", "tenantId":"11111111-1111-4111-8111-111111111111",
             "clientId":"22222222-2222-4222-8222-222222222222", "configuration": {
+                "previewExistingObjects":preview,
                 "privilegedRoleIds":["33333333-3333-4333-8333-333333333333"], "lessPrivilegedRoleIds":[],
                 "privilegedAuthenticationProfile":"mfa", "lessPrivilegedAuthenticationProfile":"mfa",
                 "privilegedDeviceRequirement":"none", "lessPrivilegedDeviceRequirement":"none"
@@ -1621,6 +1633,138 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "offline real PowerShell PIM preview; substitutes MSAL and HTTP"]
+    async fn existing_object_preview_is_explicit_bound_and_cannot_apply_or_write_state() {
+        const CONTEXTS: &str = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences";
+        const POLICIES: &str =
+            "https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999";
+        const ROLE_POLICIES: &str = "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999";
+        for preview in [false, true] {
+            let fixture = Fixture::new();
+            let review = pim_review_with_preview(preview);
+            let worker = fixture.pim_worker(&review).await;
+            let mut responses: Value =
+                serde_json::from_str(include_str!("../graph-adapter-tests/pim-responses.json"))
+                    .unwrap();
+            responses[CONTEXTS]["value"] = json!([{"id":"c1","displayName":"PIM Privileged Roles","description":"Existing unmanaged description","isAvailable":false}]);
+            responses[POLICIES]["value"] = json!([{"id":"existing-ca-policy","displayName":"PIM - Privileged Roles - Require reauthentication","state":"disabled","conditions":{"applications":{"includeAuthenticationContextClassReferences":["c1"]}},"grantControls":{"builtInControls":["mfa"]}}]);
+            responses[ROLE_POLICIES]["value"][0]["rules"][0]["isEnabled"] = json!(true);
+            responses[ROLE_POLICIES]["value"][0]["rules"][0]["claimValue"] = json!("c2");
+            std::fs::write(
+                fixture.root.path().join("responses.json"),
+                responses.to_string(),
+            )
+            .unwrap();
+            worker.authenticate().await.unwrap();
+            worker.probe().await.unwrap();
+            let worker_directory = worker
+                .transport
+                .lock()
+                .await
+                .as_ref()
+                .unwrap()
+                ._files
+                .path()
+                .to_path_buf();
+            let files_before: std::collections::BTreeSet<_> = std::fs::read_dir(&worker_directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            let sessions = GraphSessions::default();
+            sessions.replace(worker.clone()).await.unwrap();
+            if !preview {
+                let error = sessions.pim_plan(&review).await.unwrap_err().to_string();
+                assert!(error
+                    .contains("An authentication context with the planned name already exists"));
+                assert!(*worker.cancel.borrow());
+                continue;
+            }
+            let artifact = sessions.pim_plan(&review).await.unwrap();
+            assert_eq!(artifact["configuration"]["previewExistingObjects"], true);
+            assert_eq!(artifact["previewExistingObjects"], true);
+            assert_eq!(artifact["ownershipReviewRequired"], true);
+            assert_eq!(artifact["ownershipEstablished"], false);
+            assert_eq!(artifact["executionAuthorized"], false);
+            assert_eq!(artifact["plan"]["mode"], "plan");
+            assert_eq!(artifact["plan"]["configuration"]["Mode"], "plan");
+            assert_eq!(artifact["plan"]["configuration"]["AdoptExisting"], true);
+            assert_eq!(artifact["plan"]["configuration"]["AdoptRoleContexts"], true);
+            let tier = &artifact["plan"]["tiers"]["privileged"];
+            assert_eq!(tier["context"]["action"], "adoptAndUpdate");
+            assert_eq!(
+                tier["context"]["existing"]["description"],
+                "Existing unmanaged description"
+            );
+            assert_eq!(
+                tier["conditionalAccessPolicies"][0]["action"],
+                "adoptAndUpdate"
+            );
+            assert_eq!(
+                tier["conditionalAccessPolicies"][0]["existing"]["state"],
+                "disabled"
+            );
+            assert!(tier["conditionalAccessPolicies"][0]["body"].is_object());
+            assert_eq!(tier["roleRules"][0]["existing"]["claimValue"], "c2");
+            assert_eq!(tier["roleRules"][0]["desiredContextId"], "c1");
+            assert_eq!(
+                fixture
+                    .calls()
+                    .iter()
+                    .filter(|call| call["kind"] == "protected-read-start")
+                    .count(),
+                8
+            );
+            assert_eq!(fixture.calls()[0]["scopes"], json!(crate::pim_plan::SCOPES));
+            let files_after: std::collections::BTreeSet<_> = std::fs::read_dir(&worker_directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            assert_eq!(
+                files_before, files_after,
+                "read-only preview wrote worker state"
+            );
+
+            // Invoke the actual pinned apply entry with this real preview plan.
+            // Both Graph and persistence tripwires prevent any fallback/network
+            // or durable write even if its enforced-mode guard regresses.
+            let apply_check = fixture.root.path().join("reject-preview-apply.ps1");
+            let plan_path = fixture.root.path().join("preview-plan.json");
+            std::fs::write(&plan_path, artifact["plan"].to_string()).unwrap();
+            std::fs::write(&apply_check, r#"param([string]$ModulePath,[string]$PlanPath)
+$ErrorActionPreference='Stop'
+Import-Module $ModulePath -Force
+$plan=Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 100
+& (Get-Module AzdPim.Graph) {
+    param($Plan)
+    $script:tripwire=$false
+    function script:Invoke-AzdPimGraphRequest { $script:tripwire=$true; throw 'OFFLINE_GRAPH_WRITE_TRIPWIRE' }
+    try { Invoke-AzdPimApply -Plan $Plan -StateChanged { $script:tripwire=$true; throw 'OFFLINE_STATE_WRITE_TRIPWIRE' }; throw 'Preview was accepted for enforcement.' }
+    catch { if ($_.Exception.Message -cne 'Invoke-AzdPimApply requires an enforced plan.') { throw } }
+    if ($script:tripwire) { throw 'Preview attempted a protected action.' }
+} $plan
+[Console]::Out.WriteLine('PREVIEW_APPLY_REJECTED_BEFORE_GRAPH_OR_STATE')
+"#).unwrap();
+            let mut command = Command::new(resolve_system_executable("pwsh").unwrap());
+            command
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(&apply_check)
+                .arg(worker_directory.join("AzdPim.Graph.psm1"))
+                .arg(&plan_path);
+            #[cfg(windows)]
+            command.creation_flags(0x0800_0000);
+            let output = command.output().await.unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout)
+                .contains("PREVIEW_APPLY_REJECTED_BEFORE_GRAPH_OR_STATE"));
+            sessions.dispose().await;
+        }
+    }
+
+    #[tokio::test]
     #[ignore = "offline real PowerShell PIM planner; substitutes MSAL and HTTP"]
     async fn late_pim_disposal_cannot_revoke_a_new_review_session() {
         let fixture = Fixture::new();
@@ -1704,8 +1848,7 @@ mod tests {
         worker.probe().await.unwrap();
         let sessions = GraphSessions::default();
         sessions.replace(worker.clone()).await.unwrap();
-        let mut changed = pim_review();
-        changed.binding.requirements_digest = "a".repeat(64);
+        let changed = pim_review_with_preview(true);
         assert!(sessions.pim_plan(&changed).await.is_err());
         assert!(sessions.pim_plan(&review).await.is_err());
         assert_eq!(fixture.calls().len(), 3);

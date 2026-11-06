@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 export interface PimPlanConfiguration {
+  previewExistingObjects: boolean;
   privilegedRoleIds: string[];
   lessPrivilegedRoleIds: string[];
   privilegedAuthenticationProfile: 'mfa' | 'phishingResistant';
@@ -23,16 +24,27 @@ export interface PimPlanReview {
 export interface PimPlanArtifact {
   sourceCommit: string;
   requirementsDigest: string;
+  configuration: PimPlanConfiguration;
+  previewExistingObjects: boolean;
+  ownershipReviewRequired: boolean;
+  ownershipEstablished: boolean;
+  executionAuthorized: boolean;
+  ownershipReviewNotice: string;
   executionEvidence: PimProcessEvidence;
   plan: {
     mode: string;
+    previewExistingObjects: boolean;
+    ownershipReviewRequired: boolean;
+    ownershipEstablished: boolean;
+    executionAuthorized: boolean;
+    configuration: { Mode: string; AdoptExisting: boolean; AdoptRoleContexts: boolean };
     generatedAt: string;
     warnings: string[];
     tiers: Record<string, {
       roles: { id: string; displayName: string }[];
-      context: { action: string; displayName: string } | null;
-      conditionalAccessPolicies: { action: string; displayName?: string }[];
-      roleRules: { action: string; role: { displayName: string }; activationMfa: { action: string } }[];
+      context: { id?: string; action: string; displayName: string; existing?: unknown; adopted?: boolean } | null;
+      conditionalAccessPolicies: { id?: string; action: string; displayName?: string; body?: { displayName?: string }; existing?: unknown }[];
+      roleRules: { action: string; role: { displayName: string }; existing?: { claimValue?: string }; desiredContextId?: string; activationMfa: { action: string } }[];
     }>;
   };
 }
