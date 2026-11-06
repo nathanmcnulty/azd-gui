@@ -110,7 +110,13 @@ pub struct Review {
 }
 
 impl Input {
-    pub fn review(mut self) -> AppResult<Review> {
+    pub fn review(self) -> AppResult<Review> {
+        self.review_internal(false)
+    }
+    pub fn review_catalog(self) -> AppResult<Review> {
+        self.review_internal(true)
+    }
+    fn review_internal(mut self, allow_empty: bool) -> AppResult<Review> {
         if Uuid::parse_str(&self.review_id).map_or(true, |id| id.is_nil()) {
             return Err(AppError::Invalid(
                 "A unique PIM review identity is required.".into(),
@@ -143,7 +149,8 @@ impl Input {
             ids.sort();
             ids.dedup();
         }
-        if configuration.privileged_role_ids.is_empty()
+        if !allow_empty
+            && configuration.privileged_role_ids.is_empty()
             && configuration.less_privileged_role_ids.is_empty()
         {
             return Err(AppError::Invalid(

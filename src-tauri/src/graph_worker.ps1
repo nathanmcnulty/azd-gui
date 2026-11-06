@@ -92,6 +92,11 @@ try {
                 if ($binding.PSObject.Properties['purpose'] -and $binding.purpose -ceq 'pimPlan') { $owned.BeginPimPlanAudit($session, [long]$sequence) }
                 $owned.Probe()
             }
+            elseif ($request.action -eq 'pimRoles') {
+                if (-not $connected -or $binding.purpose -cne 'pimPlan') { throw 'No owned PIM session.' }
+                $owned.BeginPimPlanAudit($session, [long]$sequence)
+                $plan = @($owned.ReadRoleCatalogJson() | ConvertFrom-Json -Depth 12)
+            }
             elseif ($request.action -eq 'pimPlan') {
                 if (-not $connected) { throw 'No owned authenticated session.' }
                 $requiredScopes = @('AuthenticationContext.Read.All', 'Policy.Read.All', 'RoleManagement.Read.Directory')

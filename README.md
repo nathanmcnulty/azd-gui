@@ -114,3 +114,15 @@ Local and remote `azure.yaml` inspection share a bounded YAML parser. Inspection
 - The native URL opener capability is scoped to HTTPS links.
 
 See [docs/architecture.md](docs/architecture.md) for the subsystem and data-flow description.
+
+## Read-only PIM pilot planning
+
+Open **Home > Plan PIM solution**. Enter the expected account, tenant and existing public client. Review configuration with an empty pilot, approve the native read-permission confirmation, sign in, and select **Refresh tenant roles**. Search role names and check individual roles; selections use stable definition IDs. Configure each tier's authentication and device requirements, review again, approve sign-in, then **Generate read-only plan**. Configuration edits close the previous reviewed session, so selecting roles after discovery requires a fresh review/sign-in. Manual comma/newline GUID entry remains available.
+
+The tenant picker fetches all pages of Graph v1.0 directory role definitions, including custom roles. It joins stable IDs with the documented beta `isPrivileged eq true` and `false` queries. This classification is a preview dependency; a role absent from both sets is **unknown**, never less privileged. New Microsoft roles appear on refresh and remain unselected. Unknown/disabled roles are visible but cannot be newly selected.
+
+Only a complete successful refresh replaces the local normalized cache, separately per tenant, in the application's `pim-role-cache-v1` directory. **Live** means this reviewed session completed a refresh; **Cached** includes the original retrieval time and tenant. Identity changes and cancellation cannot publish late results. A failed/partial refresh retains the last complete list and timestamp and closes the failed session. There is no bundled fallback and no tenant data in the application package. Custom role names in the local cache are tenant data: keep that app data private.
+
+Selected IDs survive tenant changes, removal and reclassification; the UI shows problems for explicit correction. Renamed or otherwise changed selected metadata requires review and acknowledgement. Generation requires a fresh complete tenant list and checks every selected role's existence, availability and explicit classification. The native command checks selected metadata again before invoking the existing pinned planner, which independently resolves roles. Graph provides no transactional snapshot across these reads; changes during planning can fail the plan. When refresh is unavailable, cached/manual selections can be prepared but generation stops with an explicit error.
+
+Review the named pilot, proposed changes and **complete plan JSON**, including the fresh role inventory and timestamp. Existing-object preview is optional and read-only. This workflow establishes no ownership, applies no policy, and does not deploy optional notifications/revocation components. Enforcement and release packaging remain separate milestones. Existing authenticated-session qualification does not qualify changed provider code; live checks need a current bounded sign-in approval.

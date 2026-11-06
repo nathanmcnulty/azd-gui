@@ -1,3 +1,4 @@
+import type { PimRole } from './pim-roles';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 export interface PimPlanConfiguration {
@@ -78,9 +79,9 @@ export async function getPimPlanEvidence(expectedDigest: string): Promise<PimPro
   native();
   return invoke('get_pim_plan_evidence', { expectedDigest });
 }
-export async function runPimPlan(input: PimPlanInput, expectedDigest: string): Promise<PimPlanArtifact> {
+export async function runPimPlan(input: PimPlanInput, expectedDigest: string, expectedRoles: PimRole[] = []): Promise<PimPlanArtifact> {
   native();
-  return invoke('run_pim_plan', { input, expectedDigest });
+  return invoke('run_pim_plan', { input, expectedDigest, expectedRoles });
 }
 export async function cancelPimPlan(expectedDigest: string): Promise<PimCancellationReceipt | null> {
   if (isTauri()) return invoke('cancel_pim_plan', { expectedDigest });

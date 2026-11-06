@@ -410,6 +410,13 @@ impl GraphWorker {
             .await
     }
 
+    pub async fn pim_roles(&self) -> AppResult<serde_json::Value> {
+        self.request_parameters("pimRoles", false, Duration::from_secs(180), None)
+            .await?
+            .pim_plan
+            .ok_or_else(|| invalid("Role catalog absent."))
+    }
+
     pub async fn pim_plan(
         &self,
         configuration: &crate::pim_plan::Configuration,
@@ -451,22 +458,26 @@ impl GraphWorker {
             "requirementsDigest":self.binding.requirements_digest,"binding":self.binding,"allowInteractive":allow_interactive,"parameters":parameters});
         let mut bytes = serde_json::to_vec(&request)?;
         bytes.push(b'\n');
-        // Only an admitted pimPlan RPC counts. Waiting on the transport mutex,
+        // Only an admitted PIM planner/catalog RPC counts. Waiting on the transport mutex,
         // authentication, probing and a completed reply never create this marker.
-        let _pim_request = if action == "pimPlan" {
+        let _pim_request = if matches!(action, "pimPlan" | "pimRoles") {
             Some(PimRequestGuard::begin(&self.request_state)?)
         } else {
             None
         };
         let io = async {
-            let limit = if action == "pimPlan" {
+            let limit = if matches!(action, "pimPlan" | "pimRoles") {
                 16 * 1024 * 1024
             } else {
                 LIMIT
             };
             transport.input.write_all(&bytes).await?;
             transport.input.flush().await?;
-            for _ in 0..if action == "pimPlan" { 512 } else { 64 } {
+            for _ in 0..if matches!(action, "pimPlan" | "pimRoles") {
+                512
+            } else {
+                64
+            } {
                 let mut line = Vec::new();
                 let count = (&mut transport.output)
                     .take(limit)
@@ -477,7 +488,7 @@ impl GraphWorker {
                 }
                 if let Some(data) = line.strip_prefix(b"AZD_GRAPH_PROGRESS:") {
                     if self.binding.purpose.as_deref() != Some("pimPlan")
-                        || !matches!(action, "pimPlan" | "probe")
+                        || !matches!(action, "pimPlan" | "pimRoles" | "probe")
                         || data.len() > LIMIT as usize
                     {
                         return Err(invalid("Unexpected Graph progress frame."));
@@ -665,11 +676,11 @@ impl GraphWorker {
                         && evidence.pim_reads_attempted == 0
                         && evidence.pim_reads_completed == 0
                 }
-                "readStarted" if action == "pimPlan" => {
+                "readStarted" if matches!(action, "pimPlan" | "pimRoles") => {
                     evidence.pim_reads_attempted == previous.pim_reads_attempted + 1
                         && evidence.pim_reads_completed == previous.pim_reads_completed
                 }
-                "readCompleted" if action == "pimPlan" => {
+                "readCompleted" if matches!(action, "pimPlan" | "pimRoles") => {
                     evidence.pim_reads_completed == previous.pim_reads_completed + 1
                         && evidence.pim_reads_attempted == previous.pim_reads_attempted
                 }
@@ -889,6 +900,54 @@ impl GraphSessions {
             *cache = Some((worker.binding.requirements_digest.clone(), evidence));
         }
     }
+    pub async fn refresh_pim_roles(
+        &self,
+        digest: &str,
+        cache: &std::path::Path,
+    ) -> AppResult<crate::pim_roles::Catalog> {
+        let (worker, ticket) = {
+            let registry = self
+                .current
+                .lock()
+                .map_err(|_| invalid("Graph sessions unavailable."))?;
+            let worker = registry
+                .worker
+                .clone()
+                .filter(|w| {
+                    w.binding.requirements_digest == digest
+                        && w.binding.purpose.as_deref() == Some("pimPlan")
+                })
+                .ok_or_else(|| {
+                    invalid("Connect the reviewed PIM identity before refreshing roles.")
+                })?;
+            (worker, registry.generation)
+        };
+        let result = worker.pim_roles().await;
+        if result.is_err() {
+            self.retain_pim_failure(&worker);
+            self.invalidate_worker(&worker);
+        }
+        let catalog = crate::pim_roles::Catalog::live(&worker.binding.tenant_id, result?)?;
+        // Publication and cancellation/tenant changes share the registry lock.
+        let registry = self
+            .current
+            .lock()
+            .map_err(|_| invalid("Graph sessions unavailable."))?;
+        if registry.generation != ticket
+            || registry
+                .worker
+                .as_ref()
+                .is_none_or(|w| !Arc::ptr_eq(w, &worker))
+            || !worker.process_evidence()?.active
+        {
+            return Err(invalid(
+                "Role refresh cancelled or superseded; result discarded.",
+            ));
+        }
+        catalog.save(cache)?;
+        Ok(catalog)
+    }
+
     pub async fn pim_plan(&self, review: &crate::pim_plan::Review) -> AppResult<serde_json::Value> {
         let (worker, ticket) = {
             let mut registry = self
@@ -1253,6 +1312,88 @@ mod tests {
                 "privilegedDeviceRequirement":"none", "lessPrivilegedDeviceRequirement":"none"
             }
         })).unwrap().review().unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell role catalog; substitutes MSAL and HTTP"]
+    async fn role_catalog_refresh_commits_only_complete_current_results() {
+        const URI: &str =
+            "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions";
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        let mut responses: Value =
+            serde_json::from_str(include_str!("../graph-adapter-tests/pim-responses.json"))
+                .unwrap();
+        responses[URI] = json!({"value":[],"@odata.nextLink":format!("{URI}?$skiptoken=roles")});
+        responses[format!("{URI}?$skiptoken=roles")] = json!({"value":[{"id":"33333333-3333-4333-8333-333333333333", "displayName":"Custom pilot role", "isBuiltIn":false,"isEnabled":true}]});
+        std::fs::write(
+            fixture.root.path().join("responses.json"),
+            responses.to_string(),
+        )
+        .unwrap();
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = GraphSessions::default();
+        let ticket = sessions.begin(&review.binding).unwrap();
+        sessions.install(ticket, worker.clone()).await.unwrap();
+        let cache = fixture.root.path().join("role-cache");
+        let catalog = sessions
+            .refresh_pim_roles(&review.binding.requirements_digest, &cache)
+            .await
+            .unwrap();
+        assert_eq!(catalog.roles.len(), 1);
+        assert_eq!(catalog.roles[0].is_built_in, Some(false));
+        assert_eq!(catalog.roles[0].is_privileged, Some(true));
+        let saved = crate::pim_roles::Catalog::load(&cache, &review.binding.tenant_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.source, "cached");
+        assert_eq!(saved.retrieved_at, catalog.retrieved_at);
+        // Second-page failure must retain the prior complete cache and close the worker.
+        responses[format!("{URI}?$skiptoken=roles")] = json!({"invalid":[]});
+        std::fs::write(
+            fixture.root.path().join("responses.json"),
+            responses.to_string(),
+        )
+        .unwrap();
+        assert!(sessions
+            .refresh_pim_roles(&review.binding.requirements_digest, &cache)
+            .await
+            .is_err());
+        let retained = crate::pim_roles::Catalog::load(&cache, &review.binding.tenant_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retained.retrieved_at, saved.retrieved_at);
+        assert_eq!(retained.roles, saved.roles);
+        assert!(!worker.process_evidence().unwrap().active);
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell role cancellation; substitutes MSAL and HTTP"]
+    async fn cancelled_role_refresh_does_not_publish_late_cache() {
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        std::fs::write(
+            fixture.root.path().join("control.json"),
+            json!({"account":"operator@example.test","mode":"pim","delayMs":1500}).to_string(),
+        )
+        .unwrap();
+        let sessions = Arc::new(GraphSessions::default());
+        let ticket = sessions.begin(&review.binding).unwrap();
+        sessions.install(ticket, worker.clone()).await.unwrap();
+        let cache = fixture.root.path().join("cancelled-cache");
+        let path = cache.clone();
+        let copy = sessions.clone();
+        let digest = review.binding.requirements_digest.clone();
+        let task = tokio::spawn(async move { copy.refresh_pim_roles(&digest, &path).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        sessions.dispose().await;
+        assert!(task.await.unwrap().is_err());
+        assert!(!cache.exists());
     }
 
     #[test]

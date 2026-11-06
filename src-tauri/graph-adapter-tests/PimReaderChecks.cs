@@ -175,6 +175,41 @@ public static class PimReaderChecks
             Check(evidence.PimReadsAttempted == 1 && evidence.PimReadsCompleted == 1 && evidence.VerificationReads == 1, "Read counters did not reflect completed protected dispatch.");
             checks++;
         }
+        // Real catalog join: stable metadata paginates, custom and unknown roles
+        // remain visible, and later-page failure yields no usable result.
+        const string roleId = "33333333-3333-4333-8333-333333333333";
+        const string customId = "44444444-4444-4444-8444-444444444444";
+        const string unknownId = "55555555-5555-4555-8555-555555555555";
+        string Row(string id, string name, bool builtIn) => JsonSerializer.Serialize(new { id, displayName = name, isBuiltIn = builtIn, isEnabled = true });
+        string Page(params string[] rows) => "{\"value\":[" + string.Join(",", rows) + "]}";
+        var metadataRow = Row(roleId, "Microsoft role", true);
+        foreach (var mode in new[] { "good", "denied", "partial", "duplicate", "unknown", "empty", "classificationConflict", "cycle" })
+        {
+            using var fixture = new Fixture(root, n =>
+            {
+                if (mode == "denied" && n == 1) return new HttpResponseMessage(HttpStatusCode.Forbidden);
+                if (mode == "empty") return Json(Page());
+                if (n == 1) return Json("{\"value\":[" + metadataRow + "],\"@odata.nextLink\":\"" + OwnedGraphSession.RoleDefinitionsUri + "?$skiptoken=page2\"}");
+                if (mode == "partial" && n == 2) return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+                if (mode == "cycle" && n == 2) return Json("{\"value\":[],\"@odata.nextLink\":\"" + OwnedGraphSession.RoleDefinitionsUri + "?$skiptoken=page2\"}");
+                if (n == 2) return Json(mode == "duplicate" ? Page(metadataRow) : Page(Row(customId, "Custom role", false), Row(unknownId, "Unknown role", false)));
+                if (n == 3) return Json("{\"value\":[{\"id\":\"" + roleId + "\",\"isPrivileged\":true}]}");
+                return Json(mode == "classificationConflict" ? "{\"value\":[{\"id\":\"" + roleId + "\",\"isPrivileged\":false}]}" : mode == "unknown" ? Page() : "{\"value\":[{\"id\":\"" + customId + "\",\"isPrivileged\":false}]}");
+            });
+            if (mode is "denied" or "partial" or "duplicate" or "classificationConflict" or "cycle") Reject(() => fixture.Session.ReadRoleCatalogJson());
+            else
+            {
+                using var catalog = JsonDocument.Parse(fixture.Session.ReadRoleCatalogJson());
+                Check(catalog.RootElement.GetArrayLength() == (mode == "empty" ? 0 : 3), "Catalog omitted stable roles.");
+                if (mode != "empty") {
+                    var custom = catalog.RootElement.EnumerateArray().Single(role => role.GetProperty("id").GetString() == customId);
+                    Check(!custom.GetProperty("isBuiltIn").GetBoolean(), "Custom role was reclassified as Microsoft built-in.");
+                    Check(custom.GetProperty("isPrivileged").ValueKind == (mode == "unknown" ? JsonValueKind.Null : JsonValueKind.False), "Unknown classification became unprivileged.");
+                    Check(catalog.RootElement.EnumerateArray().Single(role => role.GetProperty("id").GetString() == unknownId).GetProperty("isPrivileged").ValueKind == JsonValueKind.Null, "Unmatched role omitted or classified.");
+                }
+            }
+            checks++;
+        }
         return checks;
     }
 }

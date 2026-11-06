@@ -18,6 +18,7 @@ mod models;
 mod permissions;
 mod persistence;
 mod pim_plan;
+mod pim_roles;
 mod redaction;
 mod requirements;
 mod security_groups;
@@ -1168,7 +1169,7 @@ async fn dispose_graph_session(state: State<'_, AppState>) -> AppResult<()> {
 
 #[tauri::command]
 fn review_pim_plan(input: pim_plan::Input) -> AppResult<pim_plan::Review> {
-    input.review()
+    input.review_catalog()
 }
 
 #[tauri::command]
@@ -1190,7 +1191,7 @@ async fn request_pim_plan_session(
     expected_digest: String,
 ) -> AppResult<graph_session::ProcessEvidence> {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-    let review = input.review()?;
+    let review = input.review_catalog()?;
     review.expect_digest(&expected_digest)?;
     let existing_objects_notice = review.configuration.existing_objects_notice();
     let binding = review.binding;
@@ -1234,14 +1235,65 @@ async fn request_pim_plan_session(
 
 #[tauri::command]
 async fn run_pim_plan(
+    app: AppHandle,
     state: State<'_, AppState>,
     input: pim_plan::Input,
     expected_digest: String,
+    expected_roles: Vec<pim_roles::Role>,
 ) -> AppResult<serde_json::Value> {
     let review = input.review()?;
     review.expect_digest(&expected_digest)?;
     let _guard = state.operations.begin_preparation()?;
-    state.graph_sessions.pim_plan(&review).await
+    let catalog = state
+        .graph_sessions
+        .refresh_pim_roles(
+            &expected_digest,
+            &app.path()
+                .app_data_dir()
+                .map_err(|_| AppError::Invalid("Application cache directory unavailable.".into()))?
+                .join("pim-role-cache-v1"),
+        )
+        .await?;
+    catalog.validate_selection(&review.configuration)?;
+    if expected_roles.len() > 200
+        || expected_roles
+            .iter()
+            .any(|role| !catalog.roles.contains(role))
+    {
+        return Err(AppError::Invalid("Selected role metadata changed during revalidation. Refresh and review before planning.".into()));
+    }
+    let mut artifact = state.graph_sessions.pim_plan(&review).await?;
+    artifact["roleCatalog"] = serde_json::to_value(catalog)?;
+    Ok(artifact)
+}
+
+#[tauri::command]
+async fn refresh_pim_roles(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    expected_digest: String,
+) -> AppResult<pim_roles::Catalog> {
+    let _guard = state.operations.begin_preparation()?;
+    state
+        .graph_sessions
+        .refresh_pim_roles(
+            &expected_digest,
+            &app.path()
+                .app_data_dir()
+                .map_err(|_| AppError::Invalid("Application cache directory unavailable.".into()))?
+                .join("pim-role-cache-v1"),
+        )
+        .await
+}
+#[tauri::command]
+fn cached_pim_roles(app: AppHandle, tenant_id: String) -> AppResult<Option<pim_roles::Catalog>> {
+    pim_roles::Catalog::load(
+        &app.path()
+            .app_data_dir()
+            .map_err(|_| AppError::Invalid("Application cache directory unavailable.".into()))?
+            .join("pim-role-cache-v1"),
+        &tenant_id,
+    )
 }
 
 #[tauri::command]
@@ -2518,6 +2570,8 @@ pub fn run() {
             request_graph_session,
             dispose_graph_session,
             review_pim_plan,
+            refresh_pim_roles,
+            cached_pim_roles,
             cancel_pim_plan,
             request_pim_plan_session,
             run_pim_plan,
