@@ -9,6 +9,61 @@ $session = $null
 $owned = $null
 $sequence = 0
 $connected = $false
+
+function Get-PimPlannerFailureCode {
+    param([System.Management.Automation.ErrorRecord] $Record)
+
+    $fallback = 'PimPlannerRejectedConfiguration'
+    try {
+        $planner = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'AzdPim.Graph.psm1'))
+        $lineNumber = $Record.InvocationInfo.ScriptLineNumber
+        $fromPlanner = -not [string]::IsNullOrEmpty($Record.InvocationInfo.ScriptName) -and
+            [IO.Path]::GetFullPath($Record.InvocationInfo.ScriptName) -ceq $planner
+        # PowerShell locates some multiline-expression errors at a caller even
+        # when that caller is inside the same module. Prefer only the first
+        # engine-generated frame for these fixed functions and exact path.
+        if ($Record.Exception -is [System.Management.Automation.PropertyNotFoundException]) {
+            $frame = '\Aat (?:Resolve-AzdPimContext|Get-AzdPimReferencedContextIds|New-AzdPimPlan), ' + [regex]::Escape($planner) + ': line (?<line>[0-9]+)(?:\r?\n|\z)'
+            $match = [regex]::Match([string]$Record.ScriptStackTrace, $frame)
+            if ($match.Success) {
+                $lineNumber = [int]$match.Groups['line'].Value
+                $fromPlanner = $true
+            }
+        }
+        if (-not $fromPlanner) { return $fallback }
+        # Locations identify explicit throws in the exact embedded planner, not
+        # tenant-controlled names, IDs or exception text. A changed pin must be
+        # reviewed with this map; otherwise diagnostics remain safely generic.
+        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine 'de289c7566bd9449fe55ddcfbbf9c84d01ee8056095c4df0747df0beefac8947') { return $fallback }
+        if ($Record.Exception -is [System.Management.Automation.PropertyNotFoundException]) {
+            switch ($lineNumber) {
+                { $_ -in @(283, 284, 285) } { return 'PimRoleReferenceDataInvalid' }
+                { $_ -in @(452, 458, 467) } { return 'PimContextIdentityDataInvalid' }
+                { $_ -in @(468, 469, 470, 471, 472) } { return 'PimContextSlotDataInvalid' }
+                { $_ -in @(758, 759, 760, 761, 762, 763, 764, 765, 766) } { return 'PimRolePolicyDataInvalid' }
+            }
+            return 'PimPlannerPolicyDataInvalid'
+        }
+        switch ($lineNumber) {
+            454 { return 'PimContextDuplicateNames' }
+            458 { return 'PimContextAlreadyExists' }
+            479 { return 'PimContextSlotsFull' }
+            639 { return 'PimConditionalAccessDuplicateNames' }
+            655 { return 'PimConditionalAccessAlreadyExists' }
+            768 { return 'PimRoleContextConflict' }
+            { $_ -in @(258, 264, 268, 273, 277) } { return 'PimConditionalAccessReferenceDataInvalid' }
+            { $_ -in @(759, 761, 763, 765) } { return 'PimRolePolicyDataInvalid' }
+            { $_ -in @(173, 178, 183, 501) } {
+                return 'PimPlannerPolicyDataInvalid'
+            }
+        }
+    } catch {
+        # Diagnostic lookup can never export a path/error or replace the actual
+        # Graph/MSAL classification performed by the caller below.
+    }
+    return $fallback
+}
+
 try {
     Import-Module $AdapterModule -ErrorAction Stop
     while ($null -ne ($line = [Console]::ReadLine())) {
@@ -68,6 +123,7 @@ try {
         catch {
             # Never serialize raw SDK errors, AuthenticationResult or HTTP data.
             $code = if ($request -and $request.action -eq 'authenticate') { 'GraphAuthenticationFailed' } elseif ($request -and $request.action -eq 'pimPlan') { 'PimPlannerRejectedConfiguration' } else { 'PimReadFailed' }
+            if ($request -and $request.action -eq 'pimPlan') { $code = Get-PimPlannerFailureCode -Record $_ }
             $exception = $_.Exception
             for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
                 if ($exception -is [AzdGui.GraphAdapter.GraphBoundaryException]) {

@@ -482,6 +482,18 @@ impl GraphWorker {
                 Some("PimVerificationBudgetExceeded" | "PimReadBudgetOrSessionRejected" | "PimResponseLimitExceeded") => "PIM read budget or response limit rejected the operation.",
                 Some("GraphRedirectRejected" | "GraphReadFailed") => "The protected Graph read failed or attempted a redirect; no retry was made.",
                 Some("PimPlannerRejectedConfiguration") => "PIM planner could not build a plan from the selected configuration and returned policy data. No plan was accepted; the session was discarded.",
+                Some("PimContextAlreadyExists") => "An authentication context with the planned name already exists. Ownership/adoption review is required; nothing was adopted or changed.",
+                Some("PimContextDuplicateNames") => "Multiple authentication contexts have the planned name. Resolve the naming conflict before another plan; nothing was changed.",
+                Some("PimContextSlotsFull") => "No unused authentication context slot is available to this planner. Review existing context usage; nothing was changed.",
+                Some("PimConditionalAccessAlreadyExists") => "A Conditional Access policy with the planned name already exists. Ownership/adoption review is required; nothing was adopted or changed.",
+                Some("PimConditionalAccessDuplicateNames") => "Multiple Conditional Access policies have the planned name. Resolve the naming conflict before another plan; nothing was changed.",
+                Some("PimRoleContextConflict") => "A selected role already requires a different authentication context. Review that conflict before another plan; nothing was adopted or changed.",
+                Some("PimPlannerPolicyDataInvalid") => "Returned planner inventory is incomplete or has an unsupported data shape. No plan was accepted; the session was discarded.",
+                Some("PimRoleReferenceDataInvalid") => "Returned role-policy reference data is incomplete or has an unsupported shape. No plan was accepted; the session was discarded.",
+                Some("PimContextIdentityDataInvalid") => "Returned authentication context identity data is incomplete or has an unsupported shape. No plan was accepted; the session was discarded.",
+                Some("PimContextSlotDataInvalid") => "Returned authentication context availability or ownership metadata is incomplete or has an unsupported shape. No plan was accepted; the session was discarded.",
+                Some("PimConditionalAccessReferenceDataInvalid") => "Returned Conditional Access reference data has an unsupported shape. No plan was accepted; the session was discarded.",
+                Some("PimRolePolicyDataInvalid") => "Returned role-policy assignment or rule data is incomplete or has an unsupported shape. No plan was accepted; the session was discarded.",
                 Some("PimReadFailed") => "PIM read failed validation or exceeded its time limit; the session was discarded.",
                 Some("GraphAuthenticationFailed") => "Graph sign-in failed. Stop on consent, unexpected identity or an alternate authentication flow.",
                 Some("GraphInteractionRequired" | "GraphTokenRefreshFailed") => "Silent Graph refresh could not complete. No interactive fallback was attempted; review the account before another approved sign-in.",
@@ -1117,6 +1129,143 @@ mod tests {
                 "privilegedDeviceRequirement":"none", "lessPrivilegedDeviceRequirement":"none"
             }
         })).unwrap().review().unwrap()
+    }
+
+    #[test]
+    fn pim_diagnostic_locations_match_the_exact_pinned_planner() {
+        use sha2::{Digest, Sha256};
+        let planner = include_str!("../pim-template/AzdPim.Graph.psm1");
+        let worker = include_str!("graph_worker.ps1");
+        assert!(worker.contains(&format!("{:x}", Sha256::digest(planner.as_bytes()))));
+        for (line, text) in [
+            (283, "$policy.rules"),
+            (284, "$rule.isEnabled"),
+            (452, "$_.displayName"),
+            (454, "Multiple authentication contexts"),
+            (458, "already exists as"),
+            (468, "$unused ="),
+            (479, "No unused authentication context slots"),
+            (639, "Multiple Conditional Access policies"),
+            (655, "Conditional Access policy"),
+            (768, "already requires authentication context"),
+        ] {
+            assert!(planner.lines().nth(line - 1).unwrap().contains(text));
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell PIM diagnostics; substitutes MSAL and HTTP"]
+    async fn pinned_planner_failures_have_closed_safe_diagnostics_and_revoke_the_worker() {
+        const CONTEXTS: &str = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences";
+        const POLICIES: &str =
+            "https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999";
+        const ROLE_POLICIES: &str = "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999";
+        const INVENTORY: &str = "https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true&$skiptoken=offline-fixture";
+        const SECRET: &str = "fixture-sensitive-role-or-policy-value";
+        for (case, expected) in [
+            (
+                "context_exists",
+                "An authentication context with the planned name already exists.",
+            ),
+            (
+                "context_duplicate",
+                "Multiple authentication contexts have the planned name.",
+            ),
+            (
+                "slots_full",
+                "No unused authentication context slot is available",
+            ),
+            (
+                "ca_exists",
+                "A Conditional Access policy with the planned name already exists.",
+            ),
+            (
+                "ca_duplicate",
+                "Multiple Conditional Access policies have the planned name.",
+            ),
+            (
+                "role_conflict",
+                "A selected role already requires a different authentication context.",
+            ),
+            (
+                "context_identity",
+                "Returned authentication context identity data is incomplete",
+            ),
+            (
+                "context_slot",
+                "Returned authentication context availability or ownership metadata is incomplete",
+            ),
+            (
+                "role_references",
+                "Returned role-policy reference data is incomplete",
+            ),
+            (
+                "ca_references",
+                "Returned Conditional Access reference data has an unsupported shape.",
+            ),
+            (
+                "role_policy",
+                "Returned role-policy assignment or rule data is incomplete",
+            ),
+            ("changed_pin", "PIM planner could not build a plan"),
+        ] {
+            let fixture = Fixture::new();
+            let review = pim_review();
+            let worker = fixture.pim_worker(&review).await;
+            let mut responses: Value =
+                serde_json::from_str(include_str!("../graph-adapter-tests/pim-responses.json"))
+                    .unwrap();
+            responses[INVENTORY]["value"][0]["displayName"] = json!(SECRET);
+            match case {
+                "context_exists" | "changed_pin" => responses[CONTEXTS]["value"] = json!([{ "id":SECRET, "displayName":"PIM Privileged Roles" }]),
+                "context_duplicate" => responses[CONTEXTS]["value"] = json!([{ "id":SECRET, "displayName":"PIM Privileged Roles" }, {"id":"c2", "displayName":"PIM Privileged Roles"}]),
+                "slots_full" => responses[CONTEXTS]["value"] = json!((1..=25).map(|n| json!({"id":format!("c{n}"),"displayName":format!("{SECRET}-{n}"),"isAvailable":true,"description":SECRET})).collect::<Vec<_>>()),
+                "ca_exists" => responses[POLICIES]["value"] = json!([{ "id":SECRET, "displayName":"PIM - Privileged Roles - Require reauthentication", "conditions":{} }]),
+                "ca_duplicate" => responses[POLICIES]["value"] = json!([{ "id":SECRET, "displayName":"PIM - Privileged Roles - Require reauthentication", "conditions":{} }, {"id":"second-policy","displayName":"PIM - Privileged Roles - Require reauthentication","conditions":{}}]),
+                "role_conflict" => { responses[ROLE_POLICIES]["value"][0]["rules"][0]["isEnabled"] = json!(true); responses[ROLE_POLICIES]["value"][0]["rules"][0]["claimValue"] = json!("c2"); },
+                "context_identity" => responses[CONTEXTS]["value"] = json!([{ "id":SECRET }]),
+                "context_slot" => responses[CONTEXTS]["value"] = json!([{ "id":"c1", "displayName":"", "description":SECRET }]),
+                "role_references" => { responses[ROLE_POLICIES]["value"][0].as_object_mut().unwrap().remove("rules"); },
+                "ca_references" => responses[POLICIES]["value"] = json!([{ "id":SECRET, "conditions":{"applications":{"includeAuthenticationContextClassReferences":SECRET}} }]),
+                "role_policy" => responses[ROLE_POLICIES]["value"][0]["rules"] = json!([]),
+                _ => unreachable!(),
+            }
+            std::fs::write(
+                fixture.root.path().join("responses.json"),
+                responses.to_string(),
+            )
+            .unwrap();
+            if case == "changed_pin" {
+                let transport = worker.transport.lock().await;
+                let planner = transport
+                    .as_ref()
+                    .unwrap()
+                    ._files
+                    .path()
+                    .join("AzdPim.Graph.psm1");
+                let mut source = std::fs::read_to_string(&planner).unwrap();
+                source.push_str("\n# offline changed-pin diagnostic guard\n");
+                std::fs::write(planner, source).unwrap();
+            }
+            worker.authenticate().await.unwrap();
+            worker.probe().await.unwrap();
+            let error = worker
+                .pim_plan(&review.configuration)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{case}: {error}");
+            assert!(
+                !error.contains(SECRET),
+                "{case}: private fixture value leaked"
+            );
+            assert!(!error.contains("AzdPim.Graph.psm1") && !error.contains("PropertyNotFound"));
+            assert!(*worker.cancel.borrow());
+            let calls = fixture.calls().len();
+            assert!(worker.pim_plan(&review.configuration).await.is_err());
+            assert_eq!(fixture.calls().len(), calls, "{case}: retry was dispatched");
+            assert!(worker.transport.lock().await.is_none());
+        }
     }
 
     #[tokio::test]
