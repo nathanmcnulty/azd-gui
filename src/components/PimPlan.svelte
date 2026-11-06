@@ -1,5 +1,74 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import PimRolePicker from './PimRolePicker.svelte';
+  import { cachedPimRoles, refreshPimRoles, roleChanges, roleIds, selectedRoleProblems, type PimRole, type PimRoleCatalog } from '../lib/pim-roles';
+  let catalog: PimRoleCatalog | null = null;
+  let roleNotice = '';
+  let selectedMetadata: Record<string, PimRole> = {};
+  let priorIdentity = '';
+  let identityGeneration = 0;
+  $: identity = `${account.trim().toLowerCase()}|${tenantId.trim().toLowerCase()}|${clientId.trim().toLowerCase()}`;
+  $: if (identity !== priorIdentity) void identityChanged(identity);
+  $: roleProblems = catalog ? selectedRoleProblems(catalog, privilegedIds, lessPrivilegedIds) : [];
+  $: metadataChanges = catalog ? roleChanges(selectedMetadata, catalog, [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)]) : [];
+  async function identityChanged(value: string) {
+    priorIdentity = value;
+    const generation = ++identityGeneration;
+    catalog = null;
+    selectedMetadata = {};
+    roleNotice = 'Identity changed. Selected IDs are retained and must be checked against this tenant before planning.';
+    if (!/^[a-f0-9-]{36}$/i.test(tenantId.trim())) return;
+    try {
+      const cached = await cachedPimRoles(tenantId.trim());
+      if (generation === identityGeneration) catalog = cached;
+    } catch { if (generation === identityGeneration) roleNotice = 'Saved role list could not be read. Refresh tenant roles or use manual IDs.'; }
+  }
+  function rememberSelectedRoles() {
+    selectedMetadata = Object.fromEntries((catalog?.roles ?? []).filter(role => [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)].includes(role.id)).map(role => [role.id, role]));
+  }
+  function rememberNewSelectedRoles() {
+    // First discovery establishes a baseline; refreshing cannot acknowledge changes.
+    const previous = selectedMetadata;
+    rememberSelectedRoles();
+    selectedMetadata = { ...selectedMetadata, ...previous };
+  }
+  function selectRole(id: string, privileged: boolean, checked: boolean) {
+    privilegedIds = roleIds(privilegedIds).filter(value => value !== id).join('\n');
+    lessPrivilegedIds = roleIds(lessPrivilegedIds).filter(value => value !== id).join('\n');
+    if (checked) {
+      if (privileged) privilegedIds = [...roleIds(privilegedIds), id].sort().join('\n');
+      else lessPrivilegedIds = [...roleIds(lessPrivilegedIds), id].sort().join('\n');
+    }
+    const metadata = { ...selectedMetadata };
+    delete metadata[id];
+    const role = catalog?.roles.find(role => role.id === id);
+    if (checked && role) metadata[id] = role;
+    selectedMetadata = metadata;
+    invalidate();
+  }
+  function acceptRoleChanges() { rememberSelectedRoles(); invalidate(); }
+  async function refreshRoles() {
+    if (!review || !connected) return;
+    const current = epoch;
+    const selected = review;
+    busy = 'Refreshing complete tenant role list…';
+    roleNotice = '';
+    identityGeneration += 1;
+    artifact = null;
+    try {
+      const fresh = await refreshPimRoles(selected.binding.requirementsDigest);
+      if (current !== epoch) return;
+      if (fresh.tenantId.toLowerCase() !== tenantId.trim().toLowerCase() || fresh.source !== 'live') throw new Error('Role list tenant or source mismatch.');
+      catalog = fresh;
+      rememberNewSelectedRoles();
+      roleNotice = 'All role pages refreshed. New roles remain unselected.';
+    } catch (cause) {
+      if (current !== epoch) return;
+      if (catalog) catalog = { ...catalog, source: 'cached' };
+      roleNotice = 'Refresh failed or was incomplete. The previous complete list and its retrieval time are retained; it is not current. Check read permissions or reconnect.';
+      await stopAfterFailure(cause, current, selected);
+    } finally { if (current === epoch) busy = ''; }
+  }
   import { cancelPimPlan, connectPimPlan, getPimPlanEvidence, reviewPimPlan, runPimPlan, type PimCancellationReceipt, type PimProcessEvidence, type PimPlanArtifact, type PimPlanConfiguration, type PimPlanInput, type PimPlanReview } from '../lib/pim-plan';
 
   let account = '';
@@ -36,6 +105,7 @@
     reviewedInput = null;
     artifact = null;
     evidence = null;
+    if (catalog) catalog = { ...catalog, source: 'cached' };
     copyStatus = '';
     cancellationReceipt = null;
     for (const timer of pollers) clearInterval(timer);
@@ -82,6 +152,7 @@
     for (const timer of pollers) clearInterval(timer);
     pollers.clear();
     error = String(cause); connected = false;
+    if (catalog) catalog = { ...catalog, source: 'cached' };
     review = null; reviewedInput = null;
     let terminal: PimProcessEvidence | null = null;
     disposal = disposal.catch(() => {}).then(async () => {
@@ -98,7 +169,7 @@
       if (current === epoch) { evidence = null; error += ' Session cleanup could not be confirmed.'; }
     }
   }
-  onDestroy(invalidate);
+  onDestroy(() => { identityGeneration += 1; invalidate(); });
 
   function input(): PimPlanInput {
     const ids = (value: string) => value.split(/[\s,;]+/).map(v => v.trim()).filter(Boolean);
@@ -110,6 +181,8 @@
     } };
   }
   async function prepare() {
+    if (roleProblems.length || metadataChanges.length) { error = 'Resolve selected-role warnings before reviewing configuration.'; return; }
+    rememberSelectedRoles();
     invalidate();
     const current = epoch;
     const candidate = input();
@@ -150,6 +223,7 @@
     error = '';
     artifact = null;
     copyStatus = '';
+    identityGeneration += 1; // A late disk-cache load cannot replace fresh generation inventory.
     const polling = ++pollGeneration;
     const timer = setInterval(() => {
       void getPimPlanEvidence(selected.binding.requirementsDigest).then(value => {
@@ -158,7 +232,14 @@
     }, 500);
     pollers.add(timer);
     try {
-      const result = await runPimPlan(reviewedInput, selected.binding.requirementsDigest);
+      const fresh = await refreshPimRoles(selected.binding.requirementsDigest);
+      if (current !== epoch) return;
+      if (fresh.tenantId.toLowerCase() !== selected.binding.tenantId.toLowerCase() || fresh.source !== 'live') throw new Error('Fresh role revalidation returned a different tenant or source.');
+      catalog = fresh;
+      const problems = [...selectedRoleProblems(fresh, privilegedIds, lessPrivilegedIds), ...roleChanges(selectedMetadata, fresh, [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)])];
+      if (problems.length) throw new Error('Selected roles changed. ' + problems.join(' '));
+      rememberNewSelectedRoles();
+      const result = await runPimPlan(reviewedInput, selected.binding.requirementsDigest, fresh.roles.filter(role => [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)].includes(role.id)));
       if (current !== epoch) return;
       if (result.requirementsDigest !== selected.binding.requirementsDigest || result.sourceCommit !== selected.sourceCommit || result.plan.mode !== 'plan' || !result.executionEvidence.active) {
         throw new Error('The returned plan does not match this review. Review the configuration again.');
@@ -198,6 +279,14 @@
       <label>Tenant ID<input bind:value={tenantId} spellcheck="false" /></label>
       <label>Existing client ID<input bind:value={clientId} spellcheck="false" /></label>
     </fieldset>
+  </div>
+  <PimRolePicker {catalog} {privilegedIds} {lessPrivilegedIds} select={selectRole} />
+  <div class="hero-actions"><button class="secondary" disabled={!!busy || !connected} on:click={refreshRoles}>Refresh tenant roles</button></div>
+  <p>Role discovery uses the existing owned Graph session and read permissions. Review and sign in with an empty pilot to load roles first, then select roles, configure policy and review again. Configuration changes close the old reviewed session.</p>
+  {#if roleNotice}<p role="note">{roleNotice}</p>{/if}
+  {#if roleProblems.length}<ul aria-label="Selected role problems">{#each roleProblems as problem}<li>{problem}</li>{/each}</ul>{/if}
+  {#if metadataChanges.length}<ul>{#each metadataChanges as change}<li>{change}</li>{/each}</ul><button class="secondary" on:click={acceptRoleChanges}>Accept current role metadata</button>{/if}
+  <div class="pim-fields" on:input={invalidate} on:change={invalidate}>
     {#each ['privileged', 'lessPrivileged'] as tier}
       <fieldset><legend>{tier === 'privileged' ? 'Privileged roles' : 'Less-privileged roles'}</legend>
         <label>Role definition IDs{#if tier === 'privileged'}<textarea bind:value={privilegedIds} rows="3"></textarea>{:else}<textarea bind:value={lessPrivilegedIds} rows="3"></textarea>{/if}</label>
@@ -245,9 +334,10 @@
       <p>Pinned template: <code>{review.sourceCommit}</code></p>
       <p>Existing-object preview: <strong>{review.configuration.previewExistingObjects ? 'On — ownership review required' : 'Off — existing conflicts stop planning'}</strong></p>
       {#if review.configuration.previewExistingObjects}<p>Existing objects remain unchanged. Any adoption/update labels in the planner JSON describe proposals only. No ownership or execution approval is granted.</p>{/if}
+      <p>Selected pilot: {[...review.configuration.privilegedRoleIds, ...review.configuration.lessPrivilegedRoleIds].map(id => `${catalog?.roles.find(role => role.id === id)?.displayName ?? 'Manual role'} (${id})`).join(', ') || 'No roles selected — connect to discover roles first.'}</p>
       <p>Emergency groups, notifications and session revocation are excluded.</p>
       <div class="hero-actions"><button class="secondary" disabled={!!busy || connected} on:click={connect}>Approve sign-in</button>
-        <button class="primary" disabled={!!busy || !connected} on:click={generate}>Generate read-only plan</button></div>
+        <button class="primary" disabled={!!busy || !connected || !roleIds(privilegedIds).length && !roleIds(lessPrivilegedIds).length} on:click={generate}>Generate read-only plan</button></div>
     </section>
   {/if}
   {#if artifact}

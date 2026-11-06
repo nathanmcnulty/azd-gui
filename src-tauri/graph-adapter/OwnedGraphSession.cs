@@ -113,8 +113,56 @@ public sealed class OwnedGraphSession : IDisposable
     // The planner receives this reader, never the credential or an access token.
     public string TenantId => options.TenantId;
 
+    public const string RoleDefinitionsUri = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions";
+
+    // Stable complete metadata, joined by ID to documented beta classifications.
+    // Absence from classification queries means unknown, never false.
+    public string ReadRoleCatalogJson()
+    {
+        List<JsonElement> Collection(string initial)
+        {
+            var rows = new List<JsonElement>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            string? next = initial;
+            while (next is not null)
+            {
+                if (!seen.Add(next) || seen.Count > 30) throw new GraphBoundaryException("InvalidPimResponse");
+                using var page = JsonDocument.Parse(ReadPimJson(next));
+                rows.AddRange(page.RootElement.GetProperty("value").EnumerateArray().Select(x => x.Clone()));
+                if (rows.Count > 5000) throw new GraphBoundaryException("InvalidPimResponse");
+                next = page.RootElement.TryGetProperty("@odata.nextLink", out var link) && link.ValueKind != JsonValueKind.Null ? link.GetString() : null;
+            }
+            return rows;
+        }
+        var metadata = Collection(RoleDefinitionsUri);
+        var classifications = new Dictionary<Guid, bool>();
+        foreach (var privileged in new[] { true, false })
+        {
+            foreach (var role in Collection("https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20" + (privileged ? "true" : "false")))
+            {
+                if (!Guid.TryParse(role.GetProperty("id").GetString(), out var id) || id == Guid.Empty ||
+                    role.GetProperty("isPrivileged").ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+                    role.GetProperty("isPrivileged").GetBoolean() != privileged || !classifications.TryAdd(id, privileged))
+                    throw new GraphBoundaryException("InvalidPimResponse");
+            }
+        }
+        var ids = new HashSet<Guid>();
+        var normalized = metadata.Select(role =>
+        {
+            if (!Guid.TryParse(role.GetProperty("id").GetString(), out var id) || id == Guid.Empty || !ids.Add(id))
+                throw new GraphBoundaryException("InvalidPimResponse");
+            var name = role.GetProperty("displayName").GetString();
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 1024) throw new GraphBoundaryException("InvalidPimResponse");
+            bool? Flag(string key) => role.TryGetProperty(key, out var flag) && flag.ValueKind is JsonValueKind.True or JsonValueKind.False ? flag.GetBoolean() : null;
+            return new { id = id.ToString(), displayName = name, isBuiltIn = Flag("isBuiltIn"), isEnabled = Flag("isEnabled"),
+                isPrivileged = classifications.TryGetValue(id, out var value) ? (bool?)value : null };
+        }).OrderBy(role => role.displayName, StringComparer.OrdinalIgnoreCase).ThenBy(role => role.id).ToArray();
+        return JsonSerializer.Serialize(normalized);
+    }
+
     private static readonly Dictionary<string, string> PimReads = new(StringComparer.Ordinal)
     {
+        [RoleDefinitionsUri] = "RoleManagement.Read.Directory",
         ["https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true"] = "RoleManagement.Read.Directory",
         ["https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20false"] = "RoleManagement.Read.Directory",
         ["https://graph.microsoft.com/v1.0/policies/roleManagementPolicyAssignments?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$top=999"] = "RoleManagement.Read.Directory",

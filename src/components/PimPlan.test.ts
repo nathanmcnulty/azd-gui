@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import PimPlan from './PimPlan.svelte';
 import * as api from '../lib/pim-plan';
 import { tick } from 'svelte';
+import * as rolesApi from '../lib/pim-roles';
 
 const review: api.PimPlanReview = {
   sourceCommit: 'pinned-template', binding: {
@@ -34,6 +35,8 @@ const artifact: api.PimPlanArtifact = { sourceCommit: review.sourceCommit, requi
   } } };
 
 beforeEach(() => {
+  vi.spyOn(rolesApi, 'cachedPimRoles').mockResolvedValue(null);
+  vi.spyOn(rolesApi, 'refreshPimRoles').mockResolvedValue({ tenantId: review.binding.tenantId, retrievedAt: '2026-11-05T00:00:00Z', source: 'live', roles: [{ id: review.configuration.privilegedRoleIds[0], displayName: 'Fixture role', isPrivileged: true, isEnabled: true, isBuiltIn: true }] });
   vi.spyOn(api, 'cancelPimPlan').mockResolvedValue(null);
   vi.spyOn(api, 'reviewPimPlan').mockResolvedValue(structuredClone(review));
   vi.spyOn(api, 'connectPimPlan').mockResolvedValue(structuredClone(observed));
@@ -297,5 +300,108 @@ describe('PIM read-only workflow', () => {
     await fireEvent.click(screen.getByRole('button', { name: 'Disconnect and clear plan' }));
     await screen.findByRole('alert');
     expect(screen.queryByRole('region', { name: 'PIM cancellation receipt' })).not.toBeInTheDocument();
+  });
+});
+
+
+describe('tenant role selection and refresh', () => {
+  it('searches named roles, selects stable IDs and retains manual entry', async () => {
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await screen.findByLabelText(/Fixture role — Privileged/);
+    expect(screen.getByText(/Live complete role list/)).toHaveTextContent(review.binding.tenantId);
+    await fireEvent.input(screen.getByLabelText('Search roles'), { target: { value: 'missing name' } });
+    expect(screen.getByText('No roles match this search.')).toBeInTheDocument();
+    await fireEvent.input(screen.getByLabelText('Search roles'), { target: { value: 'Fixture' } });
+    await fireEvent.click(screen.getByLabelText(/Fixture role — Privileged/));
+    expect(screen.getAllByLabelText('Role definition IDs')[0]).toHaveValue('');
+    expect(screen.queryByRole('region', { name: 'PIM plan review' })).not.toBeInTheDocument();
+  });
+  it('keeps a complete cache and timestamp after a failed refresh', async () => {
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await screen.findByText(/Live complete role list/);
+    vi.mocked(rolesApi.refreshPimRoles).mockRejectedValueOnce(new Error('Read permission denied'));
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await screen.findByRole('alert');
+    expect(screen.getByText(/Cached complete role list/)).toHaveTextContent('2026-11-05T00:00:00Z');
+    expect(screen.getByText(/Refresh failed or was incomplete/)).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Role definition IDs')[0]).toHaveValue(review.configuration.privilegedRoleIds[0]);
+  });
+  it('ignores late refreshes after identity changes', async () => {
+    await prepare(); await connect();
+    let resolve!: (value: rolesApi.PimRoleCatalog) => void;
+    vi.mocked(rolesApi.refreshPimRoles).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await waitFor(() => expect(rolesApi.refreshPimRoles).toHaveBeenCalled());
+    await fireEvent.input(screen.getByLabelText('Tenant ID'), { target: { value: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } });
+    resolve({ tenantId: review.binding.tenantId, source: 'live', retrievedAt: '2026-11-05T00:00:00Z', roles: [] });
+    await tick();
+    expect(screen.queryByText(/Live complete role list/)).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText('Role definition IDs')[0]).toHaveValue(review.configuration.privilegedRoleIds[0]);
+  });
+  it('blocks generation when a selected role disappears', async () => {
+    await prepare(); await connect();
+    vi.mocked(rolesApi.refreshPimRoles).mockResolvedValueOnce({ tenantId: review.binding.tenantId, source: 'live', retrievedAt: '2026-11-05T00:00:00Z', roles: [] });
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('alert');
+    expect(api.runPimPlan).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Selected role problems')).toHaveTextContent('missing');
+  });
+});
+
+
+describe('role metadata review', () => {
+  it.each(['refresh', 'generate'])('retains the first live baseline for manual IDs after %s without a disk cache', async first => {
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: first === 'refresh' ? 'Refresh tenant roles' : 'Generate read-only plan' }));
+    await screen.findByText(/Live complete role list/);
+    if (first === 'generate') await screen.findByRole('region', { name: 'PIM plan artifact' });
+    const original = vi.mocked(rolesApi.refreshPimRoles).mock.results[0];
+    const catalog = await original.value;
+    vi.mocked(rolesApi.refreshPimRoles).mockResolvedValue({ ...catalog, roles: catalog.roles.map((role: rolesApi.PimRole) => ({ ...role, displayName: 'Renamed pilot' })) });
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await screen.findByText(/Fixture role .* changed to Renamed pilot/);
+    // Another refresh must not silently acknowledge the changed role metadata.
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    expect(screen.getByText(/Fixture role .* changed to Renamed pilot/)).toBeInTheDocument();
+    const plans = vi.mocked(api.runPimPlan).mock.calls.length;
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('alert');
+    expect(api.runPimPlan).toHaveBeenCalledTimes(plans);
+    await fireEvent.click(screen.getByRole('button', { name: 'Accept current role metadata' }));
+    expect(screen.queryByText(/Fixture role .* changed to Renamed pilot/)).not.toBeInTheDocument();
+  });
+  it('shows new roles without selecting them and requires acknowledgement of a rename', async () => {
+    const original: rolesApi.PimRole = { id: review.configuration.privilegedRoleIds[0], displayName: 'Original pilot', isPrivileged: true, isEnabled: true, isBuiltIn: false };
+    vi.mocked(rolesApi.cachedPimRoles).mockResolvedValue({ tenantId: review.binding.tenantId, source: 'cached', retrievedAt: '2026-11-04T00:00:00Z', roles: [original] });
+    await prepare();
+    await screen.findByLabelText(/Original pilot — Privileged/);
+    // Explicitly review against the cached role snapshot, then refresh it.
+    await fireEvent.click(screen.getByRole('button', { name: 'Review configuration' }));
+    await screen.findByRole('region', { name: 'PIM plan review' });
+    await connect();
+    vi.mocked(rolesApi.refreshPimRoles).mockResolvedValueOnce({ tenantId: review.binding.tenantId, source: 'live', retrievedAt: '2026-11-05T00:00:00Z', roles: [{ ...original, displayName: 'Renamed pilot' }, { ...original, id: '44444444-4444-4444-8444-444444444444', displayName: 'New Microsoft role', isBuiltIn: true }] });
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    const newRole = await screen.findByLabelText(/New Microsoft role — Privileged/);
+    expect(newRole).not.toBeChecked();
+    await fireEvent.click(newRole);
+    expect(screen.getByText(/Original pilot .* changed to Renamed pilot/)).toBeInTheDocument();
+    await fireEvent.click(screen.getByLabelText(/New Microsoft role — Privileged/));
+    await fireEvent.click(screen.getByRole('button', { name: 'Accept current role metadata' }));
+    expect(screen.queryByRole('button', { name: 'Accept current role metadata' })).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText('Role definition IDs')[0]).toHaveValue(original.id);
+  });
+  it('ignores a late refresh after cancellation', async () => {
+    await prepare(); await connect();
+    let resolve!: (value: rolesApi.PimRoleCatalog) => void;
+    vi.mocked(rolesApi.refreshPimRoles).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await waitFor(() => expect(rolesApi.refreshPimRoles).toHaveBeenCalled());
+    await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    resolve({ tenantId: review.binding.tenantId, source: 'live', retrievedAt: '2026-11-05T00:00:00Z', roles: [] });
+    await tick();
+    expect(screen.queryByText(/Live complete role list/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'PIM plan review' })).not.toBeInTheDocument();
   });
 });
