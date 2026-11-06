@@ -480,7 +480,11 @@ impl GraphWorker {
                 Some("GraphDelegatedScopeMissing") => "The returned delegated grant does not include the required read permission. Do not grant consent automatically.",
                 Some("GraphIdentityMismatch" | "GraphIdentityOrGrantsChanged") => "Graph identity or delegated grants did not match the approved session.",
                 Some("PimVerificationBudgetExceeded" | "PimReadBudgetOrSessionRejected" | "PimResponseLimitExceeded") => "PIM read budget or response limit rejected the operation.",
-                Some("GraphRedirectRejected" | "GraphReadFailed") => "The protected Graph read failed or attempted a redirect; no retry was made.",
+                Some("GraphReadBadRequest") => "The protected Graph request was rejected as invalid (HTTP 400). Review the registered query contract; no retry was made.",
+                Some("GraphReadNotFound") => "The registered Graph read returned not found (HTTP 404); no retry was made.",
+                Some("GraphReadThrottled") => "Graph throttled the protected read (HTTP 429); no retry was made.",
+                Some("GraphRedirectRejected") => "The protected Graph read returned a redirect. It was rejected without following it or retrying.",
+                Some("GraphReadFailed") => "The protected Graph read failed; no retry was made.",
                 Some("PimPlannerRejectedConfiguration") => "PIM planner could not build a plan from the selected configuration and returned policy data. No plan was accepted; the session was discarded.",
                 Some("PimContextAlreadyExists") => "An authentication context with the planned name already exists. Ownership/adoption review is required; nothing was adopted or changed.",
                 Some("PimContextDuplicateNames") => "Multiple authentication contexts have the planned name. Resolve the naming conflict before another plan; nothing was changed.",
@@ -1276,6 +1280,62 @@ mod tests {
             let calls = fixture.calls().len();
             assert!(worker.pim_plan(&review.configuration).await.is_err());
             assert_eq!(fixture.calls().len(), calls, "{case}: retry was dispatched");
+            assert!(worker.transport.lock().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell HTTP diagnostics; substitutes MSAL and HTTP"]
+    async fn http_failure_categories_are_fixed_and_revoke_without_retry() {
+        for (status, expected) in [
+            (400, "rejected as invalid (HTTP 400)"),
+            (401, "Graph read denied"),
+            (403, "Graph read denied"),
+            (404, "returned not found (HTTP 404)"),
+            (429, "throttled the protected read (HTTP 429)"),
+            (300, "returned a redirect"),
+            (302, "returned a redirect"),
+            (307, "returned a redirect"),
+            (399, "returned a redirect"),
+            (409, "protected Graph read failed; no retry"),
+            (500, "protected Graph read failed; no retry"),
+            (503, "protected Graph read failed; no retry"),
+        ] {
+            let fixture = Fixture::new();
+            let review = pim_review();
+            let worker = fixture.pim_worker(&review).await;
+            worker.authenticate().await.unwrap();
+            worker.probe().await.unwrap();
+            std::fs::write(fixture.root.path().join("control.json"), json!({
+                "account":"operator@example.test", "mode":"pim", "delayMs":0, "responseStatus":status
+            }).to_string()).unwrap();
+            let error = worker
+                .pim_plan(&review.configuration)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "HTTP {status}: {error}");
+            assert!(
+                !error.contains("offline-only-token")
+                    && !error.contains("https://")
+                    && !error.contains("operator@example.test")
+            );
+            assert!(*worker.cancel.borrow());
+            let attempts = fixture
+                .calls()
+                .iter()
+                .filter(|call| call["kind"] == "protected-read-start")
+                .count();
+            assert_eq!(attempts, 2, "HTTP {status}: unexpected redirect or retry");
+            assert!(worker.pim_plan(&review.configuration).await.is_err());
+            assert_eq!(
+                fixture
+                    .calls()
+                    .iter()
+                    .filter(|call| call["kind"] == "protected-read-start")
+                    .count(),
+                attempts
+            );
             assert!(worker.transport.lock().await.is_none());
         }
     }

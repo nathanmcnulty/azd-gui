@@ -245,7 +245,9 @@ public sealed class OwnedGraphSession : IDisposable
     {
         if (response.IsSuccessStatusCode) return;
         throw new GraphBoundaryException((int)response.StatusCode switch {
-            401 or 403 => "GraphReadDenied", >= 300 and < 400 => "GraphRedirectRejected", _ => "GraphReadFailed"
+            400 => "GraphReadBadRequest", 401 or 403 => "GraphReadDenied",
+            404 => "GraphReadNotFound", 429 => "GraphReadThrottled",
+            >= 300 and < 400 => "GraphRedirectRejected", _ => "GraphReadFailed"
         });
     }
 

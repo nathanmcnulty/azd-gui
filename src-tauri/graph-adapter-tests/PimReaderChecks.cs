@@ -57,6 +57,17 @@ public static class PimReaderChecks
     }
     private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body) };
 
+    private sealed class ErrorBodyTripwire : HttpContent
+    {
+        public bool WasRead { get; private set; }
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+        {
+            WasRead = true;
+            throw new InvalidOperationException("offline-private-error-body-sentinel");
+        }
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
+    }
+
     public static int Run(string root)
     {
         int checks = 0;
@@ -90,11 +101,24 @@ public static class PimReaderChecks
             Check(fixture.Http.Calls == 1, "Malformed response dispatched extra requests.");
             checks++;
         }
-        foreach (var status in new[] { HttpStatusCode.Forbidden, HttpStatusCode.Found })
+        foreach (var (status, expectedCode) in new (int, string)[] {
+            (400, "GraphReadBadRequest"), (401, "GraphReadDenied"), (403, "GraphReadDenied"),
+            (404, "GraphReadNotFound"), (429, "GraphReadThrottled"),
+            (300, "GraphRedirectRejected"), (302, "GraphRedirectRejected"), (307, "GraphRedirectRejected"), (399, "GraphRedirectRejected"),
+            (409, "GraphReadFailed"), (500, "GraphReadFailed"), (503, "GraphReadFailed")
+        })
         {
-            using var fixture = new Fixture(root, _ => new HttpResponseMessage(status));
+            var content = new ErrorBodyTripwire();
+            using var fixture = new Fixture(root, _ => new HttpResponseMessage((HttpStatusCode)status) {
+                ReasonPhrase = "offline-private-reason-sentinel", Content = content,
+                Headers = { Location = new Uri("https://example.invalid/offline-private-location-sentinel") }
+            });
+            GraphBoundaryException? failure = null;
+            try { fixture.Session.ReadPimJson(Initial); } catch (GraphBoundaryException exception) { failure = exception; }
+            Check(failure is not null && failure.Code == expectedCode && failure.Message == expectedCode, "HTTP failure did not use its closed safe category.");
+            Check(!content.WasRead, "HTTP failure body was read.");
             Reject(() => fixture.Session.ReadPimJson(Initial));
-            Check(fixture.Http.Calls == 1, "Denied response was replayed.");
+            Check(fixture.Http.Calls == 1, "Failed response was replayed or redirected.");
             checks++;
         }
         {

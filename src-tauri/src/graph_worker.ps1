@@ -141,7 +141,7 @@ try {
             $exception = $_.Exception
             for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
                 if ($exception -is [AzdGui.GraphAdapter.GraphBoundaryException]) {
-                    if ($exception.Code -in @('GraphReadDenied', 'GraphDelegatedScopeMissing', 'GraphIdentityMismatch', 'GraphIdentityOrGrantsChanged', 'PimVerificationBudgetExceeded', 'PimReadBudgetOrSessionRejected', 'PimResponseLimitExceeded', 'GraphRedirectRejected', 'GraphReadFailed')) { $code = $exception.Code }
+                    if ($exception.Code -in @('GraphReadDenied', 'GraphReadBadRequest', 'GraphReadNotFound', 'GraphReadThrottled', 'GraphDelegatedScopeMissing', 'GraphIdentityMismatch', 'GraphIdentityOrGrantsChanged', 'PimVerificationBudgetExceeded', 'PimReadBudgetOrSessionRejected', 'PimResponseLimitExceeded', 'GraphRedirectRejected', 'GraphReadFailed')) { $code = $exception.Code }
                     else { $code = 'PimReadFailed' }
                     break
                 }
