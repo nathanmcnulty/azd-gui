@@ -107,7 +107,7 @@ Never add permissions merely to obtain a passing test.
 
 The PIM read-only milestone is implemented on `codex/pim-read-plan`; see
 [the workflow and validation contract](PIM-READ-ONLY-PLAN.md). It pins the companion
-template change `089a1067c983d490ded667eeb1a9bc959c301d69`. Offline qualification
+template change `97054a7c8bb67c4a4de52caccb68442c1e1ce769`. Offline qualification
 does not authorize new sign-in, consent, live tenant reads or publication. The
 private handoff records final validation, review and dependency ordering.
 

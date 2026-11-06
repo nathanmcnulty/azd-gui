@@ -60,7 +60,7 @@ read-only review choice, not adoption or a way to authorize enforcement.
 ## Pinned planner and process boundary
 
 `src-tauri/pim-template/source.json` pins azd-pim commit
-`089a1067c983d490ded667eeb1a9bc959c301d69` and the original module/license byte hashes.
+`97054a7c8bb67c4a4de52caccb68442c1e1ce769` and the original module/license byte hashes.
 The companion change adds `New-AzdPimReadPlan` to the template's Graph module. It
 invokes the existing `New-AzdPimPlan` with no deployment state and an explicit reader,
 rejects unsupported extensions/mode, blocks write methods and request bodies, and

@@ -71,7 +71,7 @@ public static class PimReaderChecks
     public static int Run(string root)
     {
         int checks = 0;
-        foreach (var uri in new[] { "https://graph.microsoft.com/v1.0/users", Next, Initial + "&$expand=roleAssignments", "http://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions" })
+        foreach (var uri in new[] { "https://graph.microsoft.com/v1.0/users", Next, Initial + "&$expand=roleAssignments", "http://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions", "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies?$top=100" })
         {
             using var fixture = new Fixture(root, _ => Json("{\"value\":[]}"));
             Reject(() => fixture.Session.ReadPimJson(uri));

@@ -53,7 +53,7 @@
       }
     ]
   },
-  "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies?$top=100": {
+  "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies": {
     "value": [
       {
         "id": "00000000-0000-0000-0000-000000000004",

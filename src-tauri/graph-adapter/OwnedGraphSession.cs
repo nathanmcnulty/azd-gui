@@ -121,7 +121,7 @@ public sealed class OwnedGraphSession : IDisposable
         ["https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999"] = "RoleManagement.Read.Directory",
         ["https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences"] = "AuthenticationContext.Read.All",
         ["https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999"] = "Policy.Read.All",
-        ["https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies?$top=100"] = "Policy.Read.All"
+        ["https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies"] = "Policy.Read.All"
     };
 
     private static Dictionary<string, string> Query(Uri uri)

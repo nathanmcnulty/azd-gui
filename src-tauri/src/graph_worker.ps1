@@ -34,7 +34,7 @@ function Get-PimPlannerFailureCode {
         # Locations identify explicit throws in the exact embedded planner, not
         # tenant-controlled names, IDs or exception text. A changed pin must be
         # reviewed with this map; otherwise diagnostics remain safely generic.
-        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine 'de289c7566bd9449fe55ddcfbbf9c84d01ee8056095c4df0747df0beefac8947') { return $fallback }
+        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine '8ecb708e3dab592649662952cf0667f5525a63ec7444c34ffa5b96f9546423df') { return $fallback }
         if ($Record.Exception -is [System.Management.Automation.PropertyNotFoundException]) {
             switch ($lineNumber) {
                 { $_ -in @(283, 284, 285) } { return 'PimRoleReferenceDataInvalid' }

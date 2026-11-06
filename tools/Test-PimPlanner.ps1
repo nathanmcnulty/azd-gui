@@ -49,6 +49,10 @@ $responses = @{
     'https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999' = @{ value = @(
         @{ id = 'ordinary-policy'; displayName = 'Unrelated policy'; conditions = @{ applications = @{ includeApplications = @('All'); excludeApplications = @() } } }
     ) }
+    # Strength listing supports the documented bare collection, not $top.
+    'https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies' = @{ value = @(
+        @{ id = '00000000-0000-0000-0000-000000000004'; policyType = 'builtIn'; displayName = 'Phishing-resistant MFA' }
+    ) }
 }
 $responses | ConvertTo-Json -Depth 30 | Set-Content (Join-Path $fixtures 'responses.json')
 $saved = @{}
@@ -57,16 +61,25 @@ $owned = $null
 try {
     $configuration = Get-AzdPimConfiguration
     $configuration.PrivilegedRoleIds = @($role)
+    $configuration.PrivilegedAuthenticationProfile = 'phishingResistant'
     $owned = [AzdGui.GraphAdapter.Tests.TestFactory]::Create($binding, $control)
     $owned.Authenticate()
     $owned.Probe()
     $plan = New-AzdPimReadPlan -Configuration $configuration -ReadContext $owned
     if ($plan.tiers.privileged.roles.Count -ne 1 -or $plan.tiers.privileged.context.action -ne 'create' -or
         $plan.tiers.privileged.conditionalAccessPolicies[0].action -ne 'create') { throw 'Real planner did not produce expected proposals.' }
+    $strengthId = '00000000-0000-0000-0000-000000000004'
+    if ($plan.tiers.privileged.authenticationStrength.id -ne $strengthId -or
+        $plan.tiers.privileged.conditionalAccessPolicies[0].body.grantControls.authenticationStrength.id -ne $strengthId) {
+        throw 'Real planner did not bind the phishing-resistant strength to the proposed policy.'
+    }
     Write-AzdPimPlanReport -Plan $plan -Path (Join-Path $fixtures 'plan.json')
     $calls = @(Get-Content (Join-Path $fixtures 'calls.jsonl') | ConvertFrom-Json)
     $reads = @($calls | Where-Object kind -eq 'protected-read-start')
-    if ($reads.Count -ne 8 -or @($calls.pid | Sort-Object -Unique).Count -ne 1 -or $calls[0].pid -ne $PID) { throw 'Planner reads escaped the owning process or missed pagination.' }
+    if ($reads.Count -ne 9 -or @($calls.pid | Sort-Object -Unique).Count -ne 1 -or $calls[0].pid -ne $PID) { throw 'Planner reads escaped the owning process or missed pagination/strength lookup.' }
+    if (@($reads | Where-Object uri -eq 'https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies').Count -ne 1) {
+        throw 'Planner did not use the documented strength-list request.'
+    }
     try { $owned.ReadPimJson('https://graph.microsoft.com/v1.0/users'); throw 'Unregistered endpoint accepted.' }
     catch { if ($_.Exception.Message -notlike '*UnregisteredPimRead*') { throw } }
     Write-Host 'Real planner, managed credential validation, same-process GETs, pagination and endpoint rejection passed without cloud access.'
