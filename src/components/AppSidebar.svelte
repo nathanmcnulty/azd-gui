@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import type { CatalogEntry, WizardPlan } from "../lib/types";
 
-  type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
+  type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings" | "pimPlan";
   type IconName = "home" | "catalog" | "projects" | "connections" | "tools" | "settings";
   interface NavItem {
     id: NavId;

@@ -105,6 +105,12 @@ Never add permissions merely to obtain a passing test.
 
 ## Milestone working agreement
 
+The PIM read-only milestone is implemented on `codex/pim-read-plan`; see
+[the workflow and validation contract](PIM-READ-ONLY-PLAN.md). It pins the companion
+template change `97054a7c8bb67c4a4de52caccb68442c1e1ce769`. Offline qualification
+does not authorize new sign-in, consent, live tenant reads or publication. The
+private handoff records final validation, review and dependency ordering.
+
 Take an agreed user outcome through design, implementation, focused validation,
 review, local checkpoint and a PR-ready handoff. Reuse completed setup and
 unaffected evidence. Ask only for a material scope/architecture choice, missing

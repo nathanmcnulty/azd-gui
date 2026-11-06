@@ -10,6 +10,15 @@
 # in https://github.com/tauri-apps/tauri/pull/15660, but has not released it.
 # Remove the five RUSTSEC-2025 exceptions with the first stable Tauri release
 # containing that change. They are maintenance warnings, not vulnerabilities.
+#
+# tauri-plugin-opener 2.5.4 uses zbus 5 on Linux/BSD only (not Windows).
+# The latest stable opener 2.7.2 still requires zbus ^5.9. zbus 6 folds the
+# three standalone crates below into zbus; these advisories report maintenance
+# status, not a known vulnerability. Track the required upstream source migration:
+# https://github.com/tauri-apps/plugins-workspace/issues/3716
+# Remove these three exceptions with the first stable compatible opener release
+# using zbus 6, and verify that the standalone crates leave the resolved graph.
+# They do not exempt any future vulnerability advisory in this dependency chain.
 [advisories]
 ignore = [
   # Tauri's Linux-only GTK3 dependency graph.
@@ -32,4 +41,9 @@ ignore = [
   "RUSTSEC-2025-0081",
   "RUSTSEC-2025-0098",
   "RUSTSEC-2025-0100",
+
+  # Linux/BSD-only opener/zbus 5 maintenance notices, pending upstream migration.
+  "RUSTSEC-2026-0370",
+  "RUSTSEC-2026-0371",
+  "RUSTSEC-2026-0372",
 ]

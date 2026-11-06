@@ -23,7 +23,7 @@ const ENTRA_HEALTH_MANIFEST: &str =
     include_str!("../../catalog/manifests/entra-health-monitoring.json");
 static COMMIT_REVISION: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^[a-fA-F0-9]{40}$").expect("static commit regex"));
-const AZURE_YAML_LIMIT: usize = 2_000_000;
+const AZURE_YAML_LIMIT: usize = crate::inspection_yaml::MAX_YAML_BYTES;
 const TEMPLATE_MANIFEST_LIMIT: usize = 512_000;
 const CATALOG_LIMIT: usize = 2_000_000;
 const MAX_CATALOG_ENTRIES: usize = 250;
@@ -571,10 +571,10 @@ pub fn inspect_local(path: &str) -> AppResult<TemplateInspection> {
         ));
     }
     let yaml_text = read_bounded_local_text(&azure_yaml, AZURE_YAML_LIMIT, "azure.yaml")?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_text)?;
+    let yaml: crate::inspection_yaml::Value = crate::inspection_yaml::parse(&yaml_text)?;
     let name = yaml
         .get("name")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(crate::inspection_yaml::Value::as_str)
         .unwrap_or("local-azd-project")
         .to_string();
     let embedded_path = canonical.join("azd-gui.json");
@@ -720,7 +720,7 @@ async fn inspect_github_revision(
     let yaml_bytes = read_bounded_response(azure_response, AZURE_YAML_LIMIT, "azure.yaml").await?;
     let yaml_text = std::str::from_utf8(&yaml_bytes)
         .map_err(|_| AppError::Invalid("azure.yaml must use UTF-8 text.".into()))?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(yaml_text)?;
+    let yaml: crate::inspection_yaml::Value = crate::inspection_yaml::parse(yaml_text)?;
     let embedded_manifest = client
         .get(format!("{raw_base}/azd-gui.json"))
         .timeout(Duration::from_secs(20))
@@ -746,7 +746,7 @@ async fn inspect_github_revision(
     crate::manifest::validate(&manifest)?;
     let name = yaml
         .get("name")
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(crate::inspection_yaml::Value::as_str)
         .unwrap_or(repository_name);
     let (interactive_hooks, _, _) = hook_characteristics(&yaml);
     manifest.requires_interactive_terminal |= interactive_hooks;
@@ -778,15 +778,18 @@ async fn inspect_github_revision(
     })
 }
 
-fn hook_characteristics(yaml: &serde_yaml::Value) -> (bool, bool, bool) {
+fn hook_characteristics(yaml: &crate::inspection_yaml::Value) -> (bool, bool, bool) {
     let mut containers = vec![yaml];
-    if let Some(services) = yaml.get("services").and_then(serde_yaml::Value::as_mapping) {
+    if let Some(services) = yaml
+        .get("services")
+        .and_then(crate::inspection_yaml::Value::as_mapping)
+    {
         containers.extend(services.values());
     }
     if let Some(layers) = yaml.get("infra").and_then(|infra| infra.get("layers")) {
         match layers {
-            serde_yaml::Value::Sequence(layers) => containers.extend(layers),
-            serde_yaml::Value::Mapping(layers) => containers.extend(layers.values()),
+            crate::inspection_yaml::Value::Sequence(layers) => containers.extend(layers),
+            crate::inspection_yaml::Value::Mapping(layers) => containers.extend(layers.values()),
             _ => {}
         }
     }
@@ -797,25 +800,27 @@ fn hook_characteristics(yaml: &serde_yaml::Value) -> (bool, bool, bool) {
     let (mut interactive, mut windows, mut posix) = (false, false, false);
     while let Some(node) = pending.pop() {
         match node {
-            serde_yaml::Value::Mapping(entries) => {
-                interactive |=
-                    node.get("interactive").and_then(serde_yaml::Value::as_bool) == Some(true);
+            crate::inspection_yaml::Value::Mapping(entries) => {
+                interactive |= node
+                    .get("interactive")
+                    .and_then(crate::inspection_yaml::Value::as_bool)
+                    == Some(true);
                 windows |= node.get("windows").is_some();
                 posix |= node.get("posix").is_some();
                 pending.extend(entries.values());
             }
-            serde_yaml::Value::Sequence(entries) => pending.extend(entries),
+            crate::inspection_yaml::Value::Sequence(entries) => pending.extend(entries),
             _ => {}
         }
     }
     (interactive, windows, posix)
 }
 
-fn inferred_manifest(yaml: &serde_yaml::Value) -> TemplateManifest {
+fn inferred_manifest(yaml: &crate::inspection_yaml::Value) -> TemplateManifest {
     let minimum_azd_version = yaml
         .get("requiredVersions")
         .and_then(|value| value.get("azd"))
-        .and_then(serde_yaml::Value::as_str)
+        .and_then(crate::inspection_yaml::Value::as_str)
         .map(ToOwned::to_owned);
     TemplateManifest {
         schema_version: "1.0".into(),
@@ -929,6 +934,52 @@ pub fn template_path(cache_path: &Path, entry: &CatalogEntry) -> AppResult<PathB
 #[cfg(test)]
 mod tests {
     #[test]
+    fn yaml_aliases_and_mapping_layers_preserve_hook_requirements() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("azure.yaml"),
+            "name: aliases\nrequiredVersions: {azd: '>=1.20.0'}\ndefaults: &hook {windows: {interactive: true, run: ./setup.ps1}}\nservices: {api: {hooks: {predeploy: *hook}}}\ninfra: {layers: {shared: {hooks: {preprovision: {posix: {run: ./setup.sh}}}}}}\n",
+        ).unwrap();
+        let inspection = super::inspect_local(source.path().to_str().unwrap()).unwrap();
+        assert!(inspection.interactive_hooks);
+        let manifest = inspection.entry.manifest.unwrap();
+        assert!(manifest.requires_interactive_terminal);
+        assert_eq!(manifest.minimum_azd_version.as_deref(), Some(">=1.20.0"));
+        let yaml = crate::inspection_yaml::parse(
+            "defaults: &hook {windows: {interactive: true}}\nhooks: {preprovision: {<<: *hook}}\ninfra: {layers: {shared: {hooks: {preprovision: {posix: {run: ./setup.sh}}}}}}",
+        ).unwrap();
+        assert_eq!(super::hook_characteristics(&yaml), (true, true, true));
+    }
+
+    #[test]
+    fn yaml_inspection_does_not_coerce_names_versions_or_interactive_flags() {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("azure.yaml"),
+            "name: 12\nrequiredVersions: {azd: 1.2}\nhooks: {preprovision: {interactive: 'true', run: 'interactive: true'}}\n",
+        ).unwrap();
+        let inspection = super::inspect_local(source.path().to_str().unwrap()).unwrap();
+        assert_eq!(inspection.entry.title, "local-azd-project");
+        assert!(!inspection.interactive_hooks);
+        let manifest = inspection.entry.manifest.unwrap();
+        assert!(!manifest.requires_interactive_terminal);
+        assert_eq!(manifest.minimum_azd_version, None);
+    }
+
+    #[test]
+    fn ambiguous_hook_yaml_cannot_produce_an_inspection() {
+        let source = tempfile::tempdir().unwrap();
+        for yaml in [
+            "name: duplicate\nhooks: {}\nhooks: {predeploy: {interactive: true}}",
+            "name: tagged\nhooks: !unknown {predeploy: {interactive: true}}",
+            "name: key\nhooks: {predeploy: {true: {interactive: true}}}",
+        ] {
+            std::fs::write(source.path().join("azure.yaml"), yaml).unwrap();
+            assert!(super::inspect_local(source.path().to_str().unwrap()).is_err());
+        }
+    }
+
+    #[test]
     fn hook_inspection_uses_yaml_structure_and_preserves_terminal_requirement() {
         let source = tempfile::tempdir().unwrap();
         std::fs::write(source.path().join("azure.yaml"), "name: hook-test\nhooks:\n  preprovision: {shell: pwsh, interactive: true, run: ./setup.ps1}\n").unwrap();
@@ -941,9 +992,9 @@ mod tests {
                 .unwrap()
                 .requires_interactive_terminal
         );
-        let yaml = serde_yaml::from_str("name: sample\n# interactive: true\nmetadata: {windows: documentation}\nhooks: {preprovision: {run: 'echo interactive: true', interactive: false}}\n").unwrap();
+        let yaml = crate::inspection_yaml::parse("name: sample\n# interactive: true\nmetadata: {windows: documentation}\nhooks: {preprovision: {run: 'echo interactive: true', interactive: false}}\n").unwrap();
         assert_eq!(super::hook_characteristics(&yaml), (false, false, false));
-        let yaml = serde_yaml::from_str("services:\n  api:\n    hooks:\n      predeploy:\n        - windows: {interactive: true, shell: pwsh, run: ./setup.ps1}\ninfra:\n  layers:\n    - name: shared\n      hooks:\n        preprovision: {posix: {run: ./setup.sh}}\n").unwrap();
+        let yaml = crate::inspection_yaml::parse("services:\n  api:\n    hooks:\n      predeploy:\n        - windows: {interactive: true, shell: pwsh, run: ./setup.ps1}\ninfra:\n  layers:\n    - name: shared\n      hooks:\n        preprovision: {posix: {run: ./setup.sh}}\n").unwrap();
         assert_eq!(super::hook_characteristics(&yaml), (true, true, true));
     }
 

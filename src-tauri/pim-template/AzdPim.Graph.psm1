@@ -1,0 +1,1052 @@
+#Requires -Version 7.6
+Set-StrictMode -Version Latest
+
+$script:GraphBaseV1 = 'https://graph.microsoft.com/v1.0'
+$script:GraphBaseBeta = 'https://graph.microsoft.com/beta'
+$script:AuthenticationContextRuleId = 'AuthenticationContext_EndUser_Assignment'
+$script:ReadPlanContext = $null
+
+function New-AzdPimReadPlan {
+    <#
+    .SYNOPSIS
+    Runs the existing planner with an explicitly supplied, process-owned reader.
+    .DESCRIPTION
+    The host owns authentication and implements ReadPimJson(string uri), returning
+    JSON for permitted Graph GET requests only. The host must validate endpoints,
+    pagination, identity, grants and cancellation on every request. No credential
+    or access token is accepted by this interface. This entry point does not run
+    azd hooks, load deployment state, persist files or invoke enforcement.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $Configuration,
+        [Parameter(Mandatory)] [object] $ReadContext
+    )
+
+    if ($null -ne $script:ReadPlanContext) {
+        throw 'A read-only plan is already running in this module instance.'
+    }
+    if ($Configuration.Mode -cne 'plan' -or
+        $Configuration.NotificationMode -cne 'none' -or
+        $Configuration.EnableSessionRevocation -or
+        -not [string]::IsNullOrWhiteSpace($Configuration.EmergencyAccessGroupId) -or
+        -not [string]::IsNullOrWhiteSpace($Configuration.TeamsWebhookUrl) -or
+        -not [string]::IsNullOrWhiteSpace($Configuration.SentinelWorkspaceResourceId) -or
+        -not [string]::IsNullOrWhiteSpace($Configuration.RevocationAlertActionGroupResourceId)) {
+        throw 'The owned-reader plan supports only plan mode without emergency groups, notifications or session revocation.'
+    }
+    $tenant = [guid]::Empty
+    if (-not [guid]::TryParse([string]$ReadContext.TenantId, [ref]$tenant) -or
+        $tenant -eq [guid]::Empty -or -not $ReadContext.PSObject.Methods['ReadPimJson']) {
+        throw 'A tenant-bound read-only Graph reader is required.'
+    }
+
+    try {
+        $script:ReadPlanContext = $ReadContext
+        return New-AzdPimPlan -Configuration $Configuration -State $null
+    } finally {
+        $script:ReadPlanContext = $null
+    }
+}
+
+function Invoke-AzdPimGraphRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateSet('GET', 'POST', 'PATCH', 'DELETE')] [string] $Method,
+        [Parameter(Mandatory)] [string] $Uri,
+        [AllowNull()] [object] $Body,
+        [switch] $AllowNotFound
+    )
+
+    # Reject writes outside the SDK retry path. A failed owned read must never
+    # fall back to a cached Microsoft Graph PowerShell session.
+    if ($null -ne $script:ReadPlanContext) {
+        if ($Method -cne 'GET' -or $PSBoundParameters.ContainsKey('Body')) {
+            throw 'Writes and request bodies are forbidden in an owned-reader plan.'
+        }
+        return ($script:ReadPlanContext.ReadPimJson($Uri) | ConvertFrom-Json -Depth 100 -ErrorAction Stop)
+    }
+
+    $attempt = 0
+    while ($attempt -lt 5) {
+        $attempt++
+        try {
+            if (-not (Get-Command Get-MgContext -ErrorAction SilentlyContinue) -or
+                -not (Get-Command Invoke-MgGraphRequest -ErrorAction SilentlyContinue) -or
+                -not (Get-MgContext)) {
+                throw 'A proven Microsoft Graph PowerShell session is required. Run the azd-pim authentication hook before issuing Graph requests.'
+            }
+
+            $mgParameters = @{
+                Method = $Method
+                Uri = $Uri
+                OutputType = 'PSObject'
+                ErrorAction = 'Stop'
+            }
+            if ($PSBoundParameters.ContainsKey('Body') -and $null -ne $Body) {
+                $mgParameters.Body = $Body
+            }
+            return Invoke-MgGraphRequest @mgParameters
+        } catch {
+            $statusCode = $null
+            $responseProperty = $_.Exception.PSObject.Properties['Response']
+            $response = if ($responseProperty) { $responseProperty.Value } else { $null }
+            if ($response) {
+                $statusCodeProperty = $response.PSObject.Properties['StatusCode']
+                if ($statusCodeProperty) {
+                    $statusCode = [int]$statusCodeProperty.Value
+                }
+            }
+            if ($AllowNotFound -and $statusCode -eq 404) {
+                return $null
+            }
+            if ($statusCode -in @(429, 500, 502, 503, 504) -and $attempt -lt 5) {
+                $retryAfter = 0
+                $headersProperty = $response.PSObject.Properties['Headers']
+                $headers = if ($headersProperty) { $headersProperty.Value } else { $null }
+                $retryAfterProperty = if ($headers) { $headers.PSObject.Properties['RetryAfter'] } else { $null }
+                if ($retryAfterProperty -and $retryAfterProperty.Value) {
+                    $retryAfter = [int]$retryAfterProperty.Value.Delta.TotalSeconds
+                }
+                if ($retryAfter -le 0) {
+                    $retryAfter = [math]::Pow(2, $attempt)
+                }
+                Start-Sleep -Seconds ([math]::Min($retryAfter, 30))
+                continue
+            }
+
+            $errorDetailsProperty = $_.PSObject.Properties['ErrorDetails']
+            $detail = if ($errorDetailsProperty -and $errorDetailsProperty.Value) { $errorDetailsProperty.Value.Message } else { $null }
+            if ([string]::IsNullOrWhiteSpace($detail)) {
+                $detail = $_.Exception.Message
+            }
+            throw "Microsoft Graph $Method $Uri failed$(if ($statusCode) { " with HTTP $statusCode" }): $detail"
+        }
+    }
+}
+
+function Get-AzdPimGraphCollection {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string] $Uri)
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    $next = $Uri
+    while (-not [string]::IsNullOrWhiteSpace($next)) {
+        $response = Invoke-AzdPimGraphRequest -Method GET -Uri $next
+        foreach ($item in @($response.value)) {
+            $items.Add($item)
+        }
+        $nextProperty = $response.PSObject.Properties['@odata.nextLink']
+        $next = if ($nextProperty) { [string]$nextProperty.Value } else { $null }
+    }
+    return @($items)
+}
+
+function Get-AzdPimTenantId {
+    [CmdletBinding()]
+    param()
+
+    if ($null -ne $script:ReadPlanContext) {
+        return [string]$script:ReadPlanContext.TenantId
+    }
+    $graphContext = if (Get-Command Get-MgContext -ErrorAction SilentlyContinue) { Get-MgContext } else { $null }
+    if (-not $graphContext -or [string]::IsNullOrWhiteSpace([string] $graphContext.TenantId)) {
+        throw 'Unable to resolve the current tenant from a proven Microsoft Graph session.'
+    }
+    return ([string] $graphContext.TenantId).Trim()
+}
+
+function Get-AzdPimRoleInventory {
+    [CmdletBinding()]
+    param()
+
+    # This preview endpoint currently rejects otherwise common $select and $top
+    # options. Use the exact documented isPrivileged filters and combine both
+    # classifications so the less-privileged tier is also Graph-derived.
+    $privilegedUri = "$script:GraphBaseBeta/roleManagement/directory/roleDefinitions?`$filter=isPrivileged%20eq%20true"
+    $lessPrivilegedUri = "$script:GraphBaseBeta/roleManagement/directory/roleDefinitions?`$filter=isPrivileged%20eq%20false"
+    $roles = @(
+        @(Get-AzdPimGraphCollection -Uri $privilegedUri)
+        @(Get-AzdPimGraphCollection -Uri $lessPrivilegedUri)
+    )
+    if ($roles.Count -eq 0) {
+        throw 'Microsoft Graph returned no Microsoft Entra role definitions.'
+    }
+
+    $unknown = @($roles | Where-Object { $null -eq $_.isPrivileged })
+    if ($unknown.Count -gt 0) {
+        throw "Graph returned $($unknown.Count) role definitions without isPrivileged. Classification cannot safely continue."
+    }
+
+    $duplicates = @($roles | Group-Object id | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) {
+        throw "Graph returned duplicate role definition IDs: $($duplicates.Name -join ', ')."
+    }
+
+    return @($roles | Select-Object id, displayName, description, isBuiltIn, isEnabled, isPrivileged | Sort-Object displayName, id)
+}
+
+function Resolve-AzdPimRoleSelection {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object[]] $Inventory,
+        [Parameter(Mandatory)] [ValidateSet('all', 'selected')] [string] $Scope,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $SelectedIds,
+        [Parameter(Mandatory)] [bool] $ExpectedPrivileged,
+        [Parameter(Mandatory)] [string] $TierName
+    )
+
+    if ($Scope -eq 'all') {
+        return @($Inventory | Where-Object { [bool]$_.isPrivileged -eq $ExpectedPrivileged })
+    }
+
+    $resolved = [System.Collections.Generic.List[object]]::new()
+    foreach ($id in $SelectedIds) {
+        $role = @($Inventory | Where-Object { $_.id -eq $id }) | Select-Object -First 1
+        if (-not $role) {
+            throw "$TierName selected role definition '$id' does not exist in the current tenant."
+        }
+        if ([bool]$role.isPrivileged -ne $ExpectedPrivileged) {
+            $actual = if ($role.isPrivileged) { 'privileged' } else { 'less-privileged' }
+            throw "$TierName selected role '$($role.displayName)' ($id) is classified by Graph as $actual."
+        }
+        $resolved.Add($role)
+    }
+    return @($resolved | Sort-Object displayName, id)
+}
+
+function Get-AzdPimRolePolicyAssignments {
+    [CmdletBinding()]
+    param()
+
+    $filter = [uri]::EscapeDataString("scopeId eq '/' and scopeType eq 'DirectoryRole'")
+    return @(Get-AzdPimGraphCollection -Uri "$script:GraphBaseV1/policies/roleManagementPolicyAssignments?`$filter=$filter&`$top=999")
+}
+
+function Get-AzdPimRolePoliciesWithRules {
+    [CmdletBinding()]
+    param()
+
+    $filter = [uri]::EscapeDataString("scopeId eq '/' and scopeType eq 'DirectoryRole'")
+    return @(Get-AzdPimGraphCollection -Uri "$script:GraphBaseV1/policies/roleManagementPolicies?`$filter=$filter&`$expand=rules&`$top=999")
+}
+
+function Get-AzdPimAuthenticationContexts {
+    [CmdletBinding()]
+    param()
+
+    return @(Get-AzdPimGraphCollection -Uri "$script:GraphBaseV1/identity/conditionalAccess/authenticationContextClassReferences")
+}
+
+function Get-AzdPimConditionalAccessPolicies {
+    [CmdletBinding()]
+    param()
+
+    return @(Get-AzdPimGraphCollection -Uri "$script:GraphBaseBeta/identity/conditionalAccess/policies?`$top=999")
+}
+
+function Get-AzdPimReferencedContextIds {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $ConditionalAccessPolicies,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $RolePolicies
+    )
+
+    $references = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($policy in $ConditionalAccessPolicies) {
+        if ($null -eq $policy -or ($policy -isnot [System.Collections.IDictionary] -and $policy -isnot [System.Management.Automation.PSCustomObject])) {
+            throw 'Conditional Access context references have an invalid policy object.'
+        }
+        # Ordinary application/user-action policies can omit this optional list.
+        # Validate present values so malformed references cannot free a used slot.
+        $conditions = Get-AzdPimStateProperty -Object $policy -Name 'conditions' -PreserveCollection
+        if ($null -ne $conditions -and $conditions -isnot [System.Collections.IDictionary] -and $conditions -isnot [System.Management.Automation.PSCustomObject]) {
+            throw 'Conditional Access context references have an invalid conditions object.'
+        }
+        $applications = Get-AzdPimStateProperty -Object $conditions -Name 'applications' -PreserveCollection
+        if ($null -ne $applications -and $applications -isnot [System.Collections.IDictionary] -and $applications -isnot [System.Management.Automation.PSCustomObject]) {
+            throw 'Conditional Access context references have an invalid applications object.'
+        }
+        $ids = Get-AzdPimStateProperty -Object $applications -Name 'includeAuthenticationContextClassReferences' -PreserveCollection
+        if ($null -eq $ids) { continue }
+        if ($ids -isnot [System.Collections.IList]) {
+            throw 'Conditional Access context references must be a list of non-empty strings.'
+        }
+        foreach ($id in $ids) {
+            if ($id -isnot [string] -or [string]::IsNullOrWhiteSpace($id) -or $id -cne $id.Trim()) {
+                throw 'Conditional Access context references must be a list of non-empty strings.'
+            }
+            [void]$references.Add($id)
+        }
+    }
+    foreach ($policy in $RolePolicies) {
+        foreach ($rule in @($policy.rules)) {
+            if ($rule.id -eq $script:AuthenticationContextRuleId -and $rule.isEnabled -and $rule.claimValue) {
+                [void]$references.Add([string]$rule.claimValue)
+            }
+        }
+    }
+    return @($references)
+}
+
+function Get-AzdPimStateProperty {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] [object] $Object,
+        [Parameter(Mandatory)] [string] $Name,
+        [switch] $PreserveCollection
+    )
+
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($Name)) {
+        if ($PreserveCollection) { return ,$Object[$Name] }
+        return $Object[$Name]
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($property) {
+        # Shape validation must distinguish omitted/null, scalar, and JSON arrays.
+        if ($PreserveCollection) { return ,$property.Value }
+        return $property.Value
+    }
+    return $null
+}
+
+function ConvertTo-AzdPimRuleTargetBody {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [object] $Target)
+
+    return @{
+        '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyRuleTarget'
+        caller = [string]$Target.caller
+        operations = @($Target.operations | ForEach-Object { [string]$_ })
+        level = [string]$Target.level
+        inheritableSettings = @($Target.inheritableSettings | ForEach-Object { [string]$_ })
+        enforcedSettings = @($Target.enforcedSettings | ForEach-Object { [string]$_ })
+    }
+}
+
+function Test-AzdPimStringSetEqual {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] [object[]] $Left,
+        [AllowNull()] [object[]] $Right
+    )
+
+    $leftValues = @($Left | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+    $rightValues = @($Right | ForEach-Object { ([string]$_).ToLowerInvariant() } | Sort-Object -Unique)
+    return ($leftValues -join "`0") -ceq ($rightValues -join "`0")
+}
+
+function Test-AzdPimContextMatches {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $Existing,
+        [Parameter(Mandatory)] [string] $Tier,
+        [Parameter(Mandatory)] [string] $DisplayName
+    )
+
+    $description = "Authentication context managed by azd-pim for $Tier Microsoft Entra role activation."
+    return (
+        [string]$Existing.displayName -ceq $DisplayName -and
+        [string]$Existing.description -ceq $description -and
+        [bool]$Existing.isAvailable
+    )
+}
+
+function Test-AzdPimConditionalAccessPolicyMatches {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $Existing,
+        [Parameter(Mandatory)] [object] $Desired
+    )
+
+    if ([string]$Existing.displayName -cne [string]$Desired.displayName -or [string]$Existing.state -cne [string]$Desired.state) {
+        return $false
+    }
+
+    $existingConditions = Get-AzdPimStateProperty -Object $Existing -Name 'conditions'
+    $desiredConditions = Get-AzdPimStateProperty -Object $Desired -Name 'conditions'
+    $existingApplications = Get-AzdPimStateProperty -Object $existingConditions -Name 'applications'
+    $desiredApplications = Get-AzdPimStateProperty -Object $desiredConditions -Name 'applications'
+    $existingUsers = Get-AzdPimStateProperty -Object $existingConditions -Name 'users'
+    $desiredUsers = Get-AzdPimStateProperty -Object $desiredConditions -Name 'users'
+    if (-not (Test-AzdPimStringSetEqual -Left (Get-AzdPimStateProperty -Object $existingConditions -Name 'clientAppTypes') -Right (Get-AzdPimStateProperty -Object $desiredConditions -Name 'clientAppTypes'))) { return $false }
+    if (-not (Test-AzdPimStringSetEqual -Left (Get-AzdPimStateProperty -Object $existingApplications -Name 'includeAuthenticationContextClassReferences') -Right (Get-AzdPimStateProperty -Object $desiredApplications -Name 'includeAuthenticationContextClassReferences'))) { return $false }
+    if (-not (Test-AzdPimStringSetEqual -Left (Get-AzdPimStateProperty -Object $existingUsers -Name 'includeUsers') -Right (Get-AzdPimStateProperty -Object $desiredUsers -Name 'includeUsers'))) { return $false }
+    if (-not (Test-AzdPimStringSetEqual -Left (Get-AzdPimStateProperty -Object $existingUsers -Name 'excludeGroups') -Right (Get-AzdPimStateProperty -Object $desiredUsers -Name 'excludeGroups'))) { return $false }
+
+    $existingGrant = Get-AzdPimStateProperty -Object $Existing -Name 'grantControls'
+    $desiredGrant = Get-AzdPimStateProperty -Object $Desired -Name 'grantControls'
+    $desiredBuiltInControls = @(Get-AzdPimStateProperty -Object $desiredGrant -Name 'builtInControls')
+    if (-not (Test-AzdPimStringSetEqual -Left (Get-AzdPimStateProperty -Object $existingGrant -Name 'builtInControls') -Right $desiredBuiltInControls)) { return $false }
+    $existingStrength = Get-AzdPimStateProperty -Object $existingGrant -Name 'authenticationStrength'
+    $desiredStrength = Get-AzdPimStateProperty -Object $desiredGrant -Name 'authenticationStrength'
+    if ([string](Get-AzdPimStateProperty -Object $existingStrength -Name 'id') -cne [string](Get-AzdPimStateProperty -Object $desiredStrength -Name 'id')) { return $false }
+    $grantControlCount = $desiredBuiltInControls.Count + $(if ($desiredStrength) { 1 } else { 0 })
+    if ($grantControlCount -gt 1 -and [string]$existingGrant.operator -cne [string]$desiredGrant.operator) { return $false }
+
+    $existingSession = Get-AzdPimStateProperty -Object $Existing -Name 'sessionControls'
+    $desiredSession = Get-AzdPimStateProperty -Object $Desired -Name 'sessionControls'
+    $existingFrequency = Get-AzdPimStateProperty -Object $existingSession -Name 'signInFrequency'
+    $desiredFrequency = Get-AzdPimStateProperty -Object $desiredSession -Name 'signInFrequency'
+    if ($desiredFrequency) {
+        if (-not $existingFrequency) { return $false }
+        foreach ($propertyName in @('isEnabled', 'frequencyInterval', 'authenticationType')) {
+            if ([string](Get-AzdPimStateProperty -Object $existingFrequency -Name $propertyName) -cne [string](Get-AzdPimStateProperty -Object $desiredFrequency -Name $propertyName)) { return $false }
+        }
+    } elseif ($existingFrequency -and [bool](Get-AzdPimStateProperty -Object $existingFrequency -Name 'isEnabled')) {
+        return $false
+    }
+
+    $existingDevices = Get-AzdPimStateProperty -Object $existingConditions -Name 'devices'
+    $desiredDevices = Get-AzdPimStateProperty -Object $desiredConditions -Name 'devices'
+    $existingFilter = Get-AzdPimStateProperty -Object $existingDevices -Name 'deviceFilter'
+    $desiredFilter = Get-AzdPimStateProperty -Object $desiredDevices -Name 'deviceFilter'
+    if ($desiredFilter) {
+        if (-not $existingFilter) { return $false }
+        foreach ($propertyName in @('mode', 'rule')) {
+            if ([string](Get-AzdPimStateProperty -Object $existingFilter -Name $propertyName) -cne [string](Get-AzdPimStateProperty -Object $desiredFilter -Name $propertyName)) { return $false }
+        }
+    } elseif ($existingFilter) {
+        return $false
+    }
+
+    return $true
+}
+
+function Resolve-AzdPimContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Tier,
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Contexts,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.HashSet[string]] $ReservedIds,
+        [AllowNull()] [object] $State,
+        [Parameter(Mandatory)] [bool] $AdoptExisting
+    )
+
+    $stateContexts = Get-AzdPimStateProperty -Object $State -Name 'contexts'
+    $stateEntry = Get-AzdPimStateProperty -Object $stateContexts -Name $Tier
+    $ownedId = [string](Get-AzdPimStateProperty -Object $stateEntry -Name 'id')
+    $pendingIntent = Get-AzdPimStateProperty -Object $stateEntry -Name 'pendingIntent'
+
+    if ($ownedId) {
+        $owned = @($Contexts | Where-Object { $_.id -eq $ownedId }) | Select-Object -First 1
+        if ($owned) {
+            [void]$ReservedIds.Add($owned.id)
+            $matches = Test-AzdPimContextMatches -Existing $owned -Tier $Tier -DisplayName $DisplayName
+            if ($pendingIntent) {
+                if ($matches) { return [pscustomobject]@{ id = $owned.id; action = 'none'; existing = $owned; adopted = $false; recoveredPendingIntent = $true } }
+                if ([string](Get-AzdPimStateProperty -Object $pendingIntent -Name 'action') -eq 'create') {
+                    $unused = -not $owned.isAvailable -and [string]::IsNullOrWhiteSpace([string]$owned.displayName) -and [string]::IsNullOrWhiteSpace([string]$owned.description)
+                    if (-not $unused) { throw "Pending authentication-context creation for '$Tier' found a different live context at $ownedId. Refuse to overwrite it." }
+                    return [pscustomobject]@{ id = $owned.id; action = 'create'; existing = $owned; adopted = $false; recoveredPendingIntent = $false }
+                }
+                return [pscustomobject]@{ id = $owned.id; action = [string](Get-AzdPimStateProperty -Object $pendingIntent -Name 'action'); existing = $owned; adopted = [bool](Get-AzdPimStateProperty -Object $stateEntry -Name 'adopted'); recoveredPendingIntent = $false }
+            }
+            $action = if ($matches) { 'none' } else { 'update' }
+            return [pscustomobject]@{ id = $owned.id; action = $action; existing = $owned; adopted = $false; recoveredPendingIntent = $false }
+        }
+    }
+
+    $matching = @($Contexts | Where-Object { $_.displayName -eq $DisplayName })
+    if ($matching.Count -gt 1) {
+        throw "Multiple authentication contexts are named '$DisplayName'. Resolve the duplicate names before deployment."
+    }
+    if ($matching.Count -eq 1) {
+        if (-not $AdoptExisting) {
+            throw "Authentication context '$DisplayName' already exists as $($matching[0].id). Set AZD_PIM_ADOPT_EXISTING=true only after reviewing it."
+        }
+        [void]$ReservedIds.Add($matching[0].id)
+        return [pscustomobject]@{ id = $matching[0].id; action = 'adoptAndUpdate'; existing = $matching[0]; adopted = $true; recoveredPendingIntent = $false }
+    }
+
+    foreach ($number in 1..25) {
+        $id = "c$number"
+        if ($ReservedIds.Contains($id)) { continue }
+        $existing = @($Contexts | Where-Object { $_.id -eq $id }) | Select-Object -First 1
+        $unused = -not $existing -or (
+            -not $existing.isAvailable -and
+            [string]::IsNullOrWhiteSpace([string]$existing.displayName) -and
+            [string]::IsNullOrWhiteSpace([string]$existing.description)
+        )
+        if ($unused) {
+            [void]$ReservedIds.Add($id)
+            return [pscustomobject]@{ id = $id; action = 'create'; existing = $existing; adopted = $false; recoveredPendingIntent = $false }
+        }
+    }
+
+    throw 'No unused authentication context slots are available between c1 and c25.'
+}
+
+function Resolve-AzdPimAuthenticationStrength {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateSet('mfa', 'phishingResistant', 'custom')] [string] $AuthenticationProfile,
+        [AllowEmptyString()] [string] $CustomId
+    )
+
+    if ($AuthenticationProfile -eq 'mfa') { return $null }
+    $policies = @(Get-AzdPimGraphCollection -Uri "$script:GraphBaseV1/policies/authenticationStrengthPolicies")
+    if ($AuthenticationProfile -eq 'custom') {
+        $match = @($policies | Where-Object { $_.id -eq $CustomId }) | Select-Object -First 1
+        if (-not $match) { throw "Authentication strength '$CustomId' does not exist in the tenant." }
+        return $match
+    }
+
+    $strengthMatches = @($policies | Where-Object {
+        $_.policyType -eq 'builtIn' -and $_.displayName -match '(?i)^phishing[- ]resistant MFA$'
+    })
+    if ($strengthMatches.Count -ne 1) {
+        throw "Expected one built-in phishing-resistant MFA authentication strength, found $($strengthMatches.Count)."
+    }
+    return $strengthMatches[0]
+}
+
+function New-AzdPimGrantControls {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateSet('mfa', 'phishingResistant', 'custom')] [string] $AuthenticationProfile,
+        [AllowNull()] [object] $AuthenticationStrength,
+        [Parameter(Mandatory)] [ValidateSet('none', 'compliant', 'hybridJoined', 'compliantOrHybrid')] [string] $DeviceRequirement
+    )
+
+    $controls = [System.Collections.Generic.List[string]]::new()
+    if ($AuthenticationProfile -eq 'mfa') { $controls.Add('mfa') }
+    if ($DeviceRequirement -eq 'compliant') { $controls.Add('compliantDevice') }
+    if ($DeviceRequirement -eq 'hybridJoined') { $controls.Add('domainJoinedDevice') }
+
+    $grant = [ordered]@{ operator = 'AND' }
+    if ($controls.Count -gt 0) { $grant.builtInControls = @($controls) }
+    if ($AuthenticationProfile -ne 'mfa') { $grant.authenticationStrength = @{ id = $AuthenticationStrength.id } }
+    return $grant
+}
+
+function New-AzdPimConditionalAccessBody {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter(Mandatory)] [string] $ContextId,
+        [AllowEmptyString()] [string] $EmergencyAccessGroupId,
+        [Parameter(Mandatory)] [string] $AuthenticationProfile,
+        [AllowNull()] [object] $AuthenticationStrength,
+        [Parameter(Mandatory)] [string] $DeviceRequirement,
+        [ValidateSet('enabled', 'disabled')] [string] $State = 'enabled'
+    )
+
+    $users = [ordered]@{ includeUsers = @('All') }
+    if ($EmergencyAccessGroupId) { $users.excludeGroups = @($EmergencyAccessGroupId) }
+    $primaryDeviceRequirement = if ($DeviceRequirement -eq 'compliantOrHybrid') { 'none' } else { $DeviceRequirement }
+
+    return [ordered]@{
+        displayName = $DisplayName
+        state = $State
+        conditions = [ordered]@{
+            clientAppTypes = @('all')
+            applications = @{ includeAuthenticationContextClassReferences = @($ContextId) }
+            users = $users
+        }
+        grantControls = New-AzdPimGrantControls -AuthenticationProfile $AuthenticationProfile -AuthenticationStrength $AuthenticationStrength -DeviceRequirement $primaryDeviceRequirement
+        sessionControls = @{
+            signInFrequency = @{
+                isEnabled = $true
+                frequencyInterval = 'everyTime'
+                authenticationType = 'primaryAndSecondaryAuthentication'
+            }
+        }
+    }
+}
+
+function New-AzdPimDeviceCompanionBody {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter(Mandatory)] [string] $ContextId,
+        [AllowEmptyString()] [string] $EmergencyAccessGroupId
+    )
+
+    $users = [ordered]@{ includeUsers = @('All') }
+    if ($EmergencyAccessGroupId) { $users.excludeGroups = @($EmergencyAccessGroupId) }
+    return [ordered]@{
+        displayName = "$DisplayName - Device requirement"
+        state = 'enabled'
+        conditions = [ordered]@{
+            clientAppTypes = @('all')
+            applications = @{ includeAuthenticationContextClassReferences = @($ContextId) }
+            users = $users
+        }
+        grantControls = @{
+            operator = 'OR'
+            builtInControls = @('compliantDevice', 'domainJoinedDevice')
+        }
+    }
+}
+
+function New-AzdPimDeviceAllowlistBody {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter(Mandatory)] [string] $ContextId,
+        [AllowEmptyString()] [string] $EmergencyAccessGroupId,
+        [Parameter(Mandatory)] [string[]] $AllowedDeviceIds
+    )
+
+    $users = [ordered]@{ includeUsers = @('All') }
+    if ($EmergencyAccessGroupId) { $users.excludeGroups = @($EmergencyAccessGroupId) }
+    $quotedIds = @($AllowedDeviceIds | ForEach-Object { "`"$($_.ToLowerInvariant())`"" }) -join ','
+    return [ordered]@{
+        displayName = "$DisplayName - Block unapproved devices"
+        state = 'enabled'
+        conditions = [ordered]@{
+            clientAppTypes = @('all')
+            applications = @{ includeAuthenticationContextClassReferences = @($ContextId) }
+            users = $users
+            devices = @{
+                deviceFilter = @{
+                    mode = 'exclude'
+                    rule = "device.deviceId -in [$quotedIds]"
+                }
+            }
+        }
+        grantControls = @{ operator = 'OR'; builtInControls = @('block') }
+    }
+}
+
+function Resolve-AzdPimConditionalAccessPolicy {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string] $Key,
+        [Parameter(Mandatory)] [string] $DisplayName,
+        [Parameter(Mandatory)] [object] $Body,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Policies,
+        [AllowNull()] [object] $State,
+        [Parameter(Mandatory)] [bool] $AdoptExisting
+    )
+
+    $statePolicies = Get-AzdPimStateProperty -Object $State -Name 'conditionalAccessPolicies'
+    $stateEntry = Get-AzdPimStateProperty -Object $statePolicies -Name $Key
+    $ownedId = [string](Get-AzdPimStateProperty -Object $stateEntry -Name 'id')
+    $pendingCreate = Get-AzdPimStateProperty -Object $stateEntry -Name 'pendingCreate'
+    if ($ownedId) {
+        $owned = @($Policies | Where-Object { $_.id -eq $ownedId }) | Select-Object -First 1
+        if ($owned) {
+            $action = if (Test-AzdPimConditionalAccessPolicyMatches -Existing $owned -Desired $Body) { 'none' } else { 'update' }
+            return [pscustomobject]@{ key = $Key; id = $owned.id; action = $action; existing = $owned; body = $Body; adopted = $false; recoveredPendingCreate = $false }
+        }
+    }
+
+    $matching = @($Policies | Where-Object { $_.displayName -eq $DisplayName })
+    if ($matching.Count -gt 1) { throw "Multiple Conditional Access policies are named '$DisplayName'." }
+    if ($pendingCreate) {
+        $intentBody = Get-AzdPimStateProperty -Object $pendingCreate -Name 'body'
+        if (-not (Test-AzdPimConditionalAccessPolicyMatches -Existing $intentBody -Desired $Body)) {
+            throw "Pending Conditional Access creation '$Key' does not match the current desired policy. Review the durable state before rerunning."
+        }
+        if ($matching.Count -eq 1) {
+            if (-not (Test-AzdPimConditionalAccessPolicyMatches -Existing $matching[0] -Desired $Body)) {
+                throw "Pending Conditional Access creation '$Key' found a same-name policy that does not exactly match the recorded intent. Refuse to adopt it."
+            }
+            return [pscustomobject]@{ key = $Key; id = $matching[0].id; action = 'none'; existing = $matching[0]; body = $Body; adopted = $false; recoveredPendingCreate = $true }
+        }
+        return [pscustomobject]@{ key = $Key; id = $null; action = 'create'; existing = $null; body = $Body; adopted = $false; recoveredPendingCreate = $false }
+    }
+    if ($matching.Count -eq 1) {
+        if (-not $AdoptExisting) {
+            throw "Conditional Access policy '$DisplayName' already exists. Set AZD_PIM_ADOPT_EXISTING=true only after reviewing it."
+        }
+        return [pscustomobject]@{ key = $Key; id = $matching[0].id; action = 'adoptAndUpdate'; existing = $matching[0]; body = $Body; adopted = $true; recoveredPendingCreate = $false }
+    }
+    return [pscustomobject]@{ key = $Key; id = $null; action = 'create'; existing = $null; body = $Body; adopted = $false; recoveredPendingCreate = $false }
+}
+
+function Test-AzdPimEmergencyGroup {
+    [CmdletBinding()]
+    param([AllowEmptyString()] [string] $GroupId)
+
+    if (-not $GroupId) { return $null }
+    $group = Invoke-AzdPimGraphRequest -Method GET -Uri "$script:GraphBaseV1/groups/${GroupId}?`$select=id,displayName,securityEnabled,membershipRule"
+    if (-not $group.securityEnabled) {
+        throw "Emergency-access group '$($group.displayName)' is not security-enabled."
+    }
+    $members = Get-AzdPimGraphCollection -Uri "$script:GraphBaseV1/groups/$GroupId/members?`$select=id&`$top=999"
+    return [pscustomobject]@{ id = $group.id; displayName = $group.displayName; memberCount = @($members).Count }
+}
+
+function ConvertTo-AzdPimReportConfiguration {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [object] $Configuration)
+
+    $safeConfiguration = [ordered]@{}
+    foreach ($property in $Configuration.PSObject.Properties) {
+        if ($property.Name -eq 'TeamsWebhookUrl') { continue }
+        $safeConfiguration[$property.Name] = $property.Value
+    }
+    $safeConfiguration.TeamsWebhookConfigured = -not [string]::IsNullOrWhiteSpace(
+        [string] $Configuration.TeamsWebhookUrl
+    )
+    return [pscustomobject] $safeConfiguration
+}
+
+function New-AzdPimPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $Configuration,
+        [AllowNull()] [object] $State
+    )
+
+    $tenantId = Get-AzdPimTenantId
+    if ($State -and $State.tenantId -and $State.tenantId -ne $tenantId) {
+        throw "State belongs to tenant '$($State.tenantId)', but Azure CLI is signed in to '$tenantId'."
+    }
+
+    $inventory = @(Get-AzdPimRoleInventory)
+    $privilegedRoles = @(Resolve-AzdPimRoleSelection -Inventory $inventory -Scope $Configuration.PrivilegedRoleScope -SelectedIds $Configuration.PrivilegedRoleIds -ExpectedPrivileged $true -TierName 'Privileged')
+    $lessPrivilegedRoles = @(Resolve-AzdPimRoleSelection -Inventory $inventory -Scope $Configuration.LessPrivilegedRoleScope -SelectedIds $Configuration.LessPrivilegedRoleIds -ExpectedPrivileged $false -TierName 'Less-privileged')
+    $emergencyGroup = Test-AzdPimEmergencyGroup -GroupId $Configuration.EmergencyAccessGroupId
+    $assignments = @(Get-AzdPimRolePolicyAssignments)
+    $rolePolicies = @(Get-AzdPimRolePoliciesWithRules)
+    $contexts = @(Get-AzdPimAuthenticationContexts)
+    $caPolicies = @(Get-AzdPimConditionalAccessPolicies)
+    $referencedIds = @(Get-AzdPimReferencedContextIds -ConditionalAccessPolicies $caPolicies -RolePolicies $rolePolicies)
+    $reservedIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($id in $referencedIds) { [void]$reservedIds.Add($id) }
+
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    if (-not $emergencyGroup) {
+        $warnings.Add('No emergency-access group was supplied. This is supported, but excluding an established emergency-access group is recommended.')
+    } else {
+        $warnings.Add("Emergency-access group '$($emergencyGroup.displayName)' has $($emergencyGroup.memberCount) direct members. Membership is informational and is not modified.")
+    }
+    if ($Configuration.NotificationMode -eq 'sentinel') {
+        $warnings.Add('Sentinel notifications require Microsoft Entra AuditLogs to already be routed to the selected workspace.')
+    } elseif ($Configuration.NotificationMode -eq 'polling') {
+        $warnings.Add('Polling notifications read Microsoft Graph directory audits on a schedule; delivery latency is bounded by the polling interval and Graph audit availability.')
+    }
+    if ($Configuration.EnableSessionRevocation) {
+        $warnings.Add('Session revocation uses preview PIM custom extensions. Roles without human approval use pre-approval; roles requiring human approval use post-approval. Revocation is not instantaneous.')
+    }
+
+    $tiers = [ordered]@{}
+    foreach ($definition in @(
+        @{ Key = 'privileged'; Roles = $privilegedRoles; ContextName = $Configuration.PrivilegedContextDisplayName; PolicyName = $Configuration.PrivilegedPolicyDisplayName; Profile = $Configuration.PrivilegedAuthenticationProfile; StrengthId = $Configuration.PrivilegedAuthenticationStrengthId; Device = $Configuration.PrivilegedDeviceRequirement; DeviceIds = $Configuration.PrivilegedAllowedDeviceIds },
+        @{ Key = 'lessPrivileged'; Roles = $lessPrivilegedRoles; ContextName = $Configuration.LessPrivilegedContextDisplayName; PolicyName = $Configuration.LessPrivilegedPolicyDisplayName; Profile = $Configuration.LessPrivilegedAuthenticationProfile; StrengthId = $Configuration.LessPrivilegedAuthenticationStrengthId; Device = $Configuration.LessPrivilegedDeviceRequirement; DeviceIds = @() }
+    )) {
+        if (@($definition.Roles).Count -eq 0) {
+            $tiers[$definition.Key] = [pscustomobject]@{ roles = @(); context = $null; authenticationStrength = $null; conditionalAccessPolicies = @(); roleRules = @() }
+            continue
+        }
+
+        $context = Resolve-AzdPimContext -Tier $definition.Key -DisplayName $definition.ContextName -Contexts $contexts -ReservedIds $reservedIds -State $State -AdoptExisting $Configuration.AdoptExisting
+        $strength = Resolve-AzdPimAuthenticationStrength -AuthenticationProfile $definition.Profile -CustomId $definition.StrengthId
+        $caBodies = [System.Collections.Generic.List[object]]::new()
+        $caBodies.Add((New-AzdPimConditionalAccessBody -DisplayName $definition.PolicyName -ContextId $context.id -EmergencyAccessGroupId $Configuration.EmergencyAccessGroupId -AuthenticationProfile $definition.Profile -AuthenticationStrength $strength -DeviceRequirement $definition.Device))
+        if ($definition.Device -eq 'compliantOrHybrid') {
+            $caBodies.Add((New-AzdPimDeviceCompanionBody -DisplayName $definition.PolicyName -ContextId $context.id -EmergencyAccessGroupId $Configuration.EmergencyAccessGroupId))
+        }
+        if (@($definition.DeviceIds).Count -gt 0) {
+            $caBodies.Add((New-AzdPimDeviceAllowlistBody -DisplayName $definition.PolicyName -ContextId $context.id -EmergencyAccessGroupId $Configuration.EmergencyAccessGroupId -AllowedDeviceIds $definition.DeviceIds))
+        }
+
+        $resolvedCa = [System.Collections.Generic.List[object]]::new()
+        for ($index = 0; $index -lt $caBodies.Count; $index++) {
+            $policyKey = if ($index -eq 0) { $definition.Key } elseif ($caBodies[$index].displayName -like '*unapproved devices') { "$($definition.Key)DeviceAllowlist" } else { "$($definition.Key)Device" }
+            $resolvedCa.Add((Resolve-AzdPimConditionalAccessPolicy -Key $policyKey -DisplayName $caBodies[$index].displayName -Body $caBodies[$index] -Policies $caPolicies -State $State -AdoptExisting $Configuration.AdoptExisting))
+        }
+
+        $roleRules = [System.Collections.Generic.List[object]]::new()
+        foreach ($role in $definition.Roles) {
+            $assignment = @($assignments | Where-Object { $_.roleDefinitionId -eq $role.id }) | Select-Object -First 1
+            if (-not $assignment) { throw "No PIM role management policy assignment was found for '$($role.displayName)' ($($role.id))." }
+            $policy = @($rolePolicies | Where-Object { $_.id -eq $assignment.policyId }) | Select-Object -First 1
+            if (-not $policy) { throw "PIM policy '$($assignment.policyId)' for '$($role.displayName)' was not returned by Graph." }
+            $rule = @($policy.rules | Where-Object { $_.id -eq $script:AuthenticationContextRuleId }) | Select-Object -First 1
+            if (-not $rule) { throw "PIM policy '$($policy.id)' has no $script:AuthenticationContextRuleId rule." }
+            $enablementRule = @($policy.rules | Where-Object { $_.id -eq 'Enablement_EndUser_Assignment' }) | Select-Object -First 1
+            if (-not $enablementRule) { throw "PIM policy '$($policy.id)' has no Enablement_EndUser_Assignment rule." }
+            $differentContext = $rule.isEnabled -and $rule.claimValue -and $rule.claimValue -ne $context.id
+            if ($differentContext -and -not $Configuration.AdoptRoleContexts) {
+                throw "Role '$($role.displayName)' already requires authentication context '$($rule.claimValue)'. Set AZD_PIM_ADOPT_ROLE_CONTEXTS=true only after reviewing the conflict."
+            }
+            $action = if ($rule.isEnabled -and $rule.claimValue -eq $context.id) { 'none' } else { 'update' }
+            $existingEnabledRules = @($enablementRule.enabledRules | ForEach-Object { [string]$_ })
+            $activationMfaAction = if ('MultiFactorAuthentication' -in $existingEnabledRules) { 'remove' } else { 'none' }
+            $roleRules.Add([pscustomobject]@{
+                role = $role
+                policyId = $policy.id
+                action = $action
+                existing = $rule
+                desiredContextId = $context.id
+                activationMfa = [pscustomobject]@{
+                    action = $activationMfaAction
+                    existing = $enablementRule
+                    desiredEnabledRules = @($existingEnabledRules | Where-Object { $_ -ne 'MultiFactorAuthentication' })
+                }
+            })
+        }
+
+        $activationMfaChanges = @($roleRules | Where-Object { $_.activationMfa.action -eq 'remove' }).Count
+        if ($activationMfaChanges -gt 0) {
+            $warnings.Add("$activationMfaChanges $($definition.Key) role activation policies currently enable the legacy PIM MultiFactorAuthentication rule. Enforcement will remove only that value because it cannot coexist with an authentication context; other activation requirements are preserved.")
+        }
+
+        $tiers[$definition.Key] = [pscustomobject]@{
+            roles = @($definition.Roles)
+            context = [pscustomobject]@{ id = $context.id; displayName = $definition.ContextName; action = $context.action; existing = $context.existing; adopted = $context.adopted }
+            authenticationStrength = $strength
+            conditionalAccessPolicies = @($resolvedCa)
+            roleRules = @($roleRules)
+        }
+    }
+
+    return [pscustomobject]@{
+        schemaVersion = '1.0'
+        generatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+        tenantId = $tenantId
+        mode = $Configuration.Mode
+        graphApiVersions = @{ roleClassification = 'beta'; conditionalAccessContextTargeting = 'beta'; pimRoleRules = 'v1.0'; authenticationContexts = 'v1.0'; pimCustomExtensions = 'beta' }
+        configuration = ConvertTo-AzdPimReportConfiguration -Configuration $Configuration
+        emergencyAccessGroup = $emergencyGroup
+        warnings = @($warnings)
+        inventory = @($inventory)
+        tiers = [pscustomobject]$tiers
+    }
+}
+
+function Write-AzdPimPlanReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object] $Plan,
+        [Parameter(Mandatory)] [string] $Path
+    )
+
+    $configurationContainsWebhook = if ($Plan.configuration -is [System.Collections.IDictionary]) {
+        $Plan.configuration.Contains('TeamsWebhookUrl')
+    } else {
+        @($Plan.configuration.PSObject.Properties.Name) -contains 'TeamsWebhookUrl'
+    }
+    if ($configurationContainsWebhook) {
+        throw 'The PIM plan contains a sensitive Teams webhook URL and cannot be written.'
+    }
+
+    $directory = Split-Path -Parent $Path
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $Plan | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $Path -Encoding utf8NoBOM
+}
+
+function New-AzdPimOwnershipStateEntry {
+    [CmdletBinding()]
+    param(
+        [AllowNull()] [object] $Existing,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Id,
+        [Parameter(Mandatory)] [bool] $CreatedWhenNew,
+        [Parameter(Mandatory)] [bool] $AdoptedWhenNew,
+        [AllowNull()] [object] $PreviousWhenNew
+    )
+
+    $existingCreated = Get-AzdPimStateProperty -Object $Existing -Name 'created'
+    $existingAdopted = Get-AzdPimStateProperty -Object $Existing -Name 'adopted'
+    $existingPrevious = Get-AzdPimStateProperty -Object $Existing -Name 'previous'
+    return [ordered]@{
+        id = $Id
+        created = if ($null -ne $existingCreated) { [bool]$existingCreated } else { $CreatedWhenNew }
+        adopted = if ($null -ne $existingAdopted) { [bool]$existingAdopted } else { $AdoptedWhenNew }
+        previous = if ($null -ne $existingPrevious) { $existingPrevious } else { $PreviousWhenNew }
+    }
+}
+
+function Invoke-AzdPimApply {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)] [object] $Plan,
+        [AllowNull()] [object] $ExistingState,
+        [scriptblock] $StateChanged
+    )
+
+    if ($Plan.mode -ne 'enforced') { throw 'Invoke-AzdPimApply requires an enforced plan.' }
+    $state = [ordered]@{
+        schemaVersion = '1.1'
+        tenantId = $Plan.tenantId
+        updatedAt = [DateTimeOffset]::UtcNow.ToString('o')
+        contexts = [ordered]@{}
+        conditionalAccessPolicies = [ordered]@{}
+        appliedRoleRules = [ordered]@{}
+        pendingRoleRules = [ordered]@{}
+    }
+    if ($ExistingState) {
+        foreach ($sectionName in @('contexts', 'conditionalAccessPolicies', 'appliedRoleRules', 'pendingRoleRules', 'optionalResources')) {
+            $existingSection = Get-AzdPimStateProperty -Object $ExistingState -Name $sectionName
+            if (-not $existingSection) { continue }
+            if (-not $state.Contains($sectionName)) { $state[$sectionName] = [ordered]@{} }
+            foreach ($property in @($existingSection.PSObject.Properties)) {
+                $state[$sectionName][$property.Name] = $property.Value
+            }
+        }
+    }
+
+    foreach ($tierName in @('privileged', 'lessPrivileged')) {
+        $tier = $Plan.tiers.$tierName
+        if (-not $tier.context) { continue }
+        $contextBody = @{
+            displayName = $tier.context.displayName
+            description = "Authentication context managed by azd-pim for $tierName Microsoft Entra role activation."
+            isAvailable = $true
+        }
+        $recordedContext = if ($state.contexts.Contains($tierName)) { $state.contexts[$tierName] } else { $null }
+        if ($tier.context.action -ne 'none' -and $PSCmdlet.ShouldProcess("authentication context $($tier.context.id)", $tier.context.action)) {
+            $pendingContext = New-AzdPimOwnershipStateEntry -Existing $recordedContext -Id $tier.context.id -CreatedWhenNew ($tier.context.action -eq 'create') -AdoptedWhenNew ([bool]$tier.context.adopted) -PreviousWhenNew $tier.context.existing
+            $pendingContext.pendingIntent = [ordered]@{ action = $tier.context.action; displayName = $tier.context.displayName }
+            $state.contexts[$tierName] = $pendingContext
+            if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+            Invoke-AzdPimGraphRequest -Method PATCH -Uri "$script:GraphBaseV1/identity/conditionalAccess/authenticationContextClassReferences/$($tier.context.id)" -Body $contextBody | Out-Null
+            $state.contexts[$tierName] = New-AzdPimOwnershipStateEntry -Existing $pendingContext -Id $tier.context.id -CreatedWhenNew ($tier.context.action -eq 'create') -AdoptedWhenNew ([bool]$tier.context.adopted) -PreviousWhenNew $tier.context.existing
+            if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+        } elseif (-not $recordedContext -or $recordedContext.id -ne $tier.context.id -or (Get-AzdPimStateProperty -Object $recordedContext -Name 'pendingIntent')) {
+            $state.contexts[$tierName] = New-AzdPimOwnershipStateEntry -Existing $recordedContext -Id $tier.context.id -CreatedWhenNew ($tier.context.action -eq 'create') -AdoptedWhenNew ([bool]$tier.context.adopted) -PreviousWhenNew $tier.context.existing
+            if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+        }
+    }
+
+    foreach ($tierName in @('privileged', 'lessPrivileged')) {
+        $tier = $Plan.tiers.$tierName
+        foreach ($policy in @($tier.conditionalAccessPolicies)) {
+            $policyId = $policy.id
+            $priorPolicy = if ($state.conditionalAccessPolicies.Contains($policy.key)) { $state.conditionalAccessPolicies[$policy.key] } else { $null }
+            if ($policy.action -eq 'create') {
+                if ($PSCmdlet.ShouldProcess($policy.body.displayName, 'create Conditional Access policy')) {
+                    $pendingPolicy = New-AzdPimOwnershipStateEntry -Existing $priorPolicy -Id '' -CreatedWhenNew $true -AdoptedWhenNew $false -PreviousWhenNew $null
+                    $pendingPolicy.Remove('id')
+                    $pendingPolicy.pendingCreate = [ordered]@{ displayName = $policy.body.displayName; body = $policy.body }
+                    $state.conditionalAccessPolicies[$policy.key] = $pendingPolicy
+                    if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+                    $created = Invoke-AzdPimGraphRequest -Method POST -Uri "$script:GraphBaseBeta/identity/conditionalAccess/policies" -Body $policy.body
+                    $policyId = $created.id
+                    $parsedPolicyId = [guid]::Empty
+                    if (-not [guid]::TryParse([string]$policyId, [ref]$parsedPolicyId)) { throw "Conditional Access create for '$($policy.key)' did not return a policy GUID." }
+                }
+            } elseif ($policy.action -ne 'none') {
+                if ($PSCmdlet.ShouldProcess($policy.body.displayName, 'update Conditional Access policy')) {
+                    $pendingPolicy = New-AzdPimOwnershipStateEntry -Existing $priorPolicy -Id $policyId -CreatedWhenNew $false -AdoptedWhenNew ([bool]$policy.adopted) -PreviousWhenNew $policy.existing
+                    $pendingPolicy.pendingIntent = [ordered]@{ action = $policy.action }
+                    $state.conditionalAccessPolicies[$policy.key] = $pendingPolicy
+                    if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+                    Invoke-AzdPimGraphRequest -Method PATCH -Uri "$script:GraphBaseBeta/identity/conditionalAccess/policies/$policyId" -Body $policy.body | Out-Null
+                }
+            }
+            $recordedPolicy = if ($state.conditionalAccessPolicies.Contains($policy.key)) { $state.conditionalAccessPolicies[$policy.key] } else { $null }
+            if (-not $recordedPolicy -or [string](Get-AzdPimStateProperty -Object $recordedPolicy -Name 'id') -ne [string]$policyId -or (Get-AzdPimStateProperty -Object $recordedPolicy -Name 'pendingCreate') -or (Get-AzdPimStateProperty -Object $recordedPolicy -Name 'pendingIntent')) {
+                $state.conditionalAccessPolicies[$policy.key] = New-AzdPimOwnershipStateEntry -Existing $recordedPolicy -Id $policyId -CreatedWhenNew ($policy.action -eq 'create' -or [bool]$policy.recoveredPendingCreate) -AdoptedWhenNew ([bool]$policy.adopted) -PreviousWhenNew $policy.existing
+                if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+            }
+        }
+    }
+
+    foreach ($tierName in @('privileged', 'lessPrivileged')) {
+        $tier = $Plan.tiers.$tierName
+        foreach ($roleRule in @($tier.roleRules)) {
+            $activationMfa = Get-AzdPimStateProperty -Object $roleRule -Name 'activationMfa'
+            $removedActivationMfa = $false
+            if ($activationMfa -and $activationMfa.action -eq 'remove' -and $roleRule.action -eq 'none') {
+                throw "Role '$($roleRule.role.displayName)' unexpectedly requires legacy MFA removal without an authentication-context update."
+            }
+            if ($roleRule.action -ne 'none' -or ($activationMfa -and $activationMfa.action -eq 'remove')) {
+                $state.pendingRoleRules[$roleRule.role.id] = [ordered]@{
+                    policyId = $roleRule.policyId; roleDisplayName = $roleRule.role.displayName; desiredContextId = $roleRule.desiredContextId; recordedAt = [DateTimeOffset]::UtcNow.ToString('o')
+                }
+                if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+            }
+            try {
+            if ($activationMfa -and $activationMfa.action -eq 'remove') {
+                $enablementBody = @{
+                    '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'
+                    id = 'Enablement_EndUser_Assignment'
+                    enabledRules = @($activationMfa.desiredEnabledRules | ForEach-Object { [string]$_ })
+                    target = ConvertTo-AzdPimRuleTargetBody -Target $activationMfa.existing.target
+                }
+                if ($PSCmdlet.ShouldProcess($roleRule.role.displayName, 'remove legacy PIM activation MFA before attaching an authentication context')) {
+                    Invoke-AzdPimGraphRequest -Method PATCH -Uri "$script:GraphBaseV1/policies/roleManagementPolicies/$($roleRule.policyId)/rules/Enablement_EndUser_Assignment" -Body $enablementBody | Out-Null
+                    $removedActivationMfa = $true
+                    $state.pendingRoleRules[$roleRule.role.id].legacyActivationMfaRemoved = $true
+                    if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+                }
+            }
+
+            if ($roleRule.action -eq 'none') {
+                $pendingRoleRule = if ($state.pendingRoleRules.Contains($roleRule.role.id)) { $state.pendingRoleRules[$roleRule.role.id] } else { $null }
+                if ($pendingRoleRule) {
+                    if ([string](Get-AzdPimStateProperty -Object $pendingRoleRule -Name 'policyId') -ne [string]$roleRule.policyId -or [string](Get-AzdPimStateProperty -Object $pendingRoleRule -Name 'desiredContextId') -ne [string]$roleRule.desiredContextId) {
+                        throw "Pending PIM role-rule intent for '$($roleRule.role.displayName)' does not match the exact live re-plan."
+                    }
+                    $state.pendingRoleRules.Remove($roleRule.role.id)
+                }
+                if (-not $state.appliedRoleRules.Contains($roleRule.role.id)) {
+                    $pendingMfaPhase = Get-AzdPimStateProperty -Object $pendingRoleRule -Name 'legacyActivationMfaRemoved'
+                    $state.appliedRoleRules[$roleRule.role.id] = [ordered]@{ policyId = $roleRule.policyId; roleDisplayName = $roleRule.role.displayName; desiredContextId = $roleRule.desiredContextId; removedLegacyActivationMfa = if ($pendingRoleRule -and $null -ne $pendingMfaPhase) { [bool]$pendingMfaPhase } elseif ($pendingRoleRule) { $null } else { $false }; recoveredPendingIntent = [bool]$pendingRoleRule; appliedAt = [DateTimeOffset]::UtcNow.ToString('o') }
+                    if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+                } elseif ($pendingRoleRule -and $StateChanged) {
+                    & $StateChanged ([pscustomobject]$state)
+                }
+                continue
+            }
+            $body = @{
+                '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyAuthenticationContextRule'
+                isEnabled = $true
+                claimValue = $roleRule.desiredContextId
+                target = ConvertTo-AzdPimRuleTargetBody -Target $roleRule.existing.target
+            }
+                if ($PSCmdlet.ShouldProcess($roleRule.role.displayName, "attach authentication context $($roleRule.desiredContextId)")) {
+                    Invoke-AzdPimGraphRequest -Method PATCH -Uri "$script:GraphBaseV1/policies/roleManagementPolicies/$($roleRule.policyId)/rules/$script:AuthenticationContextRuleId" -Body $body | Out-Null
+                }
+            } catch {
+                $activationError = $_
+                if ($removedActivationMfa) {
+                    $restoreBody = @{
+                        '@odata.type' = '#microsoft.graph.unifiedRoleManagementPolicyEnablementRule'
+                        id = 'Enablement_EndUser_Assignment'
+                        enabledRules = @($activationMfa.existing.enabledRules | ForEach-Object { [string]$_ })
+                        target = ConvertTo-AzdPimRuleTargetBody -Target $activationMfa.existing.target
+                    }
+                    try {
+                        Invoke-AzdPimGraphRequest -Method PATCH -Uri "$script:GraphBaseV1/policies/roleManagementPolicies/$($roleRule.policyId)/rules/Enablement_EndUser_Assignment" -Body $restoreBody | Out-Null
+                    } catch {
+                        throw "PIM role update failed for '$($roleRule.role.displayName)' after legacy MFA removal, and restoring legacy MFA did not complete."
+                    }
+                    $removedActivationMfa = $false
+                    $state.pendingRoleRules[$roleRule.role.id].legacyActivationMfaRemoved = $false
+                    try {
+                        if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+                    } catch {
+                        throw "PIM role update failed for '$($roleRule.role.displayName)'; legacy MFA was restored, but recording the restored state failed."
+                    }
+                    throw "PIM role update failed for '$($roleRule.role.displayName)' after legacy MFA removal; legacy MFA was restored."
+                }
+                throw $activationError
+            }
+            $state.appliedRoleRules[$roleRule.role.id] = [ordered]@{ policyId = $roleRule.policyId; roleDisplayName = $roleRule.role.displayName; desiredContextId = $roleRule.desiredContextId; removedLegacyActivationMfa = $removedActivationMfa; appliedAt = [DateTimeOffset]::UtcNow.ToString('o') }
+            $state.pendingRoleRules.Remove($roleRule.role.id)
+            if ($StateChanged) { & $StateChanged ([pscustomobject]$state) }
+        }
+    }
+
+    return [pscustomobject]$state
+}
+
+Export-ModuleMember -Function @(
+    'New-AzdPimReadPlan',
+    'Invoke-AzdPimGraphRequest',
+    'Get-AzdPimGraphCollection',
+    'Get-AzdPimTenantId',
+    'Get-AzdPimRoleInventory',
+    'Resolve-AzdPimRoleSelection',
+    'Get-AzdPimAuthenticationContexts',
+    'Get-AzdPimConditionalAccessPolicies',
+    'Get-AzdPimReferencedContextIds',
+    'Resolve-AzdPimContext',
+    'Resolve-AzdPimAuthenticationStrength',
+    'New-AzdPimGrantControls',
+    'New-AzdPimConditionalAccessBody',
+    'New-AzdPimDeviceCompanionBody',
+    'New-AzdPimDeviceAllowlistBody',
+    'New-AzdPimPlan',
+    'Write-AzdPimPlanReport',
+    'Invoke-AzdPimApply'
+)

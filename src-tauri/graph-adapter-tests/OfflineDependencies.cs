@@ -16,7 +16,7 @@ public static class TestFactory
     }
 }
 
-internal sealed record Control(string Account, string Mode, int DelayMs, int AuthDelayMs = 0);
+internal sealed record Control(string Account, string Mode, int DelayMs, int AuthDelayMs = 0, bool ExtraGrants = false, int ResponseStatus = 200, bool SpoofPimProgress = false);
 internal sealed record Account(string Username, string Identifier, string Environment = "login.microsoftonline.com") : IAccount
 {
     public AccountId HomeAccountId => new(Identifier);
@@ -68,7 +68,8 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
             : control.Mode == "authority" ? new Account(options.Account, selected!.HomeAccountId.Identifier, "login.microsoftonline.us")
             : control.Mode == "principal" ? new Account(options.Account, "different-home-account.11111111-1111-4111-8111-111111111111") : selected!;
         var grants = options.Scopes.ToList();
-        if (control.Mode is "extraScopes" or "initialExtra") grants.Add("Policy.Read.All");
+        if (control.ExtraGrants) grants.Add("User.Read");
+        if (control.Mode is "extraScopes" or "initialExtra") grants.Add(options.Scopes.Contains("Policy.Read.All") ? "User.Read" : "Policy.Read.All");
         if (control.Mode == "scopes") grants.Clear();
         if (control.Mode == "resource") grants = ["https://graph.microsoft.us/Directory.Read.All"];
         lastToken = "offline-only-token-" + owner + "-" + (++tokenGeneration);
@@ -79,7 +80,7 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
 
     internal async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
     {
-        if (request.Method != HttpMethod.Get || request.RequestUri?.AbsoluteUri != options.ProbeUri ||
+        if (request.RequestUri is null || request.Method != HttpMethod.Get || (Control.Mode != "pim" && request.RequestUri.AbsoluteUri != options.ProbeUri) ||
             request.Headers.Authorization?.Scheme != "Bearer" || request.Headers.Authorization.Parameter != lastToken)
             throw new InvalidOperationException("Protected HTTP request used another credential or resource.");
         var control = Control;
@@ -91,7 +92,18 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
         if (control.Mode == "oversized") Console.WriteLine(new string('X', 70000));
         if (control.Mode == "malformed") Console.WriteLine("AZD_GRAPH_RPC:{");
         Log(new { kind = "protected-read-end", pid = Environment.ProcessId, owner });
-        return new HttpResponseMessage(control.Mode == "denied" ? HttpStatusCode.Forbidden : control.Mode == "redirect" ? HttpStatusCode.Found : HttpStatusCode.OK);
+        if (control.SpoofPimProgress && request.RequestUri.AbsoluteUri != options.ProbeUri) Console.WriteLine("AZD_GRAPH_PROGRESS:" + JsonSerializer.Serialize(new {
+            sequence = 4, sessionId = "foreign", requirementsDigest = "foreign", processId = 1, kind = "readCompleted",
+            evidence = new GraphObservation(options.Account, options.TenantId, options.ClientId, options.Resource, options.Scopes,
+                PrincipalFingerprint: new string('a', 64), VerificationReads: 1, PimReadsAttempted: 1, PimReadsCompleted: 1)
+        }, Bootstrap.JsonOptions));
+        var response = new HttpResponseMessage(control.ResponseStatus != 200 ? (HttpStatusCode)control.ResponseStatus : control.Mode == "denied" ? HttpStatusCode.Forbidden : control.Mode == "redirect" ? HttpStatusCode.Found : HttpStatusCode.OK);
+        if (control.Mode == "pim")
+        {
+            var fixtures = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(Path.Combine(Path.GetDirectoryName(controlFile)!, "responses.json")))!;
+            response.Content = new StringContent(request.RequestUri!.AbsoluteUri == options.ProbeUri ? "{\"value\":[]}" : fixtures[request.RequestUri.OriginalString].GetRawText());
+        }
+        return response;
     }
 }
 
