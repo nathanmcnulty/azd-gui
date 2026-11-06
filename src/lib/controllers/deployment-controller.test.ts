@@ -65,3 +65,67 @@ describe("wizard deployment approvals", () => {
     expect(calls.starts).toEqual(["preview"]);
   });
 });
+
+describe("acknowledgement enforcement at the preparation caller", () => {
+  function acknowledgedEntry(): CatalogEntry {
+    return { ...entry, manifest: { schemaVersion: "1.0", prerequisites: [], connections: [], configuration: { groups: [{ id: "scope", title: "Scope", fields: [
+      { id: "scope", label: "Role scope", type: "select", environmentVariable: "SCOPE", options: [{ label: "All", value: "all" }, { label: "Selected", value: "selected" }] },
+      { id: "ack", label: "Every role", type: "acknowledgement", required: true, environmentVariable: "ACK", condition: { field: "scope", equals: "all" } }
+    ] }] } } };
+  }
+  const values = { projectPath: "C:\\Projects\\ack", environmentName: "dev", tenantId: "11111111-1111-1111-1111-111111111111", scope: "all", ack: true };
+  const proofs = [{ fieldId: "ack", tenantId: values.tenantId, controllingValues: { scope: "all" } }];
+
+  it.each([{}, { ack: false }, { ack: "true" }])("rejects saved/missing/false values even with a forged complete plan: %j", async (override) => {
+    const candidate = acknowledgedEntry();
+    await expect(materializeDeployment(candidate, { templateId: candidate.id, revision: 1, pages: [] }, { ...values, ...override })).rejects.toThrow(/Accept/);
+    expect(calls.approvals).toEqual([]);
+    expect(calls.prepares).toEqual([]);
+  });
+  it("rejects stale tenant and input proofs before requesting native execution approval", async () => {
+    const candidate = acknowledgedEntry();
+    await expect(materializeDeployment(candidate, { templateId: candidate.id, revision: 1, pages: [] }, { ...values, tenantId: "changed" }, undefined, proofs)).rejects.toThrow(/Accept/);
+    await expect(materializeDeployment(candidate, { templateId: candidate.id, revision: 1, pages: [] }, values, undefined, [{ ...proofs[0], controllingValues: { scope: "selected" } }])).rejects.toThrow(/Accept/);
+    expect(calls.approvals).toEqual([]);
+  });
+  it("passes explicit proof and identical reviewed values to the approval and native preparation", async () => {
+    const candidate = acknowledgedEntry();
+    const { calculateWizardPlan } = await import("../wizard");
+    const plan = calculateWizardPlan(candidate, values, undefined, proofs);
+    await materializeDeployment(candidate, plan, values, undefined, proofs);
+    expect(calls.approvals[0]).toMatchObject({ acknowledgementProofs: proofs, acknowledgementValues: { SCOPE: "all", ACK: true } });
+    expect(calls.prepares[0]).toMatchObject({ acknowledgementProofs: proofs, environmentValues: { SCOPE: "all", ACK: true } });
+  });
+  it("preserves explicit empty-string controllers in approval and preparation", async () => {
+    const candidate = acknowledgedEntry();
+    const fields = candidate.manifest!.configuration.groups[0].fields;
+    fields[0] = { id: "scope", label: "Scope", type: "text", environmentVariable: "SCOPE", default: "" };
+    fields[1].condition = { field: "scope", notEquals: "limited" };
+    const blank = { ...values, scope: "" };
+    const blankProofs = [{ ...proofs[0], controllingValues: { scope: "" } }];
+    const { calculateWizardPlan } = await import("../wizard");
+    await materializeDeployment(candidate, calculateWizardPlan(candidate, blank, undefined, blankProofs), blank, undefined, blankProofs);
+    expect(calls.approvals[0].acknowledgementValues).toEqual({ SCOPE: "", ACK: true });
+    expect(calls.prepares[0].environmentValues).toEqual({ SCOPE: "", ACK: true });
+  });
+
+  it("does not prepare when the wizard closes or changes while the native approval is open", async () => {
+    const candidate = acknowledgedEntry();
+    let checks = 0;
+    await expect(materializeDeployment(candidate, { templateId: candidate.id, revision: 1, pages: [] }, values, undefined, proofs, () => ++checks === 1)).rejects.toThrow(/changed during approval/);
+    expect(calls.approvals).toHaveLength(1);
+    expect(calls.prepares).toEqual([]);
+  });
+  it("allows inactive acknowledgements without a proof", async () => {
+    const candidate = acknowledgedEntry();
+    await materializeDeployment(candidate, { templateId: candidate.id, revision: 1, pages: [] }, { ...values, scope: "selected", ack: false });
+    expect(calls.prepares).toHaveLength(1);
+  });
+  it("forwards fresh proof to lifecycle approval and checks interruption before starting", async () => {
+    await startApprovedDeploymentOperation("preview", values.projectPath, values.environmentName, proofs);
+    expect(calls.approvals[0].acknowledgementProofs).toEqual(proofs);
+    let checks = 0;
+    await expect(startApprovedDeploymentOperation("up", values.projectPath, values.environmentName, proofs, () => ++checks === 1)).rejects.toThrow(/changed during approval/);
+    expect(calls.starts).toEqual(["preview"]);
+  });
+});

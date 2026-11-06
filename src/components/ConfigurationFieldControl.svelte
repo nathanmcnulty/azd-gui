@@ -1,11 +1,13 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import type { ConfigurationField, ConnectionTarget, WizardValues } from "../lib/types";
+  import { acknowledgementMessage } from "../lib/acknowledgements";
   import SecurityGroupPicker from "./SecurityGroupPicker.svelte";
 
   export let field: ConfigurationField;
   export let value: WizardValues[string] = "";
   export let configuredSensitive = false;
+  export let acknowledgementAvailable = true;
   export let lookupTarget: ConnectionTarget | null = null;
 
   const dispatch = createEventDispatcher<{ change: WizardValues[string] }>();
@@ -48,7 +50,17 @@
 </script>
 
 <div class:full={field.type === "multiselect" || sensitive} class="field">
-  {#if field.type === "boolean"}
+  {#if field.type === "acknowledgement"}
+    <label class="toggle-line card">
+      <input type="checkbox" checked={value === true} disabled={!acknowledgementAvailable} required aria-required="true"
+        aria-invalid={value !== true} aria-describedby={`acknowledgement-${field.id}-message`}
+        on:change={(event) => change(event.currentTarget.checked)} />
+      <span><strong>{field.label} <em>Required</em></strong>
+        {#if field.help}<small>{field.help}</small>{/if}
+      </span>
+    </label>
+    <small id={`acknowledgement-${field.id}-message`}>{!acknowledgementAvailable ? "Select an available tenant and controlling scope before acknowledging." : value === true ? "Accepted for the current scope and tenant." : acknowledgementMessage(field)}</small>
+  {:else if field.type === "boolean"}
     <label class="toggle-line card">
       <input type="checkbox" checked={Boolean(value)} on:change={(event) => change(event.currentTarget.checked)} />
       <span>

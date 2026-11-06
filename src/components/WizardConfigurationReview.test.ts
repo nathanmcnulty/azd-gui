@@ -41,3 +41,18 @@ describe("configuration review", () => {
     expect(edit.mock.calls[0][0].detail).toBe("configuration:coverage");
   });
 });
+
+it("records acknowledgement, controlling condition and covered values beside the persisted variable", () => {
+  const ackEntry = structuredClone(entry);
+  ackEntry.manifest!.configuration.groups[0].fields.push({
+    id: "ack", label: "Accept minimal permission scope", type: "acknowledgement", required: true,
+    environmentVariable: "ACK_SCOPE", condition: { field: "tier", equals: "min" }
+  });
+  const ackValues = { ...values, tenantId: "11111111-1111-1111-1111-111111111111", ack: true };
+  const proofs = [{ fieldId: "ack", tenantId: ackValues.tenantId, controllingValues: { tier: "min" } }];
+  render(WizardConfigurationReview, { pages: calculateWizardPlan(ackEntry, ackValues, undefined, proofs).pages, values: ackValues, acknowledgementProofs: proofs });
+  expect(screen.getByText("Acknowledged")).toBeInTheDocument();
+  expect(screen.getByText('Permission profile (tier) equals "min"; current value: "min"')).toBeInTheDocument();
+  expect(screen.getByText(`Tenant: ${ackValues.tenantId}`)).toBeInTheDocument();
+  expect(screen.getByText("Persisted variable: ACK_SCOPE = true")).toBeInTheDocument();
+});

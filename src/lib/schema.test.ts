@@ -8,6 +8,58 @@ function json(path: string) {
   return JSON.parse(readFileSync(resolve(process.cwd(), path), "utf8"));
 }
 
+function acknowledgementManifest() {
+  return {
+    schemaVersion: "1.0",
+    prerequisites: [],
+    connections: [],
+    configuration: {
+      groups: [
+        {
+          id: "features",
+          title: "Optional features",
+          fields: [
+            {
+              id: "includeDirectoryChanges",
+              environmentVariable: "INCLUDE_DIRECTORY_CHANGES",
+              label: "Include directory changes",
+              type: "boolean",
+              default: false
+            },
+            {
+              id: "deploymentMode",
+              environmentVariable: "DEPLOYMENT_MODE",
+              label: "Deployment mode",
+              type: "select",
+              default: "preview",
+              options: [
+                { label: "Preview", value: "preview" },
+                { label: "Apply", value: "apply" }
+              ]
+            }
+          ]
+        },
+        {
+          id: "directoryChanges",
+          title: "Directory changes",
+          condition: { field: "deploymentMode", equals: "apply" },
+          fields: [
+            {
+              id: "acknowledgeDirectoryChanges",
+              environmentVariable: "ACKNOWLEDGE_DIRECTORY_CHANGES",
+              label: "I understand that this option changes tenant-wide directory settings.",
+              help: "Review the selected tenant and the enabled option before continuing.",
+              type: "acknowledgement",
+              required: true,
+              condition: { field: "includeDirectoryChanges", equals: true }
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
 describe("catalog contracts", () => {
   const ajv = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true });
   addFormats(ajv);
@@ -75,6 +127,115 @@ describe("catalog contracts", () => {
     expect(validateManifest(manifest)).toBe(false);
     manifest.prerequisites[0].condition = { field: "includeExchange", notEquals: true };
     expect(validateManifest(manifest)).toBe(false);
+  });
+
+  describe("conditional acknowledgements", () => {
+    // Use mutable JSON fixtures so presence (including null/empty properties) is tested.
+    function fixture() {
+      return JSON.parse(JSON.stringify(acknowledgementManifest()));
+    }
+
+    function acknowledgement(manifest: ReturnType<typeof fixture>) {
+      return manifest.configuration.groups[1].fields[0];
+    }
+
+    it("validates the documented acknowledgement authoring example", () => {
+      const documentation = readFileSync(resolve(process.cwd(), "docs/conditional-acknowledgements.md"), "utf8");
+      const example = documentation.match(/```json\n([\s\S]*?)\n```/);
+      expect(example).not.toBeNull();
+      const manifest = fixture();
+      manifest.configuration.groups = [JSON.parse(example![1])];
+      expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    });
+
+    it("accepts a required acknowledgement with independent group and field controllers", () => {
+      const manifest = fixture();
+      expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+      acknowledgement(manifest).sensitive = false;
+      acknowledgement(manifest).validationMessage = "Acknowledge these directory changes to continue.";
+      expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    });
+
+    it("does not require a conditional group in addition to the field condition", () => {
+      const manifest = fixture();
+      delete manifest.configuration.groups[1].condition;
+      expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    });
+
+    it.each([
+      { field: "includeDirectoryChanges", equals: true },
+      { field: "includeDirectoryChanges", notEquals: false },
+      { field: "deploymentMode", equals: "apply" },
+      { field: "deploymentMode", notEquals: "preview" }
+    ])("retains existing condition operators: %j", (condition) => {
+      const manifest = fixture();
+      acknowledgement(manifest).condition = condition;
+      expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    });
+
+    it("accepts an includes condition on a declared multiselect controller", () => {
+      const manifest = fixture();
+      const controller = manifest.configuration.groups[0].fields[1];
+      controller.type = "multiselect";
+      controller.default = [];
+      manifest.configuration.groups[1].condition = { field: "deploymentMode", includes: "apply" };
+      acknowledgement(manifest).condition = { field: "deploymentMode", includes: "apply" };
+      expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+    });
+
+    it.each(["required", "condition"])("requires explicit %s on the acknowledgement itself", (property) => {
+      const manifest = fixture();
+      delete acknowledgement(manifest)[property];
+      expect(validateManifest(manifest)).toBe(false);
+    });
+
+    it.each([
+      ["required", false],
+      ["required", "true"],
+      ["condition", null],
+      ["condition", {}],
+      ["condition", { field: "includeDirectoryChanges" }],
+      ["condition", { field: "includeDirectoryChanges", equals: true, notEquals: false }],
+      ["label", ""],
+      ["sensitive", true],
+      ["default", true],
+      ["default", false],
+      ["default", ""],
+      ["default", []],
+      ["default", null],
+      ["lookup", "securityGroup"],
+      ["options", []],
+      ["options", [{ label: "Accepted", value: "true" }]],
+      ["pattern", ""],
+      ["placeholder", ""],
+      ["validationMessage", ""],
+      ["validationMessage", false],
+      ["validationMessage", null]
+    ])("rejects invalid acknowledgement %s=%j", (property, value) => {
+      const manifest = fixture();
+      acknowledgement(manifest)[property as string] = value;
+      expect(validateManifest(manifest)).toBe(false);
+    });
+
+    it.each(["text", "secret", "boolean", "select", "multiselect", "tenant", "subscription", "location", "resourceGroup", "entraObject"])(
+      "rejects acknowledgement-only validationMessage on %s fields",
+      (type) => {
+        const manifest = fixture();
+        const field = manifest.configuration.groups[0].fields[0];
+        field.type = type;
+        field.validationMessage = "Please acknowledge.";
+        expect(validateManifest(manifest)).toBe(false);
+      }
+    );
+
+    it("keeps ordinary boolean defaults valid without acknowledgement-only metadata", () => {
+      const manifest = fixture();
+      const field = manifest.configuration.groups[0].fields[0];
+      for (const value of [true, false]) {
+        field.default = value;
+        expect(validateManifest(manifest), JSON.stringify(validateManifest.errors)).toBe(true);
+      }
+    });
   });
 
   it("rejects unregistered and provider-mismatched permission checks", () => {

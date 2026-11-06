@@ -88,6 +88,7 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
             if !matches!(
                 field.field_type.as_str(),
                 "text"
+                    | "acknowledgement"
                     | "secret"
                     | "boolean"
                     | "select"
@@ -137,6 +138,7 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
             validate_condition(field.condition.as_ref(), &fields)?;
         }
     }
+    crate::acknowledgements::validate_manifest(manifest)?;
     for prerequisite in &manifest.prerequisites {
         validate_requirement_condition(prerequisite.condition.as_ref(), manifest)?;
     }
@@ -271,6 +273,16 @@ fn validate_condition(
     {
         return Err(AppError::Invalid(
             "Conditions must specify exactly one comparison.".into(),
+        ));
+    }
+    if condition
+        .equals
+        .as_ref()
+        .or(condition.not_equals.as_ref())
+        .is_some_and(|value| !value.is_string() && !value.is_boolean())
+    {
+        return Err(AppError::Invalid(
+            "Conditions require scalar string or boolean comparisons.".into(),
         ));
     }
     if condition.includes.is_some() && field.field_type != "multiselect" {

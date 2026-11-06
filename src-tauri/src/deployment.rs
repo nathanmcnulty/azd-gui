@@ -197,6 +197,13 @@ fn environment_assignments(
         }
     }
     if let Some(manifest) = entry.and_then(|entry| entry.manifest.as_ref()) {
+        for (name, value) in
+            crate::acknowledgements::binding_values(manifest, &request.environment_values)?
+        {
+            if let Some(value) = environment_value_as_string(&name, &value)? {
+                assignments.insert(name, value);
+            }
+        }
         let controllers = crate::manifest::requirement_controller_variables(manifest)?;
         for field in manifest
             .configuration
@@ -526,6 +533,12 @@ pub async fn prepare(
         .await?,
     );
     if let Some(manifest) = entry.as_ref().and_then(|entry| entry.manifest.as_ref()) {
+        crate::acknowledgements::validate_preparation(
+            manifest,
+            &request.environment_values,
+            request.tenant.as_deref(),
+            &request.acknowledgement_proofs,
+        )?;
         let requirement_values =
             requirement_environment_values(manifest, &request.environment_values)?;
         crate::tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
@@ -786,6 +799,7 @@ mod tests {
             template_id: "myworkid".into(),
             source_mode: "catalog".into(),
             execution_approval_token: "test-approval".into(),
+            acknowledgement_proofs: Vec::new(),
             reviewed_contract_digest: ProjectTemplateSnapshot::new(
                 entry_by_id("myworkid").unwrap(),
             )
@@ -1039,5 +1053,27 @@ mod tests {
         }];
         assert!(environment_exists(&environments, "dev"));
         assert!(!environment_exists(&environments, "staging"));
+    }
+    #[test]
+    fn preparation_persists_optional_blank_ack_controller_and_clears_hidden_true() {
+        let mut manifest = crate::acknowledgements::tests::fixture_manifest();
+        manifest.configuration.groups[0].fields[0].default = None;
+        let mut entry = entry_by_id("myworkid").unwrap();
+        entry.manifest = Some(manifest.clone());
+        let mut request = myworkid_request();
+        request.environment_values = crate::acknowledgements::tests::values();
+        request.environment_values.insert("MODE".into(), json!(""));
+        let assignments = environment_assignments(&request, Some(&entry))
+            .unwrap()
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(assignments.get("MODE").map(String::as_str), Some(""));
+        assert_eq!(
+            assignments.get("CONFIRM_ALL").map(String::as_str),
+            Some("false")
+        );
+        manifest.configuration.groups[0].fields[0].required = true;
+        entry.manifest = Some(manifest);
+        assert!(environment_assignments(&request, Some(&entry)).is_err());
     }
 }
