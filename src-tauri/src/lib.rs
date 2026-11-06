@@ -1175,7 +1175,7 @@ fn review_pim_plan(input: pim_plan::Input) -> AppResult<pim_plan::Review> {
 async fn cancel_pim_plan(
     state: State<'_, AppState>,
     expected_digest: String,
-) -> AppResult<Option<graph_session::ProcessEvidence>> {
+) -> AppResult<Option<graph_session::PimCancellationReceipt>> {
     state
         .graph_sessions
         .dispose_pim_with_receipt(&expected_digest)

@@ -45,8 +45,17 @@ Started/completed counters provide evidence for cancelling an in-flight read. Th
 describe dispatch attempts and validated completions, not a network packet capture.
 Counters and observed identity also accompany the complete plan JSON. **Copy complete
 plan JSON** copies it only on request; retain tenant results privately.
-An explicit cancellation also offers a separate inactive receipt with the counters
-at the cancellation request. It clears the plan and cannot authorize another read.
+An explicit cancellation also offers a separate inactive receipt bound to the
+native review digest. A fresh native revocation records whether an admitted
+`pimPlan` RPC was in flight at that instant. This action marker is maintained by a
+native RAII guard and resets on every completion, failure or aborted caller; queued
+transport-lock waiters, authentication and probes do not count as planner requests.
+Historical or already-revoked process evidence has a null marker and cannot prove
+in-flight cancellation. Counters describe process metadata observed during
+cancellation processing and need not coincide exactly with the atomic revocation
+snapshot. Neither RPC state nor counters prove that an HTTP transfer was interrupted.
+The receipt clears the plan and cannot authorize another read. Older metadata-only
+receipts lack this native marker and cannot establish in-flight cancellation.
 
 Failed reads return fixed diagnostic categories for access denial, missing scopes,
 identity/grant changes, budgets, redirects or planner rejection. Raw SDK exceptions,

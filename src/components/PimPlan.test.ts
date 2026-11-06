@@ -18,6 +18,10 @@ const observed: api.PimProcessEvidence = { active: true, processId: 1234, sessio
   resource: 'https://graph.microsoft.com', scopes: [...review.binding.scopes, 'User.Read'], principalFingerprint: 'a'.repeat(64),
   verificationReads: 1, pimReadsAttempted: 0, pimReadsCompleted: 0
 } };
+function cancellation(inFlight: boolean | null = true, processEvidence: api.PimProcessEvidence = { ...observed, active: false }, digest = review.binding.requirementsDigest): api.PimCancellationReceipt {
+  return { requirementsDigest: digest, snapshotSource: inFlight === null ? 'historicalProcessEvidenceV1' : 'nativeRequestRevocationV1',
+    pimPlanRequestInFlightAtRevocation: inFlight, processEvidence };
+}
 const artifact: api.PimPlanArtifact = { sourceCommit: review.sourceCommit, requirementsDigest: review.binding.requirementsDigest,
   configuration: review.configuration, previewExistingObjects: false, ownershipReviewRequired: true, ownershipEstablished: false, executionAuthorized: false,
   ownershipReviewNotice: 'Existing-object preview is off. Review ownership before any enforcement.',
@@ -199,7 +203,7 @@ describe('PIM read-only workflow', () => {
 
   it('requires a fresh review after failure and accepts its newly owned process', async () => {
     vi.mocked(api.runPimPlan).mockRejectedValueOnce(new Error('Graph read denied'));
-    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce({ ...observed, active: false, context: { ...observed.context, pimReadsAttempted: 1 } });
+    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce(cancellation(null, { ...observed, active: false, context: { ...observed.context, pimReadsAttempted: 1 } }));
     await prepare(); await connect();
     await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
     await screen.findByRole('alert');
@@ -228,7 +232,7 @@ describe('PIM read-only workflow', () => {
     let failOperation!: (cause: Error) => void;
     vi.mocked(api.getPimPlanEvidence).mockImplementationOnce(() => new Promise(done => { finishPoll = done; }));
     vi.mocked(api.runPimPlan).mockImplementationOnce(() => new Promise((_, reject) => { failOperation = reject; }));
-    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce({ ...observed, active: false });
+    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce(cancellation(null));
     await prepare(); await connect();
     await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
     await waitFor(() => expect(api.getPimPlanEvidence).toHaveBeenCalledTimes(1));
@@ -242,17 +246,56 @@ describe('PIM read-only workflow', () => {
   });
 
   it('retains an explicitly requested cancellation receipt while discarding the late plan', async () => {
-    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce({ ...observed, active: false, context: { ...observed.context, pimReadsAttempted: 1 } });
+    const receipt = cancellation(true, { ...observed, active: false, context: { ...observed.context, pimReadsAttempted: 1 } });
+    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce(receipt);
     let finish!: (value: api.PimPlanArtifact) => void;
     vi.mocked(api.runPimPlan).mockImplementationOnce(() => new Promise(done => { finish = done; }));
     await prepare(); await connect();
     await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await screen.findByRole('region', { name: 'PIM cancellation receipt' });
-    expect(screen.getByText(/At cancellation request: 1 plan dispatch attempts, 0 validated completions/)).toBeInTheDocument();
+    expect(screen.getByText(/Process metadata at cancellation processing: 1 plan dispatch attempts, 0 validated completions/)).toBeInTheDocument();
+    expect(screen.getByText('Native planner request was in flight when this cancellation revoked the session.')).toBeInTheDocument();
+    expect(screen.getByText(review.binding.requirementsDigest)).toBeInTheDocument();
     finish(artifact); await Promise.resolve(); await tick();
     expect(screen.queryByRole('region', { name: 'PIM plan artifact' })).not.toBeInTheDocument();
     await fireEvent.input(screen.getByLabelText('Account'), { target: { value: 'changed@example.test' } });
+    expect(screen.queryByRole('region', { name: 'PIM cancellation receipt' })).not.toBeInTheDocument();
+  });
+
+  it.each([false, null])('distinguishes completed/unknown cancellation snapshot %s from in-flight evidence', async inFlight => {
+    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce(cancellation(inFlight, { ...observed, active: false, context: { ...observed.context, pimReadsAttempted: 7, pimReadsCompleted: 7 } }));
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('region', { name: 'PIM plan artifact' });
+    await fireEvent.click(screen.getByRole('button', { name: 'Disconnect and clear plan' }));
+    await screen.findByRole('region', { name: 'PIM cancellation receipt' });
+    expect(screen.getByText(inFlight === false ? 'No native planner request was in flight when this cancellation revoked the session.' : 'This action has no fresh native in-flight cancellation snapshot; only historical process evidence is available.')).toBeInTheDocument();
+    expect(screen.queryByText('Native planner request was in flight when this cancellation revoked the session.')).not.toBeInTheDocument();
+  });
+
+  it('copies the native cancellation digest and snapshot only on explicit request', async () => {
+    const receipt = cancellation(false);
+    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce(receipt);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', Object.assign(Object.create(navigator), { clipboard: { writeText } }));
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Disconnect and clear plan' }));
+    await screen.findByRole('region', { name: 'PIM cancellation receipt' });
+    expect(writeText).not.toHaveBeenCalled();
+    await fireEvent.click(screen.getByRole('button', { name: 'Copy cancellation receipt' }));
+    expect(JSON.parse(writeText.mock.calls[0][0])).toEqual(receipt);
+  });
+
+  it.each(['digest', 'legacy', 'historicalTrue'])('rejects cancellation evidence with invalid %s correlation', async kind => {
+    let receipt = cancellation(true);
+    if (kind === 'digest') receipt.requirementsDigest = 'another-review';
+    else if (kind === 'historicalTrue') receipt.snapshotSource = 'historicalProcessEvidenceV1';
+    else receipt = { ...observed, active: false } as unknown as api.PimCancellationReceipt;
+    vi.mocked(api.cancelPimPlan).mockResolvedValueOnce(receipt);
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: 'Disconnect and clear plan' }));
+    await screen.findByRole('alert');
     expect(screen.queryByRole('region', { name: 'PIM cancellation receipt' })).not.toBeInTheDocument();
   });
 });

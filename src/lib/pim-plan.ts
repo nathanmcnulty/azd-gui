@@ -57,6 +57,12 @@ export interface PimProcessEvidence {
     principalFingerprint: string; verificationReads: number; pimReadsAttempted: number; pimReadsCompleted: number;
   };
 }
+export interface PimCancellationReceipt {
+  requirementsDigest: string;
+  snapshotSource: 'nativeRequestRevocationV1' | 'alreadyRevokedNativeWorkerV1' | 'historicalProcessEvidenceV1';
+  pimPlanRequestInFlightAtRevocation: boolean | null;
+  processEvidence: PimProcessEvidence;
+}
 function native() {
   if (!isTauri()) throw new Error('Open the Windows desktop app to review and run a PIM plan.');
 }
@@ -76,7 +82,7 @@ export async function runPimPlan(input: PimPlanInput, expectedDigest: string): P
   native();
   return invoke('run_pim_plan', { input, expectedDigest });
 }
-export async function cancelPimPlan(expectedDigest: string): Promise<PimProcessEvidence | null> {
+export async function cancelPimPlan(expectedDigest: string): Promise<PimCancellationReceipt | null> {
   if (isTauri()) return invoke('cancel_pim_plan', { expectedDigest });
   return null;
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
-  import { cancelPimPlan, connectPimPlan, getPimPlanEvidence, reviewPimPlan, runPimPlan, type PimProcessEvidence, type PimPlanArtifact, type PimPlanConfiguration, type PimPlanInput, type PimPlanReview } from '../lib/pim-plan';
+  import { cancelPimPlan, connectPimPlan, getPimPlanEvidence, reviewPimPlan, runPimPlan, type PimCancellationReceipt, type PimProcessEvidence, type PimPlanArtifact, type PimPlanConfiguration, type PimPlanInput, type PimPlanReview } from '../lib/pim-plan';
 
   let account = '';
   let tenantId = '';
@@ -17,7 +17,7 @@
   let artifact: PimPlanArtifact | null = null;
   let evidence: PimProcessEvidence | null = null;
   let copyStatus = '';
-  let cancellationReceipt: PimProcessEvidence | null = null;
+  let cancellationReceipt: PimCancellationReceipt | null = null;
   let explicitCancellationEpoch = -1;
   const pollers = new Set<ReturnType<typeof setInterval>>();
   let connected = false;
@@ -45,10 +45,23 @@
     error = '';
     if (digest) disposal = disposal.catch(() => {}).then(async () => {
       const receipt = await cancelPimPlan(digest);
-      if (cancelledEpoch === epoch && explicitCancellationEpoch === cancelledEpoch) cancellationReceipt = receipt;
+      if (cancelledEpoch === epoch && explicitCancellationEpoch === cancelledEpoch && receipt) {
+        validateCancellation(receipt, digest);
+        cancellationReceipt = receipt;
+      }
     });
+    void disposal.catch(() => { if (cancelledEpoch === epoch) error = 'Session cleanup or cancellation evidence could not be confirmed.'; });
   }
   function cancelExplicitly() { explicitCancellationEpoch = epoch + 1; invalidate(); }
+  function validateCancellation(receipt: PimCancellationReceipt, digest: string) {
+    const fresh = receipt.snapshotSource === 'nativeRequestRevocationV1';
+    if (receipt.requirementsDigest !== digest || receipt.processEvidence?.active !== false ||
+        fresh && typeof receipt.pimPlanRequestInFlightAtRevocation !== 'boolean' ||
+        !fresh && (receipt.pimPlanRequestInFlightAtRevocation !== null ||
+          !['alreadyRevokedNativeWorkerV1', 'historicalProcessEvidenceV1'].includes(receipt.snapshotSource))) {
+      throw new Error('Cancellation receipt does not match this reviewed native session.');
+    }
+  }
   function acceptEvidence(value: PimProcessEvidence, selected: PimPlanReview) {
     const context = value.context;
     if (context.account.toLowerCase() !== selected.binding.account || context.tenantId.toLowerCase() !== selected.binding.tenantId.toLowerCase() ||
@@ -71,7 +84,10 @@
     error = String(cause); connected = false;
     review = null; reviewedInput = null;
     let terminal: PimProcessEvidence | null = null;
-    disposal = disposal.catch(() => {}).then(async () => { terminal = await cancelPimPlan(selected.binding.requirementsDigest); });
+    disposal = disposal.catch(() => {}).then(async () => {
+      const receipt = await cancelPimPlan(selected.binding.requirementsDigest);
+      if (receipt) { validateCancellation(receipt, selected.binding.requirementsDigest); terminal = receipt.processEvidence; }
+    });
     try {
       await disposal;
       if (current === epoch) {
@@ -201,8 +217,12 @@
   {#if busy}<p role="status">{busy}</p>{/if}
   {#if cancellationReceipt}
     <section class="pim-review" aria-label="PIM cancellation receipt"><h2>Session closed</h2>
-      <p>At cancellation request: {cancellationReceipt.context.pimReadsAttempted} plan dispatch attempts, {cancellationReceipt.context.pimReadsCompleted} validated completions. Worker PID: {cancellationReceipt.processId}.</p>
-      <p>This historical receipt cannot authorize another read. Dispatch counters do not independently prove network traffic.</p>
+      {#if cancellationReceipt.pimPlanRequestInFlightAtRevocation === true}<p>Native planner request was in flight when this cancellation revoked the session.</p>
+      {:else if cancellationReceipt.pimPlanRequestInFlightAtRevocation === false}<p>No native planner request was in flight when this cancellation revoked the session.</p>
+      {:else}<p>This action has no fresh native in-flight cancellation snapshot; only historical process evidence is available.</p>{/if}
+      <p>Review digest: <code>{cancellationReceipt.requirementsDigest}</code></p>
+      <p>Process metadata at cancellation processing: {cancellationReceipt.processEvidence.context.pimReadsAttempted} plan dispatch attempts, {cancellationReceipt.processEvidence.context.pimReadsCompleted} validated completions. Worker PID: {cancellationReceipt.processEvidence.processId}.</p>
+      <p>This receipt cannot authorize another read. Native request state and dispatch counters do not independently prove that an HTTP transfer was interrupted.</p>
       <button class="secondary" on:click={copyCancellation}>Copy cancellation receipt</button>
       {#if copyStatus}<p role="status">{copyStatus}</p>{/if}
     </section>

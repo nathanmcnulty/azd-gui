@@ -8,7 +8,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU8, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
 use tokio::{
@@ -176,6 +179,25 @@ pub(crate) struct ProcessEvidence {
     context: ContextEvidence,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum CancellationSnapshotSource {
+    NativeRequestRevocationV1,
+    AlreadyRevokedNativeWorkerV1,
+    HistoricalProcessEvidenceV1,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PimCancellationReceipt {
+    requirements_digest: String,
+    snapshot_source: CancellationSnapshotSource,
+    // This is native RPC state, never proof of an interrupted HTTP transfer.
+    // None means this action did not capture a fresh owned revocation.
+    pim_plan_request_in_flight_at_revocation: Option<bool>,
+    process_evidence: ProcessEvidence,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProgressFrame {
@@ -213,13 +235,45 @@ struct Transport {
 }
 
 // An aborted request also revokes cached availability before Transport drops.
-struct RequestRevocation {
+const PIM_REQUEST_IN_FLIGHT: u8 = 1;
+const REQUESTS_REVOKED: u8 = 2;
+
+struct PimRequestGuard<'a> {
+    state: &'a AtomicU8,
+}
+
+impl<'a> PimRequestGuard<'a> {
+    fn begin(state: &'a AtomicU8) -> AppResult<Self> {
+        state
+            .compare_exchange(
+                0,
+                PIM_REQUEST_IN_FLIGHT,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| invalid("PIM request is cancelled or unavailable."))?;
+        Ok(Self { state })
+    }
+}
+
+impl Drop for PimRequestGuard<'_> {
+    fn drop(&mut self) {
+        // Preserve permanent revocation when completion/abort races with cancel.
+        self.state
+            .fetch_and(!PIM_REQUEST_IN_FLIGHT, Ordering::AcqRel);
+    }
+}
+
+struct RequestRevocation<'a> {
     cancel: watch::Sender<bool>,
+    request_state: &'a AtomicU8,
     armed: bool,
 }
-impl Drop for RequestRevocation {
+impl Drop for RequestRevocation<'_> {
     fn drop(&mut self) {
         if self.armed {
+            self.request_state
+                .fetch_or(REQUESTS_REVOKED, Ordering::AcqRel);
             self.cancel.send_replace(true);
         }
     }
@@ -233,6 +287,7 @@ pub struct GraphWorker {
     transport: AsyncMutex<Option<Transport>>,
     cancel: watch::Sender<bool>,
     observed: Mutex<Option<ContextEvidence>>,
+    request_state: AtomicU8,
 }
 
 impl GraphWorker {
@@ -314,6 +369,7 @@ impl GraphWorker {
             })),
             cancel,
             observed: Mutex::new(None),
+            request_state: AtomicU8::new(0),
         });
         worker.request("initialize", false).await?;
         Ok(worker)
@@ -382,6 +438,7 @@ impl GraphWorker {
             .ok_or_else(|| invalid("Graph session is closed or cancelled."))?;
         let mut revocation = RequestRevocation {
             cancel: self.cancel.clone(),
+            request_state: &self.request_state,
             armed: true,
         };
         let mut cancelled = self.cancel.subscribe();
@@ -394,6 +451,13 @@ impl GraphWorker {
             "requirementsDigest":self.binding.requirements_digest,"binding":self.binding,"allowInteractive":allow_interactive,"parameters":parameters});
         let mut bytes = serde_json::to_vec(&request)?;
         bytes.push(b'\n');
+        // Only an admitted pimPlan RPC counts. Waiting on the transport mutex,
+        // authentication, probing and a completed reply never create this marker.
+        let _pim_request = if action == "pimPlan" {
+            Some(PimRequestGuard::begin(&self.request_state)?)
+        } else {
+            None
+        };
         let io = async {
             let limit = if action == "pimPlan" {
                 16 * 1024 * 1024
@@ -453,7 +517,7 @@ impl GraphWorker {
                 Ok(reply)
             }
             Err(error) => {
-                self.cancel.send_replace(true);
+                self.cancel();
                 let _ = transport.child.kill().await;
                 let _ = transport.child.wait().await;
                 Err(error)
@@ -651,7 +715,8 @@ impl GraphWorker {
             self.cancel();
         }
         Ok(ProcessEvidence {
-            active: !*self.cancel.borrow(),
+            active: self.request_state.load(Ordering::Acquire) & REQUESTS_REVOKED == 0
+                && !*self.cancel.borrow(),
             process_id: self.pid,
             session_id: self.session_id.clone(),
             context,
@@ -659,7 +724,15 @@ impl GraphWorker {
     }
 
     pub fn cancel(&self) {
+        let _ = self.cancel_with_snapshot();
+    }
+
+    fn cancel_with_snapshot(&self) -> Option<bool> {
+        let previous = self
+            .request_state
+            .fetch_or(REQUESTS_REVOKED, Ordering::AcqRel);
         self.cancel.send_replace(true);
+        (previous & REQUESTS_REVOKED == 0).then_some(previous & PIM_REQUEST_IN_FLIGHT != 0)
     }
 
     pub async fn close(&self) {
@@ -707,13 +780,65 @@ impl GraphSessions {
     pub async fn dispose_pim_with_receipt(
         &self,
         digest: &str,
-    ) -> AppResult<Option<ProcessEvidence>> {
-        // Authentication may not have produced evidence yet. Metadata lookup
-        // must never prevent revoking a pending or in-flight authentication.
-        let mut receipt = self.pim_evidence(digest).ok().flatten();
-        self.dispose_matching(digest).await;
-        if let Some(receipt) = &mut receipt {
-            receipt.active = false;
+    ) -> AppResult<Option<PimCancellationReceipt>> {
+        let (worker, mut receipt) = {
+            let mut registry = self
+                .current
+                .lock()
+                .map_err(|_| invalid("Graph sessions unavailable."))?;
+            if registry.requirements_digest.as_deref() == Some(digest) {
+                let receipt = registry
+                    .worker
+                    .as_ref()
+                    .filter(|worker| {
+                        worker.binding.purpose.as_deref() == Some("pimPlan")
+                            && worker.binding.requirements_digest == digest
+                    })
+                    .and_then(|worker| {
+                        // Linearize the marker with revocation before any await.
+                        // Later counters are metadata observations, not wire proof.
+                        let snapshot = worker.cancel_with_snapshot();
+                        worker.process_evidence().ok().map(|mut evidence| {
+                            evidence.active = false;
+                            PimCancellationReceipt {
+                                requirements_digest: digest.into(),
+                                snapshot_source: if snapshot.is_some() {
+                                    CancellationSnapshotSource::NativeRequestRevocationV1
+                                } else {
+                                    CancellationSnapshotSource::AlreadyRevokedNativeWorkerV1
+                                },
+                                pim_plan_request_in_flight_at_revocation: snapshot,
+                                process_evidence: evidence,
+                            }
+                        })
+                    });
+                // Also revokes a pending installation with no worker/evidence.
+                (registry.revoke(), receipt)
+            } else {
+                (None, None)
+            }
+        };
+        if let Ok(mut cache) = self.last_pim_failure.lock() {
+            if cache.as_ref().is_some_and(|(owner, _)| owner == digest) {
+                if worker.is_none() && receipt.is_none() {
+                    receipt = cache.take().map(|(_, mut evidence)| {
+                        evidence.active = false;
+                        PimCancellationReceipt {
+                            requirements_digest: digest.into(),
+                            snapshot_source:
+                                CancellationSnapshotSource::HistoricalProcessEvidenceV1,
+                            pim_plan_request_in_flight_at_revocation: None,
+                            process_evidence: evidence,
+                        }
+                    });
+                } else {
+                    *cache = None;
+                }
+            }
+        }
+        // Missing metadata must never prevent pending/auth/request cancellation.
+        if let Some(worker) = worker {
+            worker.close().await;
         }
         Ok(receipt)
     }
@@ -1508,6 +1633,11 @@ mod tests {
         .unwrap();
         task.abort();
         assert!(task.await.is_err());
+        assert_eq!(
+            worker.request_state.load(Ordering::Acquire),
+            REQUESTS_REVOKED
+        );
+        assert!(PimRequestGuard::begin(&worker.request_state).is_err());
         assert!(
             !sessions
                 .pim_evidence(&review.binding.requirements_digest)
@@ -1549,6 +1679,168 @@ mod tests {
             .await
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell cancellation snapshots; substitutes MSAL and HTTP"]
+    async fn cancellation_receipt_snapshots_native_pim_request_state_and_digest() {
+        // Delayed planner: record the native request state, revoke, and discard
+        // every late result. No UI timing or transport-lock heuristic is used.
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let digest = review.binding.requirements_digest.clone();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = Arc::new(GraphSessions::default());
+        sessions.replace(worker.clone()).await.unwrap();
+        fixture.control("pim", 10000);
+        let planning = sessions.clone();
+        let task = tokio::spawn(async move { planning.pim_plan(&review).await });
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while worker
+                .process_evidence()
+                .unwrap()
+                .context
+                .pim_reads_attempted
+                < 1
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(sessions
+            .dispose_pim_with_receipt(&"f".repeat(64))
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            worker.request_state.load(Ordering::Acquire),
+            PIM_REQUEST_IN_FLIGHT
+        );
+        let receipt = sessions
+            .dispose_pim_with_receipt(&digest)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.requirements_digest, digest);
+        assert!(matches!(
+            receipt.snapshot_source,
+            CancellationSnapshotSource::NativeRequestRevocationV1
+        ));
+        assert_eq!(receipt.pim_plan_request_in_flight_at_revocation, Some(true));
+        assert!(!receipt.process_evidence.active);
+        assert_eq!(receipt.process_evidence.session_id, worker.session_id);
+        assert!(task.await.unwrap().is_err());
+        assert_eq!(
+            worker.request_state.load(Ordering::Acquire),
+            REQUESTS_REVOKED
+        );
+        assert!(sessions.pim_evidence(&digest).unwrap().is_none());
+        assert!(worker.pim_plan(&pim_review().configuration).await.is_err());
+
+        // Completed planner plus artificial mutex contention is NOT in flight.
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let digest = review.binding.requirements_digest.clone();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = Arc::new(GraphSessions::default());
+        sessions.replace(worker.clone()).await.unwrap();
+        sessions.pim_plan(&review).await.unwrap();
+        assert_eq!(worker.request_state.load(Ordering::Acquire), 0);
+        let held_transport = worker.transport.lock().await;
+        let queued = worker.pim_plan(&review.configuration);
+        tokio::pin!(queued);
+        tokio::select! {
+            _ = &mut queued => panic!("queued request unexpectedly acquired held transport"),
+            _ = tokio::time::sleep(Duration::from_millis(25)) => {}
+        }
+        assert_eq!(worker.request_state.load(Ordering::Acquire), 0);
+        let calls_before = fixture.calls().len();
+        let cancelling = sessions.clone();
+        let expected_digest = digest.clone();
+        let cancel =
+            tokio::spawn(
+                async move { cancelling.dispose_pim_with_receipt(&expected_digest).await },
+            );
+        tokio::time::timeout(Duration::from_secs(8), async {
+            while worker.request_state.load(Ordering::Acquire) & REQUESTS_REVOKED == 0 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        drop(held_transport);
+        assert!(queued.await.is_err());
+        let receipt = cancel.await.unwrap().unwrap().unwrap();
+        assert_eq!(receipt.requirements_digest, digest);
+        assert_eq!(
+            receipt.pim_plan_request_in_flight_at_revocation,
+            Some(false)
+        );
+        assert_eq!(receipt.process_evidence.context.pim_reads_completed, 7);
+        assert!(matches!(
+            receipt.snapshot_source,
+            CancellationSnapshotSource::NativeRequestRevocationV1
+        ));
+        assert_eq!(fixture.calls().len(), calls_before);
+
+        // A live probe is a different action and must not count as a PIM RPC.
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        fixture.control("pim", 10000);
+        let probing = worker.clone();
+        let probe = tokio::spawn(async move { probing.probe().await });
+        fixture.wait_for_read().await;
+        let receipt = sessions
+            .dispose_pim_with_receipt(&review.binding.requirements_digest)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.pim_plan_request_in_flight_at_revocation,
+            Some(false)
+        );
+        assert!(probe.await.unwrap().is_err());
+        assert_eq!(
+            worker.request_state.load(Ordering::Acquire),
+            REQUESTS_REVOKED
+        );
+
+        // An earlier failed/revoked request supplies historical metadata only.
+        let fixture = Fixture::new();
+        let review = pim_review();
+        let digest = review.binding.requirements_digest.clone();
+        let worker = fixture.pim_worker(&review).await;
+        worker.authenticate().await.unwrap();
+        worker.probe().await.unwrap();
+        let sessions = GraphSessions::default();
+        sessions.replace(worker.clone()).await.unwrap();
+        std::fs::write(fixture.root.path().join("control.json"), json!({"account":"operator@example.test","mode":"pim","delayMs":0,"responseStatus":403}).to_string()).unwrap();
+        assert!(sessions.pim_plan(&review).await.is_err());
+        assert_eq!(
+            worker.request_state.load(Ordering::Acquire),
+            REQUESTS_REVOKED
+        );
+        let receipt = sessions
+            .dispose_pim_with_receipt(&digest)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.requirements_digest, digest);
+        assert_eq!(receipt.pim_plan_request_in_flight_at_revocation, None);
+        assert!(matches!(
+            receipt.snapshot_source,
+            CancellationSnapshotSource::HistoricalProcessEvidenceV1
+        ));
+        assert!(!receipt.process_evidence.active);
     }
 
     #[tokio::test]
