@@ -1687,7 +1687,8 @@ mod tests {
                 .len(),
             2
         );
-        assert!(fixture.calls().iter().any(|v| v["uri"] == "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies"));
+        assert!(fixture.calls().iter().any(|v| v["uri"]
+            == "https://graph.microsoft.com/v1.0/policies/authenticationStrengthPolicies"));
         assert_eq!(fixture.calls()[0]["scopes"], json!(crate::pim_plan::SCOPES));
         worker.close().await;
     }
