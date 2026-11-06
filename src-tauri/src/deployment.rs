@@ -516,6 +516,9 @@ pub async fn prepare(
         )
         .await?,
     );
+    crate::graph_session::reject_unadapted_execution(&ProjectTemplateSnapshot::new(
+        entry.as_ref().expect("resolved template").clone(),
+    )?)?;
     if let Some(manifest) = entry.as_ref().and_then(|entry| entry.manifest.as_ref()) {
         crate::acknowledgements::validate_preparation(
             manifest,

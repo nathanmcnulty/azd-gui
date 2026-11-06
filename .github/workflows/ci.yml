@@ -38,6 +38,10 @@ jobs:
           node-version: 22
           cache: npm
 
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5.4.0
+        with:
+          dotnet-version: '8.0.4xx'
+
       - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: stable
@@ -63,3 +67,8 @@ jobs:
 
       - name: Test native code
         run: npm run test:native
+
+      - name: Test owned Graph process adapter offline
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tools/Test-GraphProcessAdapter.ps1 -BuildRoot (Join-Path $env:RUNNER_TEMP 'graph-offline-adapter')

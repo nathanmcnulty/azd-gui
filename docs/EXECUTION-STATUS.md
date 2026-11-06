@@ -1,6 +1,16 @@
 # Execution status
 
-Next work is sequenced in the [27 September continuation roadmap](EXECUTION-CONTINUATION-20260927.md).
+Current work is sequenced in the [30 October milestone checkpoint](EXECUTION-CONTINUATION-20261030.md).
+
+The local Graph session foundation (`24d6dbb`, followed by the account-hint change
+`c896fac`) is a draft PR candidate stacked on #172. Native build prerequisites
+are available. Registered owned-process reads and generic template execution are
+separate capabilities: Graph template hooks remain blocked pending explicit
+adapter adoption. The recommended next implementation milestone is one PIM
+read-only plan workflow. Publication, new consent and signed acceptance remain
+separate decisions. Operational receipts stay in the private workspace.
+
+The records below describe earlier exact candidates and are retained as history.
 
 Updated 1 October 2026.
 

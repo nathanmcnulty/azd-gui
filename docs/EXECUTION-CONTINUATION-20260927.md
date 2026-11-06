@@ -1,7 +1,11 @@
 # Windows acceptance and account-choice continuation
 
+For current implementation ordering, use the
+[30 October milestone checkpoint](EXECUTION-CONTINUATION-20261030.md). This
+document preserves the earlier candidate and acceptance handoff.
+
 Roadmap checkpoint: 27 September 2026; candidate handoff updated 1 October 2026.
-This is the active execution order after P1–P7
+This recorded the execution order after P1–P7
 of the [original plan](EXECUTION-PLAN.md). Keep the architecture, validation,
 model policy, and milestone handoff rules there. The [status](EXECUTION-STATUS.md)
 and [Windows gate matrix](windows-acceptance-status.md) are the evidence records;

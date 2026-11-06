@@ -16,7 +16,7 @@ The planned beta supports Windows 11 on x64. Windows 10, macOS, and Linux are ou
 - Direct GitHub templates resolved to immutable commits before use.
 - Local existing-project and copy-as-template workflows.
 - Detection for azd, Azure CLI, PowerShell, Az PowerShell, and Microsoft Graph PowerShell.
-- Native login orchestration for azd, Azure CLI, Az PowerShell, and Graph PowerShell using their normal broker or system-browser flows, with delegated Graph scope verification.
+- Native login orchestration for azd, Azure CLI and Az PowerShell. Explicit Graph sign-in and registered reads share an owned PowerShell process, with exact account, tenant, application and delegated grant verification.
 - Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
 - Fresh exact-commit template checkouts, explicit template-execution consent, environment value application, conservative hook-aware preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
@@ -32,6 +32,7 @@ Prerequisites:
 
 - Node.js 22 or newer
 - Rust stable
+- .NET SDK 8.0.4xx for native builds, tests and linting (the Graph adapter's `global.json` selects the latest installed patch in that feature band)
 - Windows: Visual Studio Build Tools with the C++ workload
 - macOS: Xcode command-line tools
 - Linux: the [Tauri Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
@@ -54,6 +55,8 @@ npm run tauri build
 ```
 
 The Windows build uses the installed WebView2 runtime and does not install a fixed runtime into the bundle.
+
+Native builds restore the pinned public MSAL dependencies in locked mode and embed the managed Graph adapter DLLs. End users do not need the .NET SDK; Graph sessions require PowerShell 7.4 or newer. See [the Graph session boundary](docs/graph-session-boundary.md) for supported reads, explicit sign-in and execution limits. Templates declaring Graph requirements stay blocked at initialization, lifecycle execution and terminal handoff until their protected operations adopt a reviewed execution adapter.
 
 ## Signed Windows releases
 
@@ -104,7 +107,7 @@ Inference never creates executable commands. Manifests can declare that a pinned
 - Environment configuration is passed to `azd env set --file` through a temporary file instead of process arguments; this transport is used for ordinary values as well as sensitive ones.
 - Sensitive wizard values are held only for the active deployment and are excluded from application drafts and logs. Rust independently whitelists typed draft fields, reapplies manifest sensitivity, and scrubs older drafts when they are loaded.
 - Settings can securely clear app-owned project references, operation history, drafts, catalog trust, preferences, and cached templates without deleting project folders or credential caches owned by external CLI tools.
-- Each Azure tool owns its own credential cache; the app reads status but does not capture tokens.
+- External Azure tools own their credential caches. The Graph adapter owns an in-memory MSAL credential in one PowerShell process; tokens stay inside managed code and never enter the renderer, native protocol, logs or app persistence.
 - The Tauri content security policy blocks remote scripts, objects, and frames.
 - The native URL opener capability is scoped to HTTPS links.
 

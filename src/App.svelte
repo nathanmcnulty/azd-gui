@@ -19,6 +19,8 @@
     checkRequirementPrerequisites,
     checkRequirementPermissions,
     reviewWizardRequirements,
+    requestGraphSession,
+    disposeGraphSession,
     clearLocalAppData,
     chooseFolder,
     createProjectEnvironment,
@@ -154,6 +156,22 @@
   let selectedEntry: CatalogEntry | null = null;
   let evaluatedRequiredTools: ToolStatus[] | null = null;
   let prerequisiteEvaluationKey = "";
+  let graphExpectedAccount = "";
+  let graphExpectedClientId = "";
+  let graphSessionDisposal = Promise.resolve();
+  let graphSessionOpening = false;
+  let graphSessionEpoch = 0;
+  function invalidateGraphSession() {
+    const graphInUse = graphSessionOpening || requiredConnections.some((connection) => connection.id === "graphPowerShell");
+    graphSessionEpoch += 1;
+    graphSessionOpening = false;
+    if (graphInUse) {
+      connectionCheckRequest += 1;
+      verifiedConnectionTargetKey = "";
+    }
+    data = { ...data, connections: data.connections.map((connection) => connection.id === "graphPowerShell" ? { ...connection, grantedScopes: [] } : connection) };
+    graphSessionDisposal = graphSessionDisposal.then(disposeGraphSession).catch(() => {});
+  }
   let requirementReview: Awaited<ReturnType<typeof reviewWizardRequirements>> | null = null;
   let selectedInspection: TemplateInspection | null = null;
   let wizardPlan: WizardPlan | null = null;
@@ -650,6 +668,9 @@
   }
 
   function startWizard(entry: CatalogEntry) {
+    invalidateGraphSession();
+    graphExpectedAccount = "";
+    graphExpectedClientId = "";
     flushDraftSave();
     const session = ++wizardSession;
     wizardEditGeneration = 0;
@@ -692,6 +713,7 @@
   }
 
   function closeWizard() {
+    invalidateGraphSession();
     flushDraftSave();
     wizardSession += 1;
     selectedEntry = null;
@@ -700,6 +722,7 @@
   }
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    invalidateGraphSession();
     wizardEditGeneration += 1;
     if (["tenantId", "subscriptionId", "location"].includes(id)) azureTargetGeneration += 1;
     hookExecutionAccepted = false;
@@ -1086,6 +1109,29 @@
   }
 
   async function connect(provider: ConnectionStatus, target?: ConnectionTarget) {
+    if (provider.id === "graphPowerShell" && nativeRuntime) {
+      const review = requirementReview;
+      if (!review || !graphExpectedAccount || !graphExpectedClientId) {
+        addSystemLog("Enter the exact Graph account, application client ID and tenant before approving an owned session.", "error");
+        return;
+      }
+      const session = wizardSession;
+      const context = prerequisiteEvaluationKey;
+      const epoch = graphSessionEpoch;
+      const expectedAccount = graphExpectedAccount;
+      const expectedClientId = graphExpectedClientId;
+      graphSessionOpening = true;
+      try {
+        await graphSessionDisposal;
+        if (epoch !== graphSessionEpoch || session !== wizardSession || context !== prerequisiteEvaluationKey) return;
+        await requestGraphSession(review.selection, review.snapshot, expectedAccount, expectedClientId);
+        if (epoch !== graphSessionEpoch || session !== wizardSession || context !== prerequisiteEvaluationKey) return;
+        await refreshTargetConnections(target);
+      } catch (error) {
+        if (epoch === graphSessionEpoch && session === wizardSession) addSystemLog(`Owned Graph session failed: ${String(error)}`, "error");
+      } finally { if (epoch === graphSessionEpoch) graphSessionOpening = false; }
+      return;
+    }
     const session = wizardSession;
     const targetGeneration = azureTargetGeneration;
     connectionCheckRequest += 1;
@@ -2684,8 +2730,19 @@
               {/each}
             </div>
           {:else if activePage.kind === "connections"}
+            {#if requiredConnections.some((connection) => connection.id === "graphPowerShell")}
+              <section class="card" aria-label="Owned Graph session">
+                <h3>Graph session identity</h3>
+                <p>Sign-in and registered Graph reads share one owned PowerShell process. Separate template hooks cannot use this evidence.</p>
+                <label>Expected Graph account<input value={graphExpectedAccount} on:input={(event) => { graphExpectedAccount = event.currentTarget.value; invalidateGraphSession(); }} autocomplete="off" /></label>
+                <label>Application client ID<input value={graphExpectedClientId} on:input={(event) => { graphExpectedClientId = event.currentTarget.value; invalidateGraphSession(); }} autocomplete="off" /></label>
+                <label>Graph tenant ID<input value={String(wizardValues.tenantId ?? "")} on:input={(event) => setWizardValue("tenantId", event.currentTarget.value)} autocomplete="off" /></label>
+                <button class="secondary" disabled={graphSessionOpening} on:click={invalidateGraphSession}>Dispose Graph session</button>
+                {#if graphSessionOpening}<button class="secondary" on:click={invalidateGraphSession}>Cancel Graph sign-in</button>{/if}
+              </section>
+            {/if}
             <div class="section-toolbar">
-              <div><h2>Template connections</h2><p>Each tool keeps its own credentials. Tokens never pass through this app.</p></div>
+              <div><h2>Template connections</h2><p>Each tool keeps its own credentials. Graph credentials stay in the owned session; tokens never enter this interface.</p></div>
               <button class="primary" on:click={connectRequired}><Icon name="connections" size={15} /> Connect required</button>
             </div>
             {#if requiredTenantMismatch}

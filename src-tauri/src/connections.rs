@@ -81,40 +81,12 @@ fn apply_expiration(status: &mut ConnectionStatus, value: Option<&Value>, now: D
     }
 }
 
-fn granted_scopes(value: Option<&Value>) -> Vec<String> {
-    value
-        .and_then(|value| value.pointer("/scopes"))
-        .map(|value| match value {
-            Value::Array(values) => values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(Into::into)
-                .collect(),
-            Value::String(value) => vec![value.clone()],
-            _ => vec![],
-        })
-        .unwrap_or_default()
-}
-
 async fn json_status(spec: CommandSpec) -> Option<Value> {
     let output = capture(spec, Duration::from_secs(15)).await.ok()?;
     if !output.success || output.stdout.trim().is_empty() {
         return None;
     }
     serde_json::from_str(&output.stdout).ok()
-}
-
-fn graph_context_spec() -> CommandSpec {
-    CommandSpec::new(
-        Executable::PowerShell,
-        [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "$c=Get-MgContext -ErrorAction SilentlyContinue; if(!$c){$p=Join-Path (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.mg') 'mg.authrecord.json'; if(Test-Path -LiteralPath $p){try{$r=Get-Content -LiteralPath $p -Raw -ErrorAction Stop|ConvertFrom-Json; if($r.username -and $r.tenantId){$c=[pscustomobject]@{Account=$r.username;TenantId=$r.tenantId;Scopes=@()}}}catch{}}}; if($c){[pscustomobject]@{account=$c.Account;tenantId=$c.TenantId;scopes=@($c.Scopes)}|ConvertTo-Json -Compress}",
-        ],
-    )
 }
 
 fn azure_cli_context_spec(target: Option<&ConnectionTarget>) -> CommandSpec {
@@ -243,7 +215,7 @@ fn azd_connection_status(
 }
 
 pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatus> {
-    let (azd, azd_probe, az_current, az_target, az_ps_current, az_ps_target, graph_ps) = tokio::join!(
+    let (azd, azd_probe, az_current, az_target, az_ps_current, az_ps_target) = tokio::join!(
         azd::auth_status(),
         async {
             match target.and_then(|target| azd_tenant_status_spec(target).ok()) {
@@ -266,8 +238,7 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
             } else {
                 None
             }
-        },
-        json_status(graph_context_spec())
+        }
     );
     let azd_status_value = azd.ok();
     let azd_status = azd_connection_status(
@@ -276,17 +247,17 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
         azd_probe.as_ref(),
         Utc::now(),
     );
-    let graph_granted_scopes = granted_scopes(graph_ps.as_ref());
     let mut graph_status = status(
         "graphPowerShell",
         "Microsoft Graph PowerShell",
         "Template-specific Microsoft Graph operations.",
-        graph_ps.as_ref(),
+        None,
         &["/account"],
         &["/tenantId"],
         (&[], &[]),
     );
-    graph_status.granted_scopes = graph_granted_scopes;
+    graph_status.detail =
+        Some("No fresh owned Graph session. Cached SDK sign-in is not permission evidence.".into());
     let mut azure_cli_status = status(
         "azureCli",
         "Azure CLI",
@@ -463,24 +434,7 @@ pub fn login_spec(
             })
         }
         "graphPowerShell" => {
-            let mut script = "Connect-MgGraph -ContextScope CurrentUser".to_string();
-            if tenant_id.is_some() {
-                script.push_str(" -TenantId $env:AZD_GUI_TENANT_ID");
-            }
-            if !scopes.is_empty() {
-                script.push_str(" -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')");
-            }
-            let mut spec = CommandSpec::new(
-                Executable::PowerShell,
-                ["-NoLogo", "-NoProfile", "-Command", &script],
-            );
-            if let Some(tenant_id) = tenant_id {
-                spec = spec.env("AZD_GUI_TENANT_ID", tenant_id);
-            }
-            if !scopes.is_empty() {
-                spec = spec.env("AZD_GUI_GRAPH_SCOPES", scopes.join(","));
-            }
-            Ok(spec)
+            Err(AppError::Invalid("Graph authentication requires an owned process session and exact identity/requirement approval.".into()))
         }
         _ => Err(AppError::Invalid(format!(
             "Unsupported connection provider: {provider_id}"
@@ -745,27 +699,6 @@ mod tests {
     }
 
     #[test]
-    fn graph_status_preserves_granted_scopes() {
-        let value = serde_json::json!({
-            "scopes": ["Application.ReadWrite.All", "RoleManagement.ReadWrite.Directory"]
-        });
-        let scopes = granted_scopes(Some(&value));
-
-        assert_eq!(scopes.len(), 2);
-        assert_eq!(scopes[0], "Application.ReadWrite.All");
-    }
-
-    #[test]
-    fn graph_status_falls_back_to_the_sdk_current_user_auth_record() {
-        let spec = graph_context_spec();
-        let script = spec.args.last().unwrap();
-
-        assert!(script.contains("Get-MgContext"));
-        assert!(script.contains("mg.authrecord.json"));
-        assert!(script.contains("GetFolderPath('UserProfile')"));
-    }
-
-    #[test]
     fn azd_expiration_marks_only_stale_credentials_as_expired() {
         let now = DateTime::parse_from_rfc3339("2026-08-06T12:00:00Z")
             .unwrap()
@@ -786,35 +719,17 @@ mod tests {
     }
 
     #[test]
-    fn graph_login_without_template_scopes_omits_the_scopes_argument() {
-        let interactive = login_spec("graphPowerShell", &[], None).unwrap();
-
-        assert_eq!(
-            interactive.args.last().unwrap(),
-            "Connect-MgGraph -ContextScope CurrentUser"
-        );
-        assert!(interactive.environment.is_empty());
+    fn graph_login_without_bound_identity_cannot_start_a_short_lived_auth_process() {
+        assert!(login_spec("graphPowerShell", &[], None).is_err());
     }
 
     #[test]
-    fn graph_login_passes_manifest_scopes_through_a_private_environment_value() {
+    fn renderer_scope_names_alone_cannot_authorize_graph_authentication() {
         let scopes = vec![
             "Application.ReadWrite.All".into(),
             "RoleManagement.ReadWrite.Directory".into(),
         ];
-        let spec = login_spec("graphPowerShell", &scopes, None).unwrap();
-
-        assert_eq!(
-            spec.args.last().unwrap(),
-            "Connect-MgGraph -ContextScope CurrentUser -Scopes ($env:AZD_GUI_GRAPH_SCOPES -split ',')"
-        );
-        assert_eq!(
-            spec.environment,
-            vec![(
-                "AZD_GUI_GRAPH_SCOPES".into(),
-                "Application.ReadWrite.All,RoleManagement.ReadWrite.Directory".into()
-            )]
-        );
+        assert!(login_spec("graphPowerShell", &scopes, None).is_err());
     }
 
     #[test]
@@ -846,16 +761,7 @@ mod tests {
         );
         assert!(!az_power_shell.args.last().unwrap().contains(tenant));
 
-        let graph = login_spec("graphPowerShell", &[], Some(&target)).unwrap();
-        assert_eq!(
-            graph.args.last().unwrap(),
-            "Connect-MgGraph -ContextScope CurrentUser -TenantId $env:AZD_GUI_TENANT_ID"
-        );
-        assert_eq!(
-            graph.environment,
-            vec![("AZD_GUI_TENANT_ID".into(), tenant.into())]
-        );
-        assert!(!graph.args.last().unwrap().contains(tenant));
+        assert!(login_spec("graphPowerShell", &[], Some(&target)).is_err());
 
         let azure_context = azure_cli_context_spec(Some(&target));
         assert_eq!(
