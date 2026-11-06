@@ -1,5 +1,9 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onDestroy, createEventDispatcher } from 'svelte';
+  const dispatch = createEventDispatcher();
+  export let sourceContext: unknown = null;
+  export let selectedProject: { path: string; environment?: string | null } | null = null;
+  import pimSource from '../../src-tauri/pim-template/source.json';
   import PimPilot from './PimPilot.svelte';
   export let projects: { path: string; name: string; templateId?: string | null; environment?: string | null }[] = [];
   const pilotReviewId = crypto.randomUUID();
@@ -288,6 +292,7 @@
 <section class="page pim-plan">
   <div class="page-header"><div><span class="eyebrow">AZD-PIM</span><h1>Selected-role PIM pilot</h1>
     <p>Select named roles, configure core PIM controls and review the read-only proposal. Continue below to a project-bound pilot with separate explicit application approval and recovery.</p></div></div>
+  <p>Supported native source: {pimSource.repository} · <code>{pimSource.commit}</code>. Saved project files do not authorize script execution.</p>
   <div class="pim-fields" on:input={invalidate} on:change={invalidate}>
     <fieldset><legend>Graph identity</legend>
       <label>Account<input type="email" autocomplete="username" bind:value={account} placeholder="you@example.com" /></label>
@@ -374,7 +379,7 @@
       <details><summary>Complete plan JSON</summary><pre>{JSON.stringify(artifact, null, 2)}</pre></details>
     </section>
   {/if}
-  <PimPilot {projects} input={{ reviewId: pilotReviewId, account, tenantId, clientId, configuration: {
+  <PimPilot {selectedProject} {sourceContext} on:environment={(event) => dispatch('environment', event.detail)} on:registered={(event) => dispatch('registered', event.detail)} {projects} input={{ reviewId: pilotReviewId, account, tenantId, clientId, configuration: {
     privilegedRoleIds: roleIds(privilegedIds), lessPrivilegedRoleIds: roleIds(lessPrivilegedIds),
     privilegedAuthenticationProfile: privilegedProfile, lessPrivilegedAuthenticationProfile: lessPrivilegedProfile,
     privilegedDeviceRequirement: privilegedDevice, lessPrivilegedDeviceRequirement: lessPrivilegedDevice,

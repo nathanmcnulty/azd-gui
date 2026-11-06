@@ -11,7 +11,7 @@ The planned beta supports Windows 11 on x64. Windows 10, macOS, and Linux are ou
 - Compact VS Code-inspired shell with one persistent, collapsible navigation tree for Catalog, Projects, Connections, Tools, and Settings.
 - System, light, and dark appearance preferences persisted with the navigation state.
 - Dynamic deployment wizard with conditional manifest pages and preserved values.
-- Bundled catalog containing pinned Azure deployment check, MyWorkID, Maester Automation, and Entra Health Monitoring templates. Start with Azure deployment check to create and validate one dedicated empty resource group before trying an application template.
+- Bundled catalog containing the supported native selected-role PIM pilot and pinned Azure deployment check, MyWorkID, Maester Automation, and Entra Health Monitoring templates. Start with Azure deployment check to create and validate one dedicated empty resource group before trying an application template.
 - HTTPS/GitHub external catalog preview and explicit trust gate.
 - Direct GitHub templates resolved to immutable commits before use.
 - Local existing-project and copy-as-template workflows.
@@ -20,6 +20,7 @@ The planned beta supports Windows 11 on x64. Windows 10, macOS, and Linux are ou
 - Registered read-only Azure and Microsoft Graph permission checks with structured preflight results and required-failure blocking.
 - Fresh exact-commit template checkouts, explicit template-execution consent, environment value application, conservative hook-aware preview, and `azd up --no-prompt`.
 - Streaming operation output, cancellation, redaction, structured resource-change outcomes, safe retry actions, and local operation/project persistence.
+- [Administrator journeys](docs/ADMIN-JOURNEYS.md) with local PIM draft/recovery inspection, explicit read-only PIM recheck and pinned deployment-check validation.
 - Project workspaces with environment management, lifecycle history, service endpoints, and validated Azure portal links from `azd show`.
 - Explicit external-terminal fallback for interactive hooks, opened in a validated azd project with a copyable interactive `azd up` command.
 - Explicit approval for vetted current-user module installs, including the provider, source, scope, destination, exact command, and official documentation.

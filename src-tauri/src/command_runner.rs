@@ -244,6 +244,8 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub environment: Vec<(String, String)>,
+    pub assets: Option<Arc<tempfile::TempDir>>,
+    pub directory_guards: Vec<Arc<crate::pim_pilot::Root>>,
 }
 
 // Template transport never inherits repository, credential-helper, or proxy policy
@@ -304,6 +306,8 @@ impl CommandSpec {
             args: args.into_iter().map(Into::into).collect(),
             cwd: None,
             environment: Vec::new(),
+            assets: None,
+            directory_guards: Vec::new(),
         }
     }
 
@@ -902,6 +906,8 @@ pub fn spawn_operation(
 
     let result_id = operation_id.clone();
     tauri::async_runtime::spawn(async move {
+        let _assets = spec.assets.clone();
+        let _directories = spec.directory_guards.clone();
         let (mut command, executable) = match spec.process() {
             Ok(command) => command,
             Err(error) => {

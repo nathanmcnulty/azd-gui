@@ -16,7 +16,10 @@ import maesterManifest from "../../catalog/manifests/maester-automation.json";
 import myworkidManifest from "../../catalog/manifests/myworkid.json";
 import deploymentCheckManifest from "../../catalog/manifests/deployment-check.json";
 
+import pimPilotManifest from "../../catalog/manifests/pim-pilot.json";
+
 const bundledManifests = {
+  "manifests/pim-pilot.json": pimPilotManifest,
   "manifests/myworkid.json": myworkidManifest,
   "manifests/deployment-check.json": deploymentCheckManifest,
   "manifests/maester-automation.json": maesterManifest,

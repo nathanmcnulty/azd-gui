@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0",
+  "prerequisites": [],
+  "connections": [
+    {
+      "id": "graphPowerShell",
+      "name": "Owned native PIM session",
+      "required": true,
+      "scopes": [
+        "Policy.Read.All"
+      ],
+      "reason": "Use the supported native PIM workflow. Generic Graph hooks remain blocked."
+    }
+  ],
+  "configuration": {
+    "groups": []
+  }
+}

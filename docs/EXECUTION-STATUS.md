@@ -1,14 +1,14 @@
 # Execution status
 
-Current work is sequenced in the [30 October milestone checkpoint](EXECUTION-CONTINUATION-20261030.md).
-
-The local Graph session foundation (`24d6dbb`, followed by the account-hint change
-`c896fac`) is a draft PR candidate stacked on #172. Native build prerequisites
-are available. Registered owned-process reads and generic template execution are
-separate capabilities: Graph template hooks remain blocked pending explicit
-adapter adoption. The recommended next implementation milestone is one PIM
-read-only plan workflow. Publication, new consent and signed acceptance remain
-separate decisions. Operational receipts stay in the private workspace.
+The current administrator-workflow milestone starts from main after azd-gui #177
+and azd-pim #29. See [administrator journeys](ADMIN-JOURNEYS.md) for Catalog and
+Projects integration, local PIM recovery, and the two supported verification
+actions. Generic Graph template hooks remain blocked. Saved receipts never
+restore a session, approval or current live verification. Live sign-in, exact
+PIM application, deployment, consent, signing and release acceptance retain their
+separate authorization boundaries. Operational evidence and exact-candidate
+pilot packets stay in the private workspace; earlier packets are obsolete after
+recovery or implementation changes.
 
 The records below describe earlier exact candidates and are retained as history.
 

@@ -20,12 +20,15 @@ mod persistence;
 mod pim_pilot;
 mod pim_plan;
 mod pim_roles;
+mod project_verification;
 mod redaction;
 mod requirements;
 mod security_groups;
 mod terminal;
 mod tools;
 mod validation_report;
+#[cfg(windows)]
+mod windows_file_handles;
 
 use crate::{
     command_runner::{spawn_operation, OperationManager, OperationPersistence},
@@ -430,6 +433,115 @@ fn start_login(
         format!("login:{provider_id}"),
         spec,
         None,
+    )
+}
+
+fn registered_verification_target(
+    state: &AppState,
+    project_path: &str,
+    environment: &str,
+) -> AppResult<(
+    ProjectSummary,
+    ProjectTemplateSnapshot,
+    OperationEvidenceContext,
+    String,
+)> {
+    // Match a stored path before touching filesystem or network paths.
+    let project = state
+        .database
+        .projects()?
+        .into_iter()
+        .find(|p| p.path == project_path)
+        .ok_or_else(|| AppError::Invalid("Select an exact registered project.".into()))?;
+    if project.environment.as_deref() != Some(environment) {
+        return Err(AppError::Invalid(
+            "Project environment changed. Reopen the project.".into(),
+        ));
+    }
+    let snapshot = resolve_project_template(&state.database, &project)?
+        .ok_or_else(|| AppError::Invalid("Review the saved source contract first.".into()))?;
+    if !project_verification::supported(&snapshot) {
+        return Err(AppError::Invalid(
+            "This source has no supported validation action.".into(),
+        ));
+    }
+    let context = operation_evidence_context(&project, &snapshot, environment);
+    if context.tenant_id.is_none()
+        || context.subscription_id.is_none()
+        || context.resource_group.as_deref().is_none_or(str::is_empty)
+        || context.azure_cloud.as_deref() != Some("AzureCloud")
+    {
+        return Err(AppError::Invalid("Save a valid tenant, subscription, resource group and public Azure cloud before validation.".into()));
+    }
+    deployment::validate_resource_group(context.resource_group.as_deref())?;
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(serde_json::to_vec(&context)?))
+    };
+    Ok((project, snapshot, context, digest))
+}
+
+#[tauri::command]
+fn get_project_verification_target(
+    state: State<'_, AppState>,
+    project_path: String,
+    environment: String,
+) -> AppResult<serde_json::Value> {
+    let (_, _, context, digest) =
+        registered_verification_target(&state, &project_path, &environment)?;
+    Ok(
+        serde_json::json!({"tenant":context.tenant_id,"subscription":context.subscription_id,"resourceGroup":context.resource_group,"azureCloud":context.azure_cloud,"digest":digest}),
+    )
+}
+
+#[tauri::command]
+async fn start_project_verification(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_path: String,
+    environment: String,
+    expected_target_digest: String,
+) -> AppResult<String> {
+    let _lock = state.environment_writes.lock().await;
+    let (project, snapshot, context, digest) =
+        registered_verification_target(&state, &project_path, &environment)?;
+    if digest != expected_target_digest {
+        return Err(AppError::Invalid(
+            "Saved target or source changed. Refresh and review before checking.".into(),
+        ));
+    }
+    let spec = project_verification::command(&snapshot, Path::new(&project.path), &environment)?;
+    // Process, displayed target and persisted evidence describe one frozen context.
+    for (key, expected) in [
+        ("AZURE_TENANT_ID", context.tenant_id.as_deref()),
+        ("AZURE_SUBSCRIPTION_ID", context.subscription_id.as_deref()),
+        ("AZURE_RESOURCE_GROUP", context.resource_group.as_deref()),
+    ] {
+        if spec
+            .environment
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
+            != expected
+        {
+            return Err(AppError::Invalid(
+                "Target changed while preparing validation. Review and retry.".into(),
+            ));
+        }
+    }
+    if context.azure_cloud.as_deref() != Some("AzureCloud") {
+        return Err(AppError::Invalid(
+            "Review the public Azure target before validation.".into(),
+        ));
+    }
+    let persistence =
+        OperationPersistence::with_context(state.database.clone(), project.path.clone(), context);
+    spawn_operation(
+        app,
+        state.operations.clone(),
+        "validate",
+        spec,
+        Some(persistence),
     )
 }
 
@@ -1352,6 +1464,41 @@ mod requirement_snapshot_caller_tests {
         std::fs::write(root.path().join("azure.yaml"), "name: requirement-test\n").unwrap();
         std::fs::write(root.path().join(".azure/dev/.env"),"MODE=enforced\nINCLUDE_AZURE=false\nAZURE_TENANT_ID=11111111-1111-4111-8111-111111111111\nAZURE_SUBSCRIPTION_ID=22222222-2222-4222-8222-222222222222\n").unwrap();
         (root, state, snapshot, path)
+    }
+
+    #[test]
+    fn verification_target_is_exact_registered_source_bound_and_changes_with_target() {
+        let (root, state, _, path) = fixture();
+        let snapshot =
+            ProjectTemplateSnapshot::new(catalog::entry_by_id("deployment-check").unwrap())
+                .unwrap();
+        let mut project = state.database.projects().unwrap().remove(0);
+        project.template_id = Some(snapshot.entry.id.clone());
+        project.revision = Some(snapshot.entry.commit.clone());
+        state.database.upsert_project(&project).unwrap();
+        state
+            .database
+            .save_project_template(&project, &snapshot)
+            .unwrap();
+        let dotenv = root.path().join(".azure/dev/.env");
+        let values="AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=11111111-1111-4111-8111-111111111111\nAZURE_SUBSCRIPTION_ID=22222222-2222-4222-8222-222222222222\nAZURE_RESOURCE_GROUP=rg-fixture\n";
+        std::fs::write(&dotenv, values).unwrap();
+        let (_, _, context, digest) = registered_verification_target(&state, &path, "dev").unwrap();
+        assert_eq!(context.resource_group.as_deref(), Some("rg-fixture"));
+        std::fs::write(&dotenv, values.replace("rg-fixture", "rg-other")).unwrap();
+        assert_ne!(
+            registered_verification_target(&state, &path, "dev")
+                .unwrap()
+                .3,
+            digest
+        );
+        std::fs::write(&dotenv, values.replace("AzureCloud", "AzureUSGovernment")).unwrap();
+        assert!(registered_verification_target(&state, &path, "dev").is_err());
+        assert!(
+            registered_verification_target(&state, "\\\\unregistered.invalid\\share", "dev")
+                .is_err()
+        );
+        assert!(registered_verification_target(&state, &path, "other").is_err());
     }
 
     #[test]
@@ -2554,6 +2701,8 @@ pub fn run() {
             run_permission_checks,
             start_login,
             start_azd_operation,
+            start_project_verification,
+            get_project_verification_target,
             cancel_operation,
             open_external_terminal,
             preview_external_catalog,
@@ -2565,6 +2714,9 @@ pub fn run() {
             dispose_graph_session,
             pim_pilot::register_pim_pilot,
             pim_pilot::load_pim_pilot,
+            pim_pilot::save_pim_pilot_draft,
+            pim_pilot::inspect_pim_pilot,
+            pim_pilot::select_pim_environment,
             pim_pilot::review_pim_pilot,
             pim_pilot::connect_pim_pilot,
             pim_pilot::run_pim_pilot,
