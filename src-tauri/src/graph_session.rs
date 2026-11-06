@@ -889,23 +889,6 @@ impl GraphSessions {
             *cache = Some((worker.binding.requirements_digest.clone(), evidence));
         }
     }
-    pub async fn dispose_matching(&self, digest: &str) {
-        let worker = self.current.lock().ok().and_then(|mut registry| {
-            if registry.requirements_digest.as_deref() == Some(digest) {
-                registry.revoke()
-            } else {
-                None
-            }
-        });
-        if let Ok(mut cache) = self.last_pim_failure.lock() {
-            if cache.as_ref().is_some_and(|(owner, _)| owner == digest) {
-                *cache = None;
-            }
-        }
-        if let Some(worker) = worker {
-            worker.close().await;
-        }
-    }
     pub async fn pim_plan(&self, review: &crate::pim_plan::Review) -> AppResult<serde_json::Value> {
         let (worker, ticket) = {
             let mut registry = self
@@ -1523,8 +1506,9 @@ mod tests {
             2
         );
         sessions
-            .dispose_matching(&review.binding.requirements_digest)
-            .await;
+            .dispose_pim_with_receipt(&review.binding.requirements_digest)
+            .await
+            .unwrap();
         assert!(sessions
             .pim_evidence(&review.binding.requirements_digest)
             .unwrap()
@@ -2130,12 +2114,14 @@ $plan=Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 100
         let sessions = GraphSessions::default();
         sessions.replace(worker).await.unwrap();
         sessions
-            .dispose_matching(&old.binding.requirements_digest)
-            .await;
+            .dispose_pim_with_receipt(&old.binding.requirements_digest)
+            .await
+            .unwrap();
         assert!(sessions.pim_plan(&new).await.is_ok());
         sessions
-            .dispose_matching(&new.binding.requirements_digest)
-            .await;
+            .dispose_pim_with_receipt(&new.binding.requirements_digest)
+            .await
+            .unwrap();
         assert!(sessions.pim_plan(&new).await.is_err());
     }
 
