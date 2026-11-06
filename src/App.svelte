@@ -3055,7 +3055,7 @@
             <div class="hero-actions">
               <button class="primary large" on:click={() => navigate("catalog")}><Icon name="catalog" size={17} /> Browse catalog</button>
               <button class="secondary large" on:click={() => openLocalProject(false)}><Icon name="folder" size={17} /> Open project</button>
-              <button class="secondary large" on:click={() => navigate("pimPlan")}>Plan PIM solution</button>
+              <button class="secondary large" on:click={() => navigate("pimPlan")}>Configure PIM pilot</button>
             </div>
           </div>
           <div class="readiness-card">
@@ -3080,7 +3080,7 @@
         </div>
       </section>
     {:else if activeNav === "pimPlan"}
-      <PimPlan />
+      <PimPlan projects={data.projects} />
     {:else if activeNav === "catalog"}
       <section class="page">
         <div class="page-header">

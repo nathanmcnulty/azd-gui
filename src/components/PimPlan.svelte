@@ -1,5 +1,20 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import PimPilot from './PimPilot.svelte';
+  export let projects: { path: string; name: string; templateId?: string | null; environment?: string | null }[] = [];
+  const pilotReviewId = crypto.randomUUID();
+  function restorePilot(event: CustomEvent) {
+    invalidate();
+    const saved = event.detail;
+    account = saved.account; tenantId = saved.tenantId; clientId = saved.clientId;
+    privilegedIds = saved.configuration.privilegedRoleIds.join('\n');
+    lessPrivilegedIds = saved.configuration.lessPrivilegedRoleIds.join('\n');
+    privilegedProfile = saved.configuration.privilegedAuthenticationProfile;
+    lessPrivilegedProfile = saved.configuration.lessPrivilegedAuthenticationProfile;
+    privilegedDevice = saved.configuration.privilegedDeviceRequirement;
+    lessPrivilegedDevice = saved.configuration.lessPrivilegedDeviceRequirement;
+    previewExistingObjects = saved.configuration.previewExistingObjects;
+  }
   import PimRolePicker from './PimRolePicker.svelte';
   import { cachedPimRoles, refreshPimRoles, roleChanges, roleIds, selectedRoleProblems, type PimRole, type PimRoleCatalog } from '../lib/pim-roles';
   let catalog: PimRoleCatalog | null = null;
@@ -271,8 +286,8 @@
 </script>
 
 <section class="page pim-plan">
-  <div class="page-header"><div><span class="eyebrow">AZD-PIM</span><h1>Review a PIM solution plan</h1>
-    <p>Compare selected roles with proposed authentication contexts, Conditional Access policies and PIM policy rules. This workflow only reads; applying the plan is outside this workflow.</p></div></div>
+  <div class="page-header"><div><span class="eyebrow">AZD-PIM</span><h1>Selected-role PIM pilot</h1>
+    <p>Select named roles, configure core PIM controls and review the read-only proposal. Continue below to a project-bound pilot with separate explicit application approval and recovery.</p></div></div>
   <div class="pim-fields" on:input={invalidate} on:change={invalidate}>
     <fieldset><legend>Graph identity</legend>
       <label>Account<input type="email" autocomplete="username" bind:value={account} placeholder="you@example.com" /></label>
@@ -359,6 +374,12 @@
       <details><summary>Complete plan JSON</summary><pre>{JSON.stringify(artifact, null, 2)}</pre></details>
     </section>
   {/if}
+  <PimPilot {projects} input={{ reviewId: pilotReviewId, account, tenantId, clientId, configuration: {
+    privilegedRoleIds: roleIds(privilegedIds), lessPrivilegedRoleIds: roleIds(lessPrivilegedIds),
+    privilegedAuthenticationProfile: privilegedProfile, lessPrivilegedAuthenticationProfile: lessPrivilegedProfile,
+    privilegedDeviceRequirement: privilegedDevice, lessPrivilegedDeviceRequirement: lessPrivilegedDevice,
+    previewExistingObjects
+  } }} on:restore={restorePilot} />
 </section>
 
 <style>
