@@ -31,7 +31,7 @@ The planned beta supports Windows 11 on x64. Windows 10, macOS, and Linux are ou
 Prerequisites:
 
 - Node.js 22 or newer
-- Rust stable
+- Rust stable (1.89 or newer)
 - .NET SDK 8.0.4xx for native builds, tests and linting (the Graph adapter's `global.json` selects the latest installed patch in that feature band)
 - Windows: Visual Studio Build Tools with the C++ workload
 - macOS: Xcode command-line tools
@@ -94,6 +94,8 @@ Template manifest resolution is:
 3. Safe inference from `azure.yaml`.
 
 Inference never creates executable commands. Manifests can declare that a pinned workflow requires interactive terminal input, and inferred interactive hooks receive the same handoff. The renderer cannot select a terminal executable or pass a shell command; Rust chooses from fixed platform providers after validating the project and environment.
+
+Local and remote `azure.yaml` inspection share a bounded YAML parser. Inspection preserves string/boolean distinctions, follows bounded aliases, and traverses hooks at the root, service and infrastructure-layer levels. Duplicate or non-string mapping keys, unsupported tags, multiple documents and inputs exceeding size, nesting or expansion limits fail inspection. Merge keys retain their previous behavior as ordinary nested values. External file includes and property interpolation are disabled, so azd substitutions remain literal text during review.
 
 ## Security model
 

@@ -16,7 +16,7 @@ pub enum AppError {
     #[error("Invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("Invalid YAML: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_saphyr::Error),
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("Network request failed: {0}")]

@@ -526,9 +526,11 @@ impl GraphWorker {
             .lock()
             .map_err(|_| invalid("Graph evidence unavailable."))?;
         if self.binding.purpose.as_deref() == Some("pimPlan")
-            && (evidence.principal_fingerprint.as_ref().map_or(true, |s| {
-                s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit())
-            }) || evidence.verification_reads > 1
+            && (evidence
+                .principal_fingerprint
+                .as_ref()
+                .is_none_or(|s| s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+                || evidence.verification_reads > 1
                 || evidence.pim_reads_attempted > 100
                 || evidence.pim_reads_completed > evidence.pim_reads_attempted
                 || evidence.pim_reads_attempted - evidence.pim_reads_completed > 1)
@@ -622,7 +624,7 @@ impl GraphWorker {
             .clone()
             .ok_or_else(|| invalid("Verified Graph evidence absent."))?;
         let exited = self.transport.try_lock().ok().is_some_and(|mut transport| {
-            transport.as_mut().map_or(true, |transport| {
+            transport.as_mut().is_none_or(|transport| {
                 transport
                     .child
                     .try_wait()
@@ -795,9 +797,7 @@ impl GraphSessions {
         if plan
             .get("tenantId")
             .and_then(|v| v.as_str())
-            .map_or(true, |tenant| {
-                !tenant.eq_ignore_ascii_case(&review.binding.tenant_id)
-            })
+            .is_none_or(|tenant| !tenant.eq_ignore_ascii_case(&review.binding.tenant_id))
             || plan.get("mode").and_then(|v| v.as_str()) != Some("plan")
         {
             self.invalidate_worker(&worker);

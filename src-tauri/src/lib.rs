@@ -11,6 +11,7 @@ mod error;
 mod evidence;
 mod execution_approval;
 mod graph_session;
+mod inspection_yaml;
 mod local_source;
 mod manifest;
 mod models;

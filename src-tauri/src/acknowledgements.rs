@@ -342,7 +342,7 @@ pub(crate) fn validate(
                 let control = controller(manifest, condition)?;
                 if values
                     .get(&control.environment_variable)
-                    .map_or(true, Value::is_null)
+                    .is_none_or(Value::is_null)
                 {
                     return Err(invalid(format!("Acknowledgement controller value is missing: {}. Save an explicit configuration value before approval.", control.environment_variable)));
                 }
