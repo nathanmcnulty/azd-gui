@@ -40,7 +40,7 @@ the GUI does not adopt objects or relax configuration to force qualification.
 ## Pinned planner and process boundary
 
 `src-tauri/pim-template/source.json` pins azd-pim commit
-`61343388256a2f1cd520f2a61f345b54859e9634` and the original module/license byte hashes.
+`089a1067c983d490ded667eeb1a9bc959c301d69` and the original module/license byte hashes.
 The companion change adds `New-AzdPimReadPlan` to the template's Graph module. It
 invokes the existing `New-AzdPimPlan` with no deployment state and an explicit reader,
 rejects unsupported extensions/mode, blocks write methods and request bodies, and
