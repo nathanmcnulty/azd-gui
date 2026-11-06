@@ -30,6 +30,7 @@ public static class Bootstrap
 
 public sealed record SessionOptions(string RequirementsDigest, string Account, string TenantId, string ClientId, string Resource, string[] Scopes, string ProbeUri, string? Purpose = null);
 public sealed record GraphObservation(string Account, string TenantId, string ClientId, string Resource, string[] Scopes, string AuthType = "Delegated", string ContextScope = "Process", string Environment = "Global", string? PrincipalFingerprint = null, int VerificationReads = 0, int PimReadsAttempted = 0, int PimReadsCompleted = 0);
+public sealed record PimWriteObservation(string Method, string Uri, string Outcome);
 
 public sealed class GraphBoundaryException(string code) : InvalidOperationException(code)
 {
@@ -89,7 +90,7 @@ public sealed class OwnedGraphSession : IDisposable
 
     public void BeginPimPlanAudit(string sessionId, long sequence)
     {
-        if (options.Purpose != "pimPlan" || disposed || account is null || !Guid.TryParse(sessionId, out _) || sequence < 1)
+        if (options.Purpose is not ("pimPlan" or "pimPilot") || disposed || account is null || !Guid.TryParse(sessionId, out _) || sequence < 1)
             throw new GraphBoundaryException("InvalidPimSession");
         auditSession = sessionId;
         auditSequence = sequence;
@@ -199,12 +200,12 @@ public sealed class OwnedGraphSession : IDisposable
         string? body = null;
         Guard(() =>
         {
-            if (options.Purpose != "pimPlan" || disposed || account is null || verificationReads != 1 || ++pimReads > 100)
+            if (options.Purpose is not ("pimPlan" or "pimPilot") || disposed || account is null || verificationReads != 1 || ++pimReads > 100)
                 throw new GraphBoundaryException("PimReadBudgetOrSessionRejected");
             string? requiredScope;
             if (!PimReads.TryGetValue(uri, out requiredScope) && !pimContinuations.Remove(uri, out requiredScope))
                 throw new GraphBoundaryException("UnregisteredPimRead");
-            if (!options.Scopes.Contains(requiredScope, StringComparer.OrdinalIgnoreCase))
+            if (!options.Scopes.Contains(requiredScope, StringComparer.OrdinalIgnoreCase) && !(options.Purpose == "pimPilot" && requiredScope == "AuthenticationContext.Read.All" && options.Scopes.Contains("AuthenticationContext.ReadWrite.All", StringComparer.OrdinalIgnoreCase)))
                 throw new GraphBoundaryException("GraphDelegatedScopeMissing");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
             timeout.CancelAfter(TimeSpan.FromSeconds(30));
@@ -253,6 +254,72 @@ public sealed class OwnedGraphSession : IDisposable
         return body!;
     }
 
+    private bool pilotWritesArmed;
+    private readonly List<PimWriteObservation> pilotWriteEvidence = [];
+    public string PilotWriteEvidenceJson() => JsonSerializer.Serialize(pilotWriteEvidence, Bootstrap.JsonOptions);
+    public void SetPilotWritesArmed(bool armed)
+    {
+        if (options.Purpose != "pimPilot" || disposed) throw new GraphBoundaryException("InvalidPimSession");
+        if (armed) pilotWriteEvidence.Clear();
+        pilotWritesArmed = armed;
+    }
+
+    // Only the pinned engine calls this, inside the worker's consumed approval.
+    // Never retry a write: response loss leaves a durable uncertain intent.
+    public string RequestPimJson(string method, string uri, string? body)
+    {
+        if (method == "GET" && string.IsNullOrEmpty(body)) return ReadPimJson(uri);
+        if (options.Purpose != "pimPilot" || !pilotWritesArmed || disposed || account is null || body is null || body.Length > 262144)
+            throw new GraphBoundaryException("InvalidPimSession");
+        var context = method == "PATCH" && System.Text.RegularExpressions.Regex.IsMatch(uri,
+            @"\Ahttps://graph\.microsoft\.com/v1\.0/identity/conditionalAccess/authenticationContextClassReferences/c(?:[1-9]|1[0-9]|2[0-5])\z");
+        var ca = (method == "POST" && uri == "https://graph.microsoft.com/beta/identity/conditionalAccess/policies") ||
+            (method == "PATCH" && System.Text.RegularExpressions.Regex.IsMatch(uri,
+            @"\Ahttps://graph\.microsoft\.com/beta/identity/conditionalAccess/policies/[a-fA-F0-9-]{36}\z"));
+        var role = method == "PATCH" && System.Text.RegularExpressions.Regex.IsMatch(uri,
+            @"\Ahttps://graph\.microsoft\.com/v1\.0/policies/roleManagementPolicies/[a-zA-Z0-9_-]{1,256}/rules/(?:AuthenticationContext_EndUser_Assignment|Enablement_EndUser_Assignment)\z");
+        if (!context && !ca && !role) throw new GraphBoundaryException("UnregisteredPimWrite");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        AuthenticationResult result;
+        try {
+            result = credential.RefreshAsync(RequestedScopes, account, timeout.Token).GetAwaiter().GetResult();
+            Validate(result);
+        } catch { Dispose(); throw; }
+        using var request = new HttpRequestMessage(new HttpMethod(method), uri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", result.AccessToken);
+        request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        var index = pilotWriteEvidence.Count;
+        pilotWriteEvidence.Add(new(method, uri, "verificationRequired"));
+        void Outcome(string value) => pilotWriteEvidence[index] = new(method, uri, value);
+        HttpResponseMessage response;
+        try { response = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).GetAwaiter().GetResult(); }
+        catch { Outcome("uncertain"); Dispose(); throw new GraphBoundaryException("PimWriteUncertain"); }
+        using (response) {
+            // A definite rejection permits the engine's legacy-MFA compensation.
+            if (!response.IsSuccessStatusCode) {
+                if ((int)response.StatusCode >= 500 || (int)response.StatusCode is >= 300 and < 400 || (int)response.StatusCode == 408) {
+                    Outcome("uncertain"); Dispose(); throw new GraphBoundaryException("PimWriteUncertain");
+                }
+                Outcome("rejected");
+                throw new GraphBoundaryException("PimWriteRejected");
+            }
+            try {
+                using var stream = response.Content.ReadAsStreamAsync(timeout.Token).GetAwaiter().GetResult();
+                using var bounded = new MemoryStream();
+                var buffer = new byte[8192]; int count;
+                while ((count = stream.ReadAsync(buffer, timeout.Token).AsTask().GetAwaiter().GetResult()) != 0) {
+                    if (bounded.Length + count > 1024 * 1024) throw new GraphBoundaryException("PimResponseLimitExceeded");
+                    bounded.Write(buffer, 0, count);
+                }
+                var bytes = bounded.ToArray();
+                Validate(result);
+                Outcome("confirmed");
+                return bytes.Length == 0 ? "null" : Encoding.UTF8.GetString(bytes);
+            } catch { Outcome("uncertain"); Dispose(); throw new GraphBoundaryException("PimWriteUncertain"); }
+        }
+    }
+
     internal OwnedGraphSession(SessionOptions options) : this(options, new MsalSession(options), new HttpClient(new SocketsHttpHandler
     {
         AllowAutoRedirect = false, UseCookies = false, ConnectTimeout = TimeSpan.FromSeconds(10)
@@ -268,7 +335,10 @@ public sealed class OwnedGraphSession : IDisposable
 
     private void ValidateOptions()
     {
-        if (options.Purpose is not null && options.Purpose != "pimPlan") throw new GraphBoundaryException("InvalidPimSession");
+        if (options.Purpose is not null && options.Purpose is not ("pimPlan" or "pimPilot")) throw new GraphBoundaryException("InvalidPimSession");
+        if (options.Purpose == "pimPilot" && !options.Scopes.OrderBy(s => s).SequenceEqual(new[] {
+            "AuthenticationContext.ReadWrite.All", "Policy.Read.All", "Policy.ReadWrite.ConditionalAccess", "RoleManagement.Read.Directory", "RoleManagementPolicy.ReadWrite.Directory" }.OrderBy(s => s)))
+            throw new GraphBoundaryException("InvalidPimSession");
         if (options.Purpose == "pimPlan" && (options.ProbeUri != "https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies?$top=1&$select=id" ||
             options.Scopes.Any(s => s is not ("AuthenticationContext.Read.All" or "Policy.Read.All" or "RoleManagement.Read.Directory"))))
             throw new GraphBoundaryException("InvalidPimSession");
@@ -340,7 +410,7 @@ public sealed class OwnedGraphSession : IDisposable
     public void Probe() => Guard(() =>
     {
         if (disposed || account is null) throw new InvalidOperationException("No owned authenticated credential.");
-        if (options.Purpose == "pimPlan" && verificationReads != 0) throw new GraphBoundaryException("PimVerificationBudgetExceeded");
+        if (options.Purpose is ("pimPlan" or "pimPilot") && verificationReads != 0) throw new GraphBoundaryException("PimVerificationBudgetExceeded");
         // Silent refresh never falls back to interaction. Validate the actual
         // result (including granted scopes), then send THIS result's token in
         // THIS process. No SDK context/client is reconstructed from shared state.
@@ -366,7 +436,7 @@ public sealed class OwnedGraphSession : IDisposable
         if (disposed) return;
         disposed = true;
         lifetime.Cancel(); http.Dispose(); lifetime.Dispose();
-        account = null; principal = null; approvedGrants = null; observation = null;
+        account = null; principal = null; approvedGrants = null; // Retain only whitelist identity/counter evidence for the terminal receipt.
         pimContinuations.Clear();
         // The owning process exits next, disposing its solely in-memory SDK cache.
     }

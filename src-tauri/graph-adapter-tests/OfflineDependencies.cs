@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AzdGui.GraphAdapter;
 using Microsoft.Identity.Client;
 
@@ -16,7 +17,8 @@ public static class TestFactory
     }
 }
 
-internal sealed record Control(string Account, string Mode, int DelayMs, int AuthDelayMs = 0, bool ExtraGrants = false, int ResponseStatus = 200, bool SpoofPimProgress = false);
+internal sealed record Control(string Account, string Mode, int DelayMs, int AuthDelayMs = 0, bool ExtraGrants = false, int ResponseStatus = 200, bool SpoofPimProgress = false,
+    string? FailWriteSuffix = null, int FailWriteStatus = 400, bool LosePostResponse = false, int WriteDelayMs = 0);
 internal sealed record Account(string Username, string Identifier, string Environment = "login.microsoftonline.com") : IAccount
 {
     public AccountId HomeAccountId => new(Identifier);
@@ -80,10 +82,11 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
 
     internal async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
     {
-        if (request.RequestUri is null || request.Method != HttpMethod.Get || (Control.Mode != "pim" && request.RequestUri.AbsoluteUri != options.ProbeUri) ||
+        if (request.RequestUri is null || (Control.Mode != "pilot" && request.Method != HttpMethod.Get) || (Control.Mode is not ("pim" or "pilot") && request.RequestUri.AbsoluteUri != options.ProbeUri) ||
             request.Headers.Authorization?.Scheme != "Bearer" || request.Headers.Authorization.Parameter != lastToken)
             throw new InvalidOperationException("Protected HTTP request used another credential or resource.");
         var control = Control;
+        if (control.Mode == "pilot" && request.Method != HttpMethod.Get) return await SendPilotWriteAsync(request, control, cancellation);
         Log(new { kind = "protected-read-start", pid = Environment.ProcessId, uri = request.RequestUri.AbsoluteUri, owner });
         if (control.DelayMs > 0) await Task.Delay(control.DelayMs, cancellation);
         if (control.Mode == "changeDuringRead")
@@ -98,12 +101,75 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
                 PrincipalFingerprint: new string('a', 64), VerificationReads: 1, PimReadsAttempted: 1, PimReadsCompleted: 1)
         }, Bootstrap.JsonOptions));
         var response = new HttpResponseMessage(control.ResponseStatus != 200 ? (HttpStatusCode)control.ResponseStatus : control.Mode == "denied" ? HttpStatusCode.Forbidden : control.Mode == "redirect" ? HttpStatusCode.Found : HttpStatusCode.OK);
-        if (control.Mode == "pim")
+        if (control.Mode is "pim" or "pilot")
         {
             var fixtures = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(File.ReadAllText(Path.Combine(Path.GetDirectoryName(controlFile)!, "responses.json")))!;
             response.Content = new StringContent(request.RequestUri!.AbsoluteUri == options.ProbeUri ? "{\"value\":[]}" : fixtures[request.RequestUri.OriginalString].GetRawText());
         }
         return response;
+    }
+
+    // Mutable synthetic tenant, persisted independently of worker lifetime. The
+    // production credential/endpoint/body validation still executes before this
+    // handler sees a request. No network request is dispatched by this backend.
+    private async Task<HttpResponseMessage> SendPilotWriteAsync(HttpRequestMessage request, Control control, CancellationToken cancellation)
+    {
+        var uri = request.RequestUri!.OriginalString;
+        var method = request.Method.Method;
+        var body = JsonNode.Parse(await request.Content!.ReadAsStringAsync(cancellation))!.AsObject();
+        Log(new { kind = "protected-write-start", pid = Environment.ProcessId, uri, method, body, owner });
+        if (control.FailWriteSuffix is not null && uri.EndsWith(control.FailWriteSuffix, StringComparison.Ordinal))
+        {
+            Log(new { kind = "protected-write-rejected", pid = Environment.ProcessId, uri, status = control.FailWriteStatus, owner });
+            return new HttpResponseMessage((HttpStatusCode)control.FailWriteStatus) { Content = new StringContent("{}") };
+        }
+        var path = Path.Combine(Path.GetDirectoryName(controlFile)!, "responses.json");
+        var responses = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+        JsonObject? created = null;
+        if (uri.Contains("/authenticationContextClassReferences/", StringComparison.Ordinal))
+        {
+            var values = responses["https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences"]!["value"]!.AsArray();
+            var id = uri.Split('/')[^1];
+            var found = values.OfType<JsonObject>().SingleOrDefault(value => value["id"]!.GetValue<string>() == id);
+            if (found is null) { found = new JsonObject { ["id"] = id }; values.Add(found); }
+            foreach (var property in body) found[property.Key] = property.Value?.DeepClone();
+        }
+        else if (uri.Contains("/conditionalAccess/policies", StringComparison.Ordinal))
+        {
+            var values = responses["https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999"]!["value"]!.AsArray();
+            if (method == "POST")
+            {
+                created = body.DeepClone().AsObject();
+                created["id"] = Guid.NewGuid().ToString();
+                values.Add(created);
+            }
+            else
+            {
+                var id = uri.Split('/')[^1];
+                var found = values.OfType<JsonObject>().Single(value => value["id"]!.GetValue<string>() == id);
+                foreach (var property in body) found[property.Key] = property.Value?.DeepClone();
+            }
+        }
+        else if (uri.Contains("/roleManagementPolicies/", StringComparison.Ordinal))
+        {
+            var policies = responses["https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999"]!["value"]!.AsArray();
+            var segments = uri.Split('/');
+            var policy = policies.OfType<JsonObject>().Single(value => value["id"]!.GetValue<string>() == segments[^3]);
+            var rule = policy["rules"]!.AsArray().OfType<JsonObject>().Single(value => value["id"]!.GetValue<string>() == segments[^1]);
+            foreach (var property in body) rule[property.Key] = property.Value?.DeepClone();
+        }
+        else throw new InvalidOperationException("Unexpected synthetic pilot write.");
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, responses.ToJsonString());
+        File.Move(temporary, path, true);
+        Log(new { kind = "protected-write-committed", pid = Environment.ProcessId, uri, method, owner });
+        // Commit first, then withhold the reply. Cancellation/restart tests use
+        // the committed marker to kill the actual worker while its write waits.
+        if (control.WriteDelayMs > 0) await Task.Delay(control.WriteDelayMs, cancellation);
+        if (control.LosePostResponse && method == "POST") throw new IOException("Synthetic response lost after committed POST.");
+        return new HttpResponseMessage(method == "POST" ? HttpStatusCode.Created : HttpStatusCode.NoContent) {
+            Content = new StringContent(created?.ToJsonString() ?? "")
+        };
     }
 }
 

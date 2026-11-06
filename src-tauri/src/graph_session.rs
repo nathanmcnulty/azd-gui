@@ -112,7 +112,7 @@ impl GraphBinding {
         if self
             .purpose
             .as_deref()
-            .is_some_and(|purpose| purpose != "pimPlan")
+            .is_some_and(|purpose| !matches!(purpose, "pimPlan" | "pimPilot"))
         {
             return Err(invalid("Unknown Graph session purpose."));
         }
@@ -308,6 +308,10 @@ impl GraphWorker {
             files.path().join("GraphAdapter.psm1"),
             include_str!("GraphAdapter.psm1"),
         )?;
+        std::fs::write(
+            files.path().join("pim_pilot.ps1"),
+            include_str!("pim_pilot.ps1"),
+        )?;
         let script = files.path().join("graph-worker.ps1");
         std::fs::write(&script, include_str!("graph_worker.ps1"))?;
         for (name, content) in [
@@ -410,6 +414,26 @@ impl GraphWorker {
             .await
     }
 
+    pub async fn pilot(
+        &self,
+        apply: bool,
+        parameters: serde_json::Value,
+    ) -> AppResult<serde_json::Value> {
+        self.request_parameters(
+            if apply {
+                "pimPilotApply"
+            } else {
+                "pimPilotReview"
+            },
+            false,
+            Duration::from_secs(180),
+            Some(parameters),
+        )
+        .await?
+        .pim_plan
+        .ok_or_else(|| invalid("Pilot result absent."))
+    }
+
     pub async fn pim_roles(&self) -> AppResult<serde_json::Value> {
         self.request_parameters("pimRoles", false, Duration::from_secs(180), None)
             .await?
@@ -460,20 +484,29 @@ impl GraphWorker {
         bytes.push(b'\n');
         // Only an admitted PIM planner/catalog RPC counts. Waiting on the transport mutex,
         // authentication, probing and a completed reply never create this marker.
-        let _pim_request = if matches!(action, "pimPlan" | "pimRoles") {
+        let _pim_request = if matches!(
+            action,
+            "pimPlan" | "pimRoles" | "pimPilotReview" | "pimPilotApply"
+        ) {
             Some(PimRequestGuard::begin(&self.request_state)?)
         } else {
             None
         };
         let io = async {
-            let limit = if matches!(action, "pimPlan" | "pimRoles") {
+            let limit = if matches!(
+                action,
+                "pimPlan" | "pimRoles" | "pimPilotReview" | "pimPilotApply"
+            ) {
                 16 * 1024 * 1024
             } else {
                 LIMIT
             };
             transport.input.write_all(&bytes).await?;
             transport.input.flush().await?;
-            for _ in 0..if matches!(action, "pimPlan" | "pimRoles") {
+            for _ in 0..if matches!(
+                action,
+                "pimPlan" | "pimRoles" | "pimPilotReview" | "pimPilotApply"
+            ) {
                 512
             } else {
                 64
@@ -487,9 +520,13 @@ impl GraphWorker {
                     return Err(invalid("Graph worker closed or returned oversized output."));
                 }
                 if let Some(data) = line.strip_prefix(b"AZD_GRAPH_PROGRESS:") {
-                    if self.binding.purpose.as_deref() != Some("pimPlan")
-                        || !matches!(action, "pimPlan" | "pimRoles" | "probe")
-                        || data.len() > LIMIT as usize
+                    if !matches!(
+                        self.binding.purpose.as_deref(),
+                        Some("pimPlan" | "pimPilot")
+                    ) || !matches!(
+                        action,
+                        "pimPlan" | "pimRoles" | "pimPilotReview" | "pimPilotApply" | "probe"
+                    ) || data.len() > LIMIT as usize
                     {
                         return Err(invalid("Unexpected Graph progress frame."));
                     }
@@ -616,15 +653,17 @@ impl GraphWorker {
             .observed
             .lock()
             .map_err(|_| invalid("Graph evidence unavailable."))?;
-        if self.binding.purpose.as_deref() == Some("pimPlan")
-            && (evidence
-                .principal_fingerprint
-                .as_ref()
-                .is_none_or(|s| s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
-                || evidence.verification_reads > 1
-                || evidence.pim_reads_attempted > 100
-                || evidence.pim_reads_completed > evidence.pim_reads_attempted
-                || evidence.pim_reads_attempted - evidence.pim_reads_completed > 1)
+        if matches!(
+            self.binding.purpose.as_deref(),
+            Some("pimPlan" | "pimPilot")
+        ) && (evidence
+            .principal_fingerprint
+            .as_ref()
+            .is_none_or(|s| s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()))
+            || evidence.verification_reads > 1
+            || evidence.pim_reads_attempted > 100
+            || evidence.pim_reads_completed > evidence.pim_reads_attempted
+            || evidence.pim_reads_attempted - evidence.pim_reads_completed > 1)
         {
             return Err(invalid("Invalid PIM execution evidence."));
         }
@@ -676,11 +715,21 @@ impl GraphWorker {
                         && evidence.pim_reads_attempted == 0
                         && evidence.pim_reads_completed == 0
                 }
-                "readStarted" if matches!(action, "pimPlan" | "pimRoles") => {
+                "readStarted"
+                    if matches!(
+                        action,
+                        "pimPlan" | "pimRoles" | "pimPilotReview" | "pimPilotApply"
+                    ) =>
+                {
                     evidence.pim_reads_attempted == previous.pim_reads_attempted + 1
                         && evidence.pim_reads_completed == previous.pim_reads_completed
                 }
-                "readCompleted" if matches!(action, "pimPlan" | "pimRoles") => {
+                "readCompleted"
+                    if matches!(
+                        action,
+                        "pimPlan" | "pimRoles" | "pimPilotReview" | "pimPilotApply"
+                    ) =>
+                {
                     evidence.pim_reads_completed == previous.pim_reads_completed + 1
                         && evidence.pim_reads_attempted == previous.pim_reads_attempted
                 }
@@ -788,6 +837,19 @@ pub struct GraphSessions {
 }
 
 impl GraphSessions {
+    pub fn pilot_worker(&self, digest: &str) -> AppResult<Arc<GraphWorker>> {
+        self.current
+            .lock()
+            .map_err(|_| invalid("Graph sessions unavailable."))?
+            .worker
+            .clone()
+            .filter(|w| {
+                w.binding.purpose.as_deref() == Some("pimPilot")
+                    && w.binding.requirements_digest == digest
+            })
+            .ok_or_else(|| invalid("Review and connect the selected project pilot first."))
+    }
+
     pub async fn dispose_pim_with_receipt(
         &self,
         digest: &str,
@@ -802,8 +864,10 @@ impl GraphSessions {
                     .worker
                     .as_ref()
                     .filter(|worker| {
-                        worker.binding.purpose.as_deref() == Some("pimPlan")
-                            && worker.binding.requirements_digest == digest
+                        matches!(
+                            worker.binding.purpose.as_deref(),
+                            Some("pimPlan" | "pimPilot")
+                        ) && worker.binding.requirements_digest == digest
                     })
                     .and_then(|worker| {
                         // Linearize the marker with revocation before any await.
@@ -1403,16 +1467,16 @@ mod tests {
         let worker = include_str!("graph_worker.ps1");
         assert!(worker.contains(&format!("{:x}", Sha256::digest(planner.as_bytes()))));
         for (line, text) in [
-            (283, "$policy.rules"),
-            (284, "$rule.isEnabled"),
-            (452, "$_.displayName"),
-            (454, "Multiple authentication contexts"),
-            (458, "already exists as"),
-            (468, "$unused ="),
-            (479, "No unused authentication context slots"),
-            (639, "Multiple Conditional Access policies"),
-            (655, "Conditional Access policy"),
-            (768, "already requires authentication context"),
+            (320, "$policy.rules"),
+            (321, "$rule.isEnabled"),
+            (567, "$_.displayName"),
+            (569, "Multiple authentication contexts"),
+            (573, "already exists as"),
+            (583, "$unused ="),
+            (594, "No unused authentication context slots"),
+            (754, "Multiple Conditional Access policies"),
+            (770, "Conditional Access policy"),
+            (883, "already requires authentication context"),
         ] {
             assert!(planner.lines().nth(line - 1).unwrap().contains(text));
         }
@@ -2732,5 +2796,619 @@ $plan=Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 100
         assert!(!worker.process_evidence().unwrap().active);
         assert!(worker.probe().await.is_err());
         assert_eq!(fixture.calls().len(), 1);
+    }
+
+    // Selected-role pilot acceptance uses the real native RPC transport,
+    // embedded PowerShell worker, managed credential checks and pinned engine.
+    // Only MSAL and HTTP are synthetic. The mutable HTTP tenant outlives each
+    // worker, so restart/reconciliation cannot pass by replaying a static plan.
+    const PILOT_CONTEXTS: &str = "https://graph.microsoft.com/v1.0/identity/conditionalAccess/authenticationContextClassReferences";
+    const PILOT_CA: &str =
+        "https://graph.microsoft.com/beta/identity/conditionalAccess/policies?$top=999";
+    const PILOT_RULES: &str = "https://graph.microsoft.com/v1.0/policies/roleManagementPolicies?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$expand=rules&$top=999";
+
+    fn pilot_fixture() -> Fixture {
+        let fixture = Fixture::new();
+        let mut responses: Value =
+            serde_json::from_str(include_str!("../graph-adapter-tests/pim-responses.json"))
+                .unwrap();
+        responses["https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions"] = json!({"value":[{
+            "id":"33333333-3333-4333-8333-333333333333", "displayName":"Offline privileged role",
+            "isEnabled":true, "isBuiltIn":true
+        }]});
+        for rule in responses[PILOT_RULES]["value"][0]["rules"]
+            .as_array_mut()
+            .unwrap()
+        {
+            rule["target"] = json!({"caller":"EndUser","operations":["All"],"level":"Assignment","inheritableSettings":[],"enforcedSettings":[]});
+        }
+        pilot_write_responses(&fixture, &responses);
+        fixture
+    }
+
+    fn pilot_read_responses(fixture: &Fixture) -> Value {
+        serde_json::from_slice(&std::fs::read(fixture.root.path().join("responses.json")).unwrap())
+            .unwrap()
+    }
+
+    fn pilot_write_responses(fixture: &Fixture, responses: &Value) {
+        std::fs::write(
+            fixture.root.path().join("responses.json"),
+            serde_json::to_vec(responses).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn pilot_parameters(fixture: &Fixture, preview: bool) -> Value {
+        json!({"directory":fixture.root.path().join("project").join(".azure").join("pilot"),
+            "configuration":pim_review_with_preview(preview).configuration})
+    }
+
+    fn pilot_saved(fixture: &Fixture, file: &str) -> Value {
+        serde_json::from_slice(
+            &std::fs::read(
+                fixture
+                    .root
+                    .path()
+                    .join("project")
+                    .join(".azure")
+                    .join("pilot")
+                    .join(file),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn pilot_writes(fixture: &Fixture) -> Vec<Value> {
+        fixture
+            .calls()
+            .into_iter()
+            .filter(|call| call["kind"] == "protected-write-start")
+            .collect()
+    }
+
+    impl Fixture {
+        async fn pilot_worker(&self) -> Arc<GraphWorker> {
+            self.control("pilot", 0);
+            let mut binding = pim_review().binding;
+            binding.purpose = Some("pimPilot".into());
+            binding
+                .scopes
+                .retain(|scope| scope != "AuthenticationContext.Read.All");
+            binding
+                .scopes
+                .push("AuthenticationContext.ReadWrite.All".into());
+            binding.scopes.extend([
+                "Policy.ReadWrite.ConditionalAccess".into(),
+                "RoleManagementPolicy.ReadWrite.Directory".into(),
+            ]);
+            binding.scopes.sort();
+            let worker = GraphWorker::spawn_with_module(
+                binding,
+                Some(&self.root.path().join("Fake.Graph.psm1")),
+            )
+            .await
+            .unwrap();
+            worker.authenticate().await.unwrap();
+            worker.probe().await.unwrap();
+            worker
+        }
+
+        fn pilot_control(&self, additions: Value) {
+            let mut control = json!({"account":"operator@example.test","mode":"pilot","delayMs":0});
+            control
+                .as_object_mut()
+                .unwrap()
+                .extend(additions.as_object().unwrap().clone());
+            std::fs::write(self.root.path().join("control.json"), control.to_string()).unwrap();
+        }
+
+        async fn wait_for_pilot_commit(&self, method: &str) {
+            tokio::time::timeout(Duration::from_secs(15), async {
+                while !self.calls().iter().any(|call| {
+                    call["kind"] == "protected-write-committed" && call["method"] == method
+                }) {
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                }
+            })
+            .await
+            .expect("synthetic pilot write did not commit");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_applies_core_controls_and_rechecks_without_writes() {
+        let fixture = pilot_fixture();
+        let worker = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, false);
+        let reviewed = worker.pilot(false, parameters.clone()).await.unwrap();
+        assert!(pilot_writes(&fixture).is_empty());
+        assert!(reviewed["state"].is_null());
+        assert_eq!(
+            reviewed["plan"]["tiers"]["privileged"]["roleRules"][0]["activationMfa"]
+                ["desiredEnabledRules"],
+            json!(["Justification"])
+        );
+        let mut approved = parameters.clone();
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        let applied = worker.pilot(true, approved.clone()).await.unwrap();
+        assert_eq!(applied["status"], "appliedNeedsVerification", "{applied}");
+        assert_eq!(applied["receipt"]["completed"], true);
+        let write_results = applied["receipt"]["writeResults"].as_array().unwrap();
+        assert_eq!(
+            write_results
+                .iter()
+                .map(|write| write["outcome"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["confirmed", "confirmed", "confirmed", "confirmed"]
+        );
+        assert!(
+            write_results
+                .iter()
+                .all(|write| write.as_object().unwrap().len() == 3),
+            "write evidence is restricted to method, URI and outcome"
+        );
+        let attempt_review = pilot_saved(
+            &fixture,
+            &format!(
+                "azd-pim-gui-{}-review.json",
+                applied["receipt"]["attemptId"].as_str().unwrap()
+            ),
+        );
+        assert_eq!(attempt_review["digest"], reviewed["digest"]);
+        assert_eq!(
+            attempt_review["plan"]["mode"], "plan",
+            "the retained snapshot must be the exact pre-apply review"
+        );
+        let writes = pilot_writes(&fixture);
+        assert_eq!(
+            writes.len(),
+            4,
+            "context, CA, legacy MFA, role-context writes: {writes:?}"
+        );
+        assert_eq!(
+            writes
+                .iter()
+                .filter(|call| call["method"] == "POST")
+                .count(),
+            1
+        );
+        let state = pilot_saved(&fixture, "azd-pim-state.json");
+        assert_eq!(state["pendingRoleRules"], json!({}));
+        assert_eq!(
+            state["appliedRoleRules"]["33333333-3333-4333-8333-333333333333"]
+                ["removedLegacyActivationMfa"],
+            true
+        );
+        let responses = pilot_read_responses(&fixture);
+        assert_eq!(
+            responses[PILOT_RULES]["value"][0]["rules"][1]["enabledRules"],
+            json!(["Justification"])
+        );
+        assert_eq!(
+            responses[PILOT_RULES]["value"][0]["rules"][0]["claimValue"],
+            "c1"
+        );
+        let fresh = worker.pilot(false, parameters).await.unwrap();
+        assert_eq!(
+            fresh["plan"]["tiers"]["privileged"]["context"]["action"],
+            "none"
+        );
+        assert_eq!(
+            fresh["plan"]["tiers"]["privileged"]["conditionalAccessPolicies"][0]["action"],
+            "none"
+        );
+        assert_eq!(
+            fresh["plan"]["tiers"]["privileged"]["roleRules"][0]["action"],
+            "none"
+        );
+        assert_eq!(pilot_writes(&fixture).len(), 4);
+        worker.close().await;
+        let restarted = fixture.pilot_worker().await;
+        assert!(
+            restarted.pilot(true, approved).await.is_err(),
+            "saved report must not restore approval"
+        );
+        assert_eq!(pilot_writes(&fixture).len(), 4);
+        restarted.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_conflicts_require_exact_existing_object_review_and_stale_ids_reject() {
+        let fixture = pilot_fixture();
+        let worker = fixture.pilot_worker().await;
+        let initial = worker
+            .pilot(false, pilot_parameters(&fixture, false))
+            .await
+            .unwrap();
+        worker.close().await;
+        let mut responses = pilot_read_responses(&fixture);
+        responses[PILOT_CONTEXTS] = json!({"value":[{"id":"c7","displayName":"PIM Privileged Roles","description":"Pre-existing operator description","isAvailable":false}]});
+        let mut policy =
+            initial["plan"]["tiers"]["privileged"]["conditionalAccessPolicies"][0]["body"].clone();
+        policy["id"] = json!("77777777-7777-4777-8777-777777777777");
+        policy["state"] = json!("disabled");
+        responses[PILOT_CA] = json!({"value":[policy]});
+        responses[PILOT_RULES]["value"][0]["rules"][0]["isEnabled"] = json!(true);
+        responses[PILOT_RULES]["value"][0]["rules"][0]["claimValue"] = json!("c9");
+        pilot_write_responses(&fixture, &responses);
+        let blocked = fixture.pilot_worker().await;
+        assert!(blocked
+            .pilot(false, pilot_parameters(&fixture, false))
+            .await
+            .is_err());
+        assert!(pilot_writes(&fixture).is_empty());
+        blocked.close().await;
+        let preview = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, true);
+        let reviewed = preview.pilot(false, parameters.clone()).await.unwrap();
+        assert_eq!(
+            reviewed["plan"]["tiers"]["privileged"]["context"]["id"],
+            "c7"
+        );
+        assert_eq!(
+            reviewed["plan"]["tiers"]["privileged"]["context"]["action"],
+            "adoptAndUpdate"
+        );
+        assert_eq!(
+            reviewed["plan"]["tiers"]["privileged"]["conditionalAccessPolicies"][0]["id"],
+            "77777777-7777-4777-8777-777777777777"
+        );
+        assert_eq!(
+            reviewed["plan"]["tiers"]["privileged"]["roleRules"][0]["existing"]["claimValue"],
+            "c9"
+        );
+        assert!(pilot_writes(&fixture).is_empty(), "preview cannot adopt");
+        responses[PILOT_CA]["value"][0]["id"] = json!("88888888-8888-4888-8888-888888888888");
+        pilot_write_responses(&fixture, &responses);
+        let mut stale = parameters.clone();
+        stale["approvedDigest"] = reviewed["digest"].clone();
+        assert!(
+            preview.pilot(true, stale).await.is_err(),
+            "same display name with a different ID must invalidate approval"
+        );
+        assert!(pilot_writes(&fixture).is_empty());
+        preview.close().await;
+        let approved_worker = fixture.pilot_worker().await;
+        let reviewed = approved_worker
+            .pilot(false, parameters.clone())
+            .await
+            .unwrap();
+        let mut approved = parameters;
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        let result = approved_worker.pilot(true, approved).await.unwrap();
+        assert_eq!(result["status"], "appliedNeedsVerification", "{result}");
+        assert_eq!(
+            result["state"]["conditionalAccessPolicies"]["privileged"]["id"],
+            "88888888-8888-4888-8888-888888888888"
+        );
+        assert_eq!(
+            result["state"]["conditionalAccessPolicies"]["privileged"]["adopted"],
+            true
+        );
+        approved_worker.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_stale_configuration_live_rules_and_principal_never_write() {
+        for change in ["configuration", "live", "identity"] {
+            let fixture = pilot_fixture();
+            let worker = fixture.pilot_worker().await;
+            let mut parameters = pilot_parameters(&fixture, false);
+            let reviewed = worker.pilot(false, parameters.clone()).await.unwrap();
+            parameters["approvedDigest"] = reviewed["digest"].clone();
+            match change {
+                "configuration" => {
+                    parameters["configuration"]["privilegedDeviceRequirement"] = json!("compliant")
+                }
+                "live" => {
+                    let mut responses = pilot_read_responses(&fixture);
+                    responses[PILOT_RULES]["value"][0]["rules"][1]["enabledRules"] =
+                        json!(["MultiFactorAuthentication", "Justification", "Ticketing"]);
+                    pilot_write_responses(&fixture, &responses);
+                }
+                _ => fixture.pilot_control(json!({"mode":"principal"})),
+            }
+            assert!(worker.pilot(true, parameters).await.is_err(), "{change}");
+            assert!(pilot_writes(&fixture).is_empty(), "{change}");
+            worker.close().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_uncertain_committed_post_reconciles_after_restart_without_duplicate() {
+        let fixture = pilot_fixture();
+        let worker = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, false);
+        let reviewed = worker.pilot(false, parameters.clone()).await.unwrap();
+        let mut approved = parameters.clone();
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        fixture.pilot_control(json!({"losePostResponse":true}));
+        let _ = worker.pilot(true, approved).await;
+        worker.close().await;
+        let receipt = pilot_saved(&fixture, "azd-pim-gui-receipt.json");
+        assert_eq!(receipt["status"], "partialOrUncertain");
+        assert_eq!(
+            receipt["writeResults"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|write| write["outcome"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["confirmed", "uncertain"]
+        );
+        assert_eq!(receipt["writeResults"][1]["method"], "POST");
+        assert!(!receipt.to_string().contains("offline-only-token"));
+        assert!(
+            !receipt.to_string().contains("Synthetic response lost"),
+            "raw provider exceptions must not enter receipts"
+        );
+        let before = pilot_saved(&fixture, "azd-pim-state.json");
+        assert!(before["conditionalAccessPolicies"]["privileged"]["pendingCreate"].is_object());
+        assert_eq!(
+            pilot_read_responses(&fixture)[PILOT_CA]["value"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let restarted = fixture.pilot_worker().await;
+        let recovered = restarted.pilot(false, parameters.clone()).await.unwrap();
+        assert_eq!(
+            recovered["plan"]["tiers"]["privileged"]["conditionalAccessPolicies"][0]["action"],
+            "none"
+        );
+        assert_eq!(
+            pilot_saved(&fixture, "azd-pim-state.json"),
+            before,
+            "read-only reconciliation must not claim ownership"
+        );
+        let mut resumed = parameters;
+        resumed["approvedDigest"] = recovered["digest"].clone();
+        let applied = restarted.pilot(true, resumed).await.unwrap();
+        assert_eq!(applied["status"], "appliedNeedsVerification", "{applied}");
+        assert!(
+            applied["state"]["conditionalAccessPolicies"]["privileged"]["pendingCreate"].is_null()
+        );
+        assert_eq!(
+            pilot_writes(&fixture)
+                .iter()
+                .filter(|call| call["method"] == "POST")
+                .count(),
+            1,
+            "uncertain POST cannot be replayed"
+        );
+        assert_eq!(
+            pilot_saved(
+                &fixture,
+                &format!(
+                    "azd-pim-gui-{}.json",
+                    receipt["attemptId"].as_str().unwrap()
+                )
+            )["status"],
+            "partialOrUncertain",
+            "old receipt must survive new attempt"
+        );
+        restarted.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_cancellation_after_context_commit_restarts_with_exact_reconciliation() {
+        let fixture = pilot_fixture();
+        let worker = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, false);
+        let reviewed = worker.pilot(false, parameters.clone()).await.unwrap();
+        let mut approved = parameters.clone();
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        fixture.pilot_control(json!({"writeDelayMs":30000}));
+        let applying = worker.clone();
+        let task = tokio::spawn(async move { applying.pilot(true, approved).await });
+        fixture.wait_for_pilot_commit("PATCH").await;
+        worker.cancel();
+        assert!(task.await.unwrap().is_err());
+        worker.close().await;
+        let state = pilot_saved(&fixture, "azd-pim-state.json");
+        assert_eq!(
+            state["contexts"]["privileged"]["pendingIntent"]["action"],
+            "create"
+        );
+        let receipt = pilot_saved(&fixture, "azd-pim-gui-receipt.json");
+        assert_eq!(receipt["completed"], false);
+        let restarted = fixture.pilot_worker().await;
+        let reviewed = restarted.pilot(false, parameters.clone()).await.unwrap();
+        assert_eq!(
+            reviewed["plan"]["tiers"]["privileged"]["context"]["action"],
+            "none"
+        );
+        let mut resumed = parameters;
+        resumed["approvedDigest"] = reviewed["digest"].clone();
+        let applied = restarted.pilot(true, resumed).await.unwrap();
+        assert_eq!(applied["status"], "appliedNeedsVerification", "{applied}");
+        assert_eq!(
+            pilot_writes(&fixture)
+                .iter()
+                .filter(|call| call["uri"]
+                    .as_str()
+                    .unwrap()
+                    .contains("authenticationContextClassReferences/"))
+                .count(),
+            1,
+            "committed context PATCH cannot be replayed"
+        );
+        restarted.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_partial_rejection_restores_legacy_mfa_and_fresh_resume_completes() {
+        let fixture = pilot_fixture();
+        let worker = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, false);
+        let reviewed = worker.pilot(false, parameters.clone()).await.unwrap();
+        let mut approved = parameters.clone();
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        fixture
+            .pilot_control(json!({"failWriteSuffix":"/AuthenticationContext_EndUser_Assignment"}));
+        let partial = worker.pilot(true, approved.clone()).await.unwrap();
+        assert_eq!(partial["status"], "partialOrUncertain");
+        let write_results = partial["receipt"]["writeResults"].as_array().unwrap();
+        assert_eq!(
+            write_results
+                .iter()
+                .map(|write| write["outcome"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "confirmed",
+                "confirmed",
+                "confirmed",
+                "rejected",
+                "confirmed"
+            ]
+        );
+        assert!(write_results[3]["uri"]
+            .as_str()
+            .unwrap()
+            .ends_with("/AuthenticationContext_EndUser_Assignment"));
+        assert!(
+            write_results[4]["uri"]
+                .as_str()
+                .unwrap()
+                .ends_with("/Enablement_EndUser_Assignment"),
+            "the confirmed write after rejection is the engine's MFA restoration"
+        );
+        let responses = pilot_read_responses(&fixture);
+        assert_eq!(
+            responses[PILOT_RULES]["value"][0]["rules"][1]["enabledRules"],
+            json!(["MultiFactorAuthentication", "Justification"]),
+            "known rejected attachment must restore MFA"
+        );
+        assert_eq!(
+            partial["state"]["pendingRoleRules"]["33333333-3333-4333-8333-333333333333"]
+                ["legacyActivationMfaRemoved"],
+            false
+        );
+        let count = pilot_writes(&fixture).len();
+        assert!(
+            worker.pilot(true, approved).await.is_err(),
+            "consumed approval cannot retry a partial apply"
+        );
+        assert_eq!(pilot_writes(&fixture).len(), count);
+        worker.close().await;
+        let restarted = fixture.pilot_worker().await;
+        let fresh = restarted.pilot(false, parameters.clone()).await.unwrap();
+        let mut resumed = parameters;
+        resumed["approvedDigest"] = fresh["digest"].clone();
+        let applied = restarted.pilot(true, resumed).await.unwrap();
+        assert_eq!(applied["status"], "appliedNeedsVerification", "{applied}");
+        assert_eq!(applied["state"]["pendingRoleRules"], json!({}));
+        assert_eq!(
+            pilot_writes(&fixture)
+                .iter()
+                .filter(|call| call["method"] == "POST")
+                .count(),
+            1
+        );
+        restarted.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_omitted_pending_role_blocks_new_scope_without_writes_or_checkpoint_changes(
+    ) {
+        let fixture = pilot_fixture();
+        let mut responses = pilot_read_responses(&fixture);
+        let additional_id = "44444444-4444-4444-8444-444444444444";
+        responses["https://graph.microsoft.com/v1.0/roleManagement/directory/roleDefinitions"]["value"].as_array_mut().unwrap().push(json!({
+            "id":additional_id,"displayName":"Second privileged role","isEnabled":true,"isBuiltIn":false
+        }));
+        responses["https://graph.microsoft.com/beta/roleManagement/directory/roleDefinitions?$filter=isPrivileged%20eq%20true&$skiptoken=offline-fixture"]["value"].as_array_mut().unwrap().push(json!({
+            "id":additional_id,"displayName":"Second privileged role","description":"","isEnabled":true,"isBuiltIn":false,"isPrivileged":true
+        }));
+        responses["https://graph.microsoft.com/v1.0/policies/roleManagementPolicyAssignments?$filter=scopeId%20eq%20%27%2F%27%20and%20scopeType%20eq%20%27DirectoryRole%27&$top=999"]["value"].as_array_mut().unwrap().push(json!({
+            "roleDefinitionId":additional_id,"policyId":"second-fixture-policy"
+        }));
+        let mut second_policy = responses[PILOT_RULES]["value"][0].clone();
+        second_policy["id"] = json!("second-fixture-policy");
+        responses[PILOT_RULES]["value"]
+            .as_array_mut()
+            .unwrap()
+            .push(second_policy);
+        pilot_write_responses(&fixture, &responses);
+
+        // Produce the pending intent through a real, partially applied attempt.
+        let worker = fixture.pilot_worker().await;
+        let mut original = pilot_parameters(&fixture, false);
+        let reviewed = worker.pilot(false, original.clone()).await.unwrap();
+        original["approvedDigest"] = reviewed["digest"].clone();
+        fixture
+            .pilot_control(json!({"failWriteSuffix":"/AuthenticationContext_EndUser_Assignment"}));
+        let partial = worker.pilot(true, original).await.unwrap();
+        assert_eq!(partial["status"], "partialOrUncertain");
+        worker.close().await;
+        let before = pilot_saved(&fixture, "azd-pim-state.json");
+        let writes = pilot_writes(&fixture).len();
+        assert!(before["pendingRoleRules"]["33333333-3333-4333-8333-333333333333"].is_object());
+
+        let restarted = fixture.pilot_worker().await;
+        let mut narrowed = pilot_parameters(&fixture, false);
+        narrowed["configuration"]["privilegedRoleIds"] = json!([additional_id]);
+        let reviewed = restarted.pilot(false, narrowed.clone()).await.unwrap();
+        assert!(
+            reviewed["recoveryBlockers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message
+                    .as_str()
+                    .unwrap()
+                    .contains("33333333-3333-4333-8333-333333333333")),
+            "{reviewed}"
+        );
+        assert_eq!(
+            pilot_saved(&fixture, "azd-pim-state.json"),
+            before,
+            "read-only recheck must preserve omitted pending intent"
+        );
+        narrowed["approvedDigest"] = reviewed["digest"].clone();
+        assert!(
+            restarted.pilot(true, narrowed).await.is_err(),
+            "approval cannot bypass recovery blockers"
+        );
+        assert_eq!(pilot_writes(&fixture).len(), writes);
+        assert_eq!(pilot_saved(&fixture, "azd-pim-state.json"), before);
+        restarted.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_environment_lock_excludes_second_process_until_owner_closes() {
+        let fixture = pilot_fixture();
+        let parameters = pilot_parameters(&fixture, false);
+        let owner = fixture.pilot_worker().await;
+        owner.pilot(false, parameters.clone()).await.unwrap();
+        let competing = fixture.pilot_worker().await;
+        assert_ne!(owner.pid, competing.pid);
+        assert!(
+            competing.pilot(false, parameters.clone()).await.is_err(),
+            "same environment must have one owner across actual worker processes"
+        );
+        assert!(pilot_writes(&fixture).is_empty());
+        competing.close().await;
+        assert!(
+            owner.pilot(false, parameters.clone()).await.is_ok(),
+            "failed competing worker must not revoke lock owner"
+        );
+        owner.close().await;
+        let replacement = fixture.pilot_worker().await;
+        let recovered = replacement.pilot(false, parameters).await.unwrap();
+        assert_eq!(recovered["status"], "reviewRequired");
+        assert!(pilot_writes(&fixture).is_empty());
+        replacement.close().await;
     }
 }

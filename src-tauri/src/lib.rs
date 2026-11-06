@@ -17,6 +17,7 @@ mod manifest;
 mod models;
 mod permissions;
 mod persistence;
+mod pim_pilot;
 mod pim_plan;
 mod pim_roles;
 mod redaction;
@@ -2562,6 +2563,11 @@ pub fn run() {
             get_effective_requirements,
             request_graph_session,
             dispose_graph_session,
+            pim_pilot::register_pim_pilot,
+            pim_pilot::load_pim_pilot,
+            pim_pilot::review_pim_pilot,
+            pim_pilot::connect_pim_pilot,
+            pim_pilot::run_pim_pilot,
             review_pim_plan,
             refresh_pim_roles,
             cached_pim_roles,

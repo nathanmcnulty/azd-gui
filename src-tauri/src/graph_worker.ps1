@@ -9,6 +9,7 @@ $session = $null
 $owned = $null
 $sequence = 0
 $connected = $false
+. (Join-Path $PSScriptRoot 'pim_pilot.ps1')
 
 function Get-PimPlannerFailureCode {
     param([System.Management.Automation.ErrorRecord] $Record)
@@ -34,26 +35,26 @@ function Get-PimPlannerFailureCode {
         # Locations identify explicit throws in the exact embedded planner, not
         # tenant-controlled names, IDs or exception text. A changed pin must be
         # reviewed with this map; otherwise diagnostics remain safely generic.
-        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine '8ecb708e3dab592649662952cf0667f5525a63ec7444c34ffa5b96f9546423df') { return $fallback }
+        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine 'aa6eb01a0516955b3537bde4843e918e8efd0eb43878627b240134a2f1e6b65b') { return $fallback }
         if ($Record.Exception -is [System.Management.Automation.PropertyNotFoundException]) {
             switch ($lineNumber) {
-                { $_ -in @(283, 284, 285) } { return 'PimRoleReferenceDataInvalid' }
-                { $_ -in @(452, 458, 467) } { return 'PimContextIdentityDataInvalid' }
-                { $_ -in @(468, 469, 470, 471, 472) } { return 'PimContextSlotDataInvalid' }
-                { $_ -in @(758, 759, 760, 761, 762, 763, 764, 765, 766) } { return 'PimRolePolicyDataInvalid' }
+                { $_ -in @(320, 321, 322) } { return 'PimRoleReferenceDataInvalid' }
+                { $_ -in @(567, 573, 582) } { return 'PimContextIdentityDataInvalid' }
+                { $_ -in @(583, 584, 585, 586, 587) } { return 'PimContextSlotDataInvalid' }
+                { $_ -in @(873, 874, 875, 876, 877, 878, 879, 880, 881) } { return 'PimRolePolicyDataInvalid' }
             }
             return 'PimPlannerPolicyDataInvalid'
         }
         switch ($lineNumber) {
-            454 { return 'PimContextDuplicateNames' }
-            458 { return 'PimContextAlreadyExists' }
-            479 { return 'PimContextSlotsFull' }
-            639 { return 'PimConditionalAccessDuplicateNames' }
-            655 { return 'PimConditionalAccessAlreadyExists' }
-            768 { return 'PimRoleContextConflict' }
-            { $_ -in @(258, 264, 268, 273, 277) } { return 'PimConditionalAccessReferenceDataInvalid' }
-            { $_ -in @(759, 761, 763, 765) } { return 'PimRolePolicyDataInvalid' }
-            { $_ -in @(173, 178, 183, 501) } {
+            569 { return 'PimContextDuplicateNames' }
+            573 { return 'PimContextAlreadyExists' }
+            594 { return 'PimContextSlotsFull' }
+            754 { return 'PimConditionalAccessDuplicateNames' }
+            770 { return 'PimConditionalAccessAlreadyExists' }
+            883 { return 'PimRoleContextConflict' }
+            { $_ -in @(295, 301, 305, 310, 314) } { return 'PimConditionalAccessReferenceDataInvalid' }
+            { $_ -in @(874, 876, 878, 880) } { return 'PimRolePolicyDataInvalid' }
+            { $_ -in @(210, 215, 220, 616) } {
                 return 'PimPlannerPolicyDataInvalid'
             }
         }
@@ -89,7 +90,7 @@ try {
             }
             elseif ($request.action -eq 'probe') {
                 if (-not $connected) { throw 'No owned authenticated session.' }
-                if ($binding.PSObject.Properties['purpose'] -and $binding.purpose -ceq 'pimPlan') { $owned.BeginPimPlanAudit($session, [long]$sequence) }
+                if ($binding.PSObject.Properties['purpose'] -and $binding.purpose -cin @('pimPlan', 'pimPilot')) { $owned.BeginPimPlanAudit($session, [long]$sequence) }
                 $owned.Probe()
             }
             elseif ($request.action -eq 'pimRoles') {
@@ -131,6 +132,9 @@ try {
                 $planJson = $plan | ConvertTo-Json -Depth 100 -Compress
                 if ([Text.Encoding]::UTF8.GetByteCount($planJson) -gt 8MB) { throw 'PIM plan artifact exceeds limit.' }
             }
+            elseif ($request.action -in @('pimPilotReview', 'pimPilotApply')) {
+                $plan = Invoke-PilotOperation -Parameters $request.parameters -Apply ($request.action -eq 'pimPilotApply')
+            }
             elseif ($request.action -eq 'dispose') { break }
             else { throw 'Unsupported Graph operation.' }
             $evidence = if ($connected) { $owned.EvidenceJson() | ConvertFrom-Json -Depth 12 } else { $null }
@@ -142,7 +146,7 @@ try {
         catch {
             # Never serialize raw SDK errors, AuthenticationResult or HTTP data.
             $code = if ($request -and $request.action -eq 'authenticate') { 'GraphAuthenticationFailed' } elseif ($request -and $request.action -eq 'pimPlan') { 'PimPlannerRejectedConfiguration' } else { 'PimReadFailed' }
-            if ($request -and $request.action -eq 'pimPlan') { $code = Get-PimPlannerFailureCode -Record $_ }
+            if ($request -and $request.action -in @('pimPlan', 'pimPilotReview', 'pimPilotApply')) { $code = Get-PimPlannerFailureCode -Record $_ }
             $exception = $_.Exception
             for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
                 if ($exception -is [AzdGui.GraphAdapter.GraphBoundaryException]) {
@@ -165,6 +169,7 @@ try {
     }
 }
 finally {
+    if ($null -ne $pilotLock) { $pilotLock.Dispose() }
     if ($null -ne $owned) { $owned.Dispose() }
     $owned = $null
     $binding = $null
