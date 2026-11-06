@@ -35,26 +35,27 @@ function Get-PimPlannerFailureCode {
         # Locations identify explicit throws in the exact embedded planner, not
         # tenant-controlled names, IDs or exception text. A changed pin must be
         # reviewed with this map; otherwise diagnostics remain safely generic.
-        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine 'aa6eb01a0516955b3537bde4843e918e8efd0eb43878627b240134a2f1e6b65b') { return $fallback }
+        if ((Get-FileHash -LiteralPath $planner -Algorithm SHA256).Hash -ine '6d9fd45b095ce0f1447e34cf7c90fd272a67a94dc07a4069eb14728cd342e60c') { return $fallback }
         if ($Record.Exception -is [System.Management.Automation.PropertyNotFoundException]) {
             switch ($lineNumber) {
-                { $_ -in @(320, 321, 322) } { return 'PimRoleReferenceDataInvalid' }
-                { $_ -in @(567, 573, 582) } { return 'PimContextIdentityDataInvalid' }
-                { $_ -in @(583, 584, 585, 586, 587) } { return 'PimContextSlotDataInvalid' }
-                { $_ -in @(873, 874, 875, 876, 877, 878, 879, 880, 881) } { return 'PimRolePolicyDataInvalid' }
+                { $_ -in @(322, 323, 324) } { return 'PimRoleReferenceDataInvalid' }
+                { $_ -in @(569, 575, 584) } { return 'PimContextIdentityDataInvalid' }
+                { $_ -in @(585, 586, 587, 588, 589) } { return 'PimContextSlotDataInvalid' }
+                { $_ -in @(877, 878, 879, 880, 881, 882, 883, 884, 885) } { return 'PimRolePolicyDataInvalid' }
             }
             return 'PimPlannerPolicyDataInvalid'
         }
         switch ($lineNumber) {
-            569 { return 'PimContextDuplicateNames' }
-            573 { return 'PimContextAlreadyExists' }
-            594 { return 'PimContextSlotsFull' }
-            754 { return 'PimConditionalAccessDuplicateNames' }
-            770 { return 'PimConditionalAccessAlreadyExists' }
-            883 { return 'PimRoleContextConflict' }
-            { $_ -in @(295, 301, 305, 310, 314) } { return 'PimConditionalAccessReferenceDataInvalid' }
-            { $_ -in @(874, 876, 878, 880) } { return 'PimRolePolicyDataInvalid' }
-            { $_ -in @(210, 215, 220, 616) } {
+            571 { return 'PimContextDuplicateNames' }
+            575 { return 'PimContextAlreadyExists' }
+            596 { return 'PimContextSlotsFull' }
+            756 { return 'PimConditionalAccessDuplicateNames' }
+            770 { return 'PimConditionalAccessCreatePending' }
+            774 { return 'PimConditionalAccessAlreadyExists' }
+            887 { return 'PimRoleContextConflict' }
+            { $_ -in @(297, 303, 307, 312, 316) } { return 'PimConditionalAccessReferenceDataInvalid' }
+            { $_ -in @(878, 880, 882, 884) } { return 'PimRolePolicyDataInvalid' }
+            { $_ -in @(212, 217, 222, 618) } {
                 return 'PimPlannerPolicyDataInvalid'
             }
         }

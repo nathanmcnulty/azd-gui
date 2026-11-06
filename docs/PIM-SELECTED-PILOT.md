@@ -78,6 +78,12 @@ points. Store these private files outside public source control.
   matching the complete recorded writable intent, with bounded response metadata
   and empty defaults. Unknown properties or conservative normalization differences
   require manual review; no broad adoption fallback occurs.
+  No visible match blocks planning and application: absence is not proof that a
+  POST failed. Keep the checkpoint and receipt and recheck later. If the policy
+  remains absent, investigate the original request and audit evidence before
+  manually reconciling the environment's state; never delete a pending intent
+  merely to retry. This conservative rule also retains intents after a confirmed
+  rejected POST, since a read-only recheck does not authorize clearing state.
 - The inherited 100-read/16 MiB/session and 15-minute limits remain. A long pilot
   may require reconnection and a fresh review. Role classification uses beta APIs.
 - Removing a selected role later does not detach contexts or restore old settings.

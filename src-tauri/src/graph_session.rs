@@ -602,6 +602,7 @@ impl GraphWorker {
                 Some("PimContextDuplicateNames") => "Multiple authentication contexts have the planned name. Resolve the naming conflict before another plan; nothing was changed.",
                 Some("PimContextSlotsFull") => "No unused authentication context slot is available to this planner. Review existing context usage; nothing was changed.",
                 Some("PimConditionalAccessAlreadyExists") => "A Conditional Access policy with the planned name already exists. Ownership/adoption review is required; nothing was adopted or changed.",
+                Some("PimConditionalAccessCreatePending") => "A pending Conditional Access creation has no visible matching policy. Do not retry the create. Recheck later and investigate the original write before manually reconciling durable state. Checkpoints and receipts are retained.",
                 Some("PimConditionalAccessDuplicateNames") => "Multiple Conditional Access policies have the planned name. Resolve the naming conflict before another plan; nothing was changed.",
                 Some("PimRoleContextConflict") => "A selected role already requires a different authentication context. Review that conflict before another plan; nothing was adopted or changed.",
                 Some("PimPlannerPolicyDataInvalid") => "Returned planner inventory is incomplete or has an unsupported data shape. No plan was accepted; the session was discarded.",
@@ -1467,16 +1468,17 @@ mod tests {
         let worker = include_str!("graph_worker.ps1");
         assert!(worker.contains(&format!("{:x}", Sha256::digest(planner.as_bytes()))));
         for (line, text) in [
-            (320, "$policy.rules"),
-            (321, "$rule.isEnabled"),
-            (567, "$_.displayName"),
-            (569, "Multiple authentication contexts"),
-            (573, "already exists as"),
-            (583, "$unused ="),
-            (594, "No unused authentication context slots"),
-            (754, "Multiple Conditional Access policies"),
-            (770, "Conditional Access policy"),
-            (883, "already requires authentication context"),
+            (322, "$policy.rules"),
+            (323, "$rule.isEnabled"),
+            (569, "$_.displayName"),
+            (571, "Multiple authentication contexts"),
+            (575, "already exists as"),
+            (585, "$unused ="),
+            (596, "No unused authentication context slots"),
+            (756, "Multiple Conditional Access policies"),
+            (770, "Do not retry the POST"),
+            (774, "Conditional Access policy"),
+            (887, "already requires authentication context"),
         ] {
             assert!(planner.lines().nth(line - 1).unwrap().contains(text));
         }
@@ -3157,6 +3159,22 @@ $plan=Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 100
                 .len(),
             1
         );
+        // A committed POST can be temporarily absent from Graph's list result.
+        // Neither a read-only review nor stale approval may authorize a replay.
+        let visible = pilot_read_responses(&fixture);
+        let mut hidden = visible.clone();
+        hidden[PILOT_CA] = json!({"value":[]});
+        pilot_write_responses(&fixture, &hidden);
+        let delayed = fixture.pilot_worker().await;
+        let missing = delayed.pilot(false, parameters.clone()).await.unwrap_err();
+        assert!(missing.to_string().contains("Do not retry the create"));
+        let mut stale = parameters.clone();
+        stale["approvedDigest"] = reviewed["digest"].clone();
+        assert!(delayed.pilot(true, stale).await.is_err());
+        assert_eq!(pilot_saved(&fixture, "azd-pim-state.json"), before);
+        assert_eq!(pilot_writes(&fixture).len(), 2);
+        delayed.close().await;
+        pilot_write_responses(&fixture, &visible);
         let restarted = fixture.pilot_worker().await;
         let recovered = restarted.pilot(false, parameters.clone()).await.unwrap();
         assert_eq!(
@@ -3195,6 +3213,64 @@ $plan=Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json -Depth 100
             "old receipt must survive new attempt"
         );
         restarted.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "offline selected-role pilot through real worker; requires managed test adapter and pwsh"]
+    async fn pilot_worker_rejected_post_preserves_intent_until_manual_resolution() {
+        let fixture = pilot_fixture();
+        let worker = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, false);
+        let reviewed = worker.pilot(false, parameters.clone()).await.unwrap();
+        let mut approved = parameters.clone();
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        fixture.pilot_control(
+            json!({"failWriteSuffix":"/conditionalAccess/policies","failWriteStatus":400}),
+        );
+        let partial = worker.pilot(true, approved).await.unwrap();
+        assert_eq!(partial["status"], "partialOrUncertain");
+        assert_eq!(partial["receipt"]["writeResults"][1]["outcome"], "rejected");
+        worker.close().await;
+        let before = pilot_saved(&fixture, "azd-pim-state.json");
+        assert!(before["conditionalAccessPolicies"]["privileged"]["pendingCreate"].is_object());
+        let writes = pilot_writes(&fixture).len();
+        fixture.pilot_control(json!({}));
+        let restarted = fixture.pilot_worker().await;
+        assert!(restarted.pilot(false, parameters).await.is_err());
+        assert_eq!(pilot_saved(&fixture, "azd-pim-state.json"), before);
+        assert_eq!(pilot_writes(&fixture).len(), writes);
+        restarted.close().await;
+
+        // Model an operator reconciling only the rejected intent after checking
+        // the receipt/audit evidence. This is deliberately not a GUI retry path.
+        let mut reconciled = before;
+        reconciled["conditionalAccessPolicies"]
+            .as_object_mut()
+            .unwrap()
+            .remove("privileged");
+        std::fs::write(
+            fixture
+                .root
+                .path()
+                .join("project/.azure/pilot/azd-pim-state.json"),
+            serde_json::to_vec(&reconciled).unwrap(),
+        )
+        .unwrap();
+        let resolved = fixture.pilot_worker().await;
+        let parameters = pilot_parameters(&fixture, false);
+        let reviewed = resolved.pilot(false, parameters.clone()).await.unwrap();
+        let mut approved = parameters;
+        approved["approvedDigest"] = reviewed["digest"].clone();
+        let applied = resolved.pilot(true, approved).await.unwrap();
+        assert_eq!(applied["status"], "appliedNeedsVerification");
+        assert_eq!(
+            pilot_writes(&fixture)
+                .iter()
+                .filter(|call| call["method"] == "POST")
+                .count(),
+            2
+        );
+        resolved.close().await;
     }
 
     #[tokio::test]

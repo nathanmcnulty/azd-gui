@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub const SOURCE: &str = "3938b800c9c6da01d45b028521e99ff9f59362d6";
+pub const SOURCE: &str = "48bdbadb6a02c06fb4144e616ed9562b905b36ec";
 pub const SCOPES: [&str; 3] = [
     "AuthenticationContext.Read.All",
     "Policy.Read.All",

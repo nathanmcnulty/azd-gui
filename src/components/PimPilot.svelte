@@ -50,7 +50,7 @@
       if (current === generation) { result = value; typedTenant = ''; }
     } catch (cause) {
       if (current === generation) {
-        error = `${cause} Reconnect and recheck before approving again. Existing checkpoints and receipts are retained. If existing-object conflicts block planning, use the preview checkbox above to inspect exact objects; duplicate names must be resolved manually.`;
+        error = `${cause} Reconnect and recheck before approving again. Existing checkpoints and receipts are retained. If existing-object conflicts block planning, use the preview checkbox above to inspect exact objects; duplicate names must be resolved manually. If a pending policy creation has no visible match, recheck later and investigate the original write before manually reconciling state. Absence does not authorize another create.`;
         const old = bindingDigest; bindingDigest = ''; result = null;
         if (old) { disposal = disposal.catch(() => {}).then(async () => { await cancelPimPlan(old); }); await disposal; }
       }
@@ -101,7 +101,7 @@
       {#each Object.entries(result.state.appliedRoleRules ?? {}) as [key, value]}<p>Role {(value as any).roleDisplayName} · {key} · context {(value as any).desiredContextId} {result.state.pendingRoleRules?.[key] ? 'last recorded completion; current operation pending / needs verification' : 'last recorded completion'}; legacy MFA removed: {JSON.stringify((value as any).removedLegacyActivationMfa)}</p>{/each}
       {#each Object.entries(result.state.pendingRoleRules ?? {}) as [key, value]}<p>Role {(value as any).roleDisplayName} · {key} · pending / needs verification</p>{/each}
     </details>{/if}
-    {#if pending}<p role="alert">Pending or uncertain writes exist. This live plan reconciles their current state; no ownership checkpoint is cleared by a recheck. Review every remaining operation before approving a resume.</p>{/if}
+    {#if pending}<p role="alert">Pending or uncertain writes exist. This live plan reconciles their current state; no ownership checkpoint is cleared by a recheck. Review every remaining operation before approving a resume. If a pending policy creation has no visible match, recheck later and investigate the original write before manually reconciling state. Absence does not authorize another create.</p>{/if}
     {#if !remaining && !pending}<p>Read-only recheck found matching planner-managed settings and no pending intents. Inspect complete current policies for additional effective conditions, exclusions and controls; the planner compares its managed subset. Human activation validation below is still required.</p>{/if}
     {#if result.digest}
       <h3>Exact proposed changes</h3>
