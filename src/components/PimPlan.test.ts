@@ -352,6 +352,26 @@ describe('tenant role selection and refresh', () => {
 
 
 describe('role metadata review', () => {
+  it.each(['refresh', 'generate'])('retains the first live baseline for manual IDs after %s without a disk cache', async first => {
+    await prepare(); await connect();
+    await fireEvent.click(screen.getByRole('button', { name: first === 'refresh' ? 'Refresh tenant roles' : 'Generate read-only plan' }));
+    await screen.findByText(/Live complete role list/);
+    if (first === 'generate') await screen.findByRole('region', { name: 'PIM plan artifact' });
+    const original = vi.mocked(rolesApi.refreshPimRoles).mock.results[0];
+    const catalog = await original.value;
+    vi.mocked(rolesApi.refreshPimRoles).mockResolvedValue({ ...catalog, roles: catalog.roles.map((role: rolesApi.PimRole) => ({ ...role, displayName: 'Renamed pilot' })) });
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    await screen.findByText(/Fixture role .* changed to Renamed pilot/);
+    // Another refresh must not silently acknowledge the changed role metadata.
+    await fireEvent.click(screen.getByRole('button', { name: 'Refresh tenant roles' }));
+    expect(screen.getByText(/Fixture role .* changed to Renamed pilot/)).toBeInTheDocument();
+    const plans = vi.mocked(api.runPimPlan).mock.calls.length;
+    await fireEvent.click(screen.getByRole('button', { name: 'Generate read-only plan' }));
+    await screen.findByRole('alert');
+    expect(api.runPimPlan).toHaveBeenCalledTimes(plans);
+    await fireEvent.click(screen.getByRole('button', { name: 'Accept current role metadata' }));
+    expect(screen.queryByText(/Fixture role .* changed to Renamed pilot/)).not.toBeInTheDocument();
+  });
   it('shows new roles without selecting them and requires acknowledgement of a rename', async () => {
     const original: rolesApi.PimRole = { id: review.configuration.privilegedRoleIds[0], displayName: 'Original pilot', isPrivileged: true, isEnabled: true, isBuiltIn: false };
     vi.mocked(rolesApi.cachedPimRoles).mockResolvedValue({ tenantId: review.binding.tenantId, source: 'cached', retrievedAt: '2026-11-04T00:00:00Z', roles: [original] });

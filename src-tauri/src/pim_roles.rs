@@ -96,6 +96,27 @@ impl Catalog {
         catalog.source = "cached".into();
         Ok(Some(catalog))
     }
+    pub fn validate_expected_roles(
+        &self,
+        configuration: &crate::pim_plan::Configuration,
+        expected_roles: &[Role],
+    ) -> AppResult<()> {
+        self.validate_selection(configuration)?;
+        let selected: HashSet<_> = configuration
+            .privileged_role_ids
+            .iter()
+            .chain(&configuration.less_privileged_role_ids)
+            .collect();
+        let expected: HashSet<_> = expected_roles.iter().map(|role| &role.id).collect();
+        if expected_roles.len() > 200
+            || expected_roles.len() != expected.len()
+            || expected != selected
+            || expected_roles.iter().any(|role| !self.roles.contains(role))
+        {
+            return Err(invalid("Selected role metadata changed or is incomplete during revalidation. Refresh and review before planning."));
+        }
+        Ok(())
+    }
     pub fn validate_selection(
         &self,
         configuration: &crate::pim_plan::Configuration,
@@ -171,6 +192,49 @@ mod tests {
         assert!(catalog.validate_selection(&configuration).is_err());
     }
 
+    #[test]
+    fn expected_metadata_must_cover_exactly_the_selected_roles_in_both_tiers() {
+        let mut catalog = Catalog::live(TENANT, rows()).unwrap();
+        catalog.roles[0].is_privileged = Some(true);
+        let mut less = catalog.roles[0].clone();
+        less.id = "44444444-4444-4444-8444-444444444444".into();
+        less.is_privileged = Some(false);
+        let mut unrelated = less.clone();
+        unrelated.id = "55555555-5555-4555-8555-555555555555".into();
+        catalog.roles.extend([less.clone(), unrelated.clone()]);
+        let privileged = catalog.roles[0].clone();
+        let configuration: crate::pim_plan::Configuration =
+            serde_json::from_value(serde_json::json!({
+                "privilegedRoleIds":[privileged.id],"lessPrivilegedRoleIds":[less.id],
+                "privilegedAuthenticationProfile":"mfa","lessPrivilegedAuthenticationProfile":"mfa",
+                "privilegedDeviceRequirement":"none","lessPrivilegedDeviceRequirement":"none"
+            }))
+            .unwrap();
+        assert!(catalog
+            .validate_expected_roles(&configuration, &[less.clone(), privileged.clone()])
+            .is_ok());
+        for expected in [
+            vec![],
+            vec![privileged.clone()],
+            vec![less.clone()],
+            vec![privileged.clone(), privileged.clone()],
+            vec![privileged.clone(), unrelated.clone()],
+            vec![privileged.clone(), less.clone(), unrelated],
+        ] {
+            assert!(catalog
+                .validate_expected_roles(&configuration, &expected)
+                .is_err());
+        }
+        let mut renamed = privileged.clone();
+        renamed.display_name = "Renamed".into();
+        assert!(catalog
+            .validate_expected_roles(&configuration, &[renamed, less.clone()])
+            .is_err());
+        catalog.roles[0].is_enabled = Some(false);
+        assert!(catalog
+            .validate_expected_roles(&configuration, &[privileged, less])
+            .is_err());
+    }
     #[test]
     fn duplicate_or_invalid_catalog_is_never_accepted() {
         let mut data = rows();

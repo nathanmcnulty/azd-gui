@@ -26,6 +26,12 @@
   function rememberSelectedRoles() {
     selectedMetadata = Object.fromEntries((catalog?.roles ?? []).filter(role => [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)].includes(role.id)).map(role => [role.id, role]));
   }
+  function rememberNewSelectedRoles() {
+    // First discovery establishes a baseline; refreshing cannot acknowledge changes.
+    const previous = selectedMetadata;
+    rememberSelectedRoles();
+    selectedMetadata = { ...selectedMetadata, ...previous };
+  }
   function selectRole(id: string, privileged: boolean, checked: boolean) {
     privilegedIds = roleIds(privilegedIds).filter(value => value !== id).join('\n');
     lessPrivilegedIds = roleIds(lessPrivilegedIds).filter(value => value !== id).join('\n');
@@ -54,6 +60,7 @@
       if (current !== epoch) return;
       if (fresh.tenantId.toLowerCase() !== tenantId.trim().toLowerCase() || fresh.source !== 'live') throw new Error('Role list tenant or source mismatch.');
       catalog = fresh;
+      rememberNewSelectedRoles();
       roleNotice = 'All role pages refreshed. New roles remain unselected.';
     } catch (cause) {
       if (current !== epoch) return;
@@ -231,6 +238,7 @@
       catalog = fresh;
       const problems = [...selectedRoleProblems(fresh, privilegedIds, lessPrivilegedIds), ...roleChanges(selectedMetadata, fresh, [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)])];
       if (problems.length) throw new Error('Selected roles changed. ' + problems.join(' '));
+      rememberNewSelectedRoles();
       const result = await runPimPlan(reviewedInput, selected.binding.requirementsDigest, fresh.roles.filter(role => [...roleIds(privilegedIds), ...roleIds(lessPrivilegedIds)].includes(role.id)));
       if (current !== epoch) return;
       if (result.requirementsDigest !== selected.binding.requirementsDigest || result.sourceCommit !== selected.sourceCommit || result.plan.mode !== 'plan' || !result.executionEvidence.active) {

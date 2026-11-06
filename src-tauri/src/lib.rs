@@ -1254,14 +1254,7 @@ async fn run_pim_plan(
                 .join("pim-role-cache-v1"),
         )
         .await?;
-    catalog.validate_selection(&review.configuration)?;
-    if expected_roles.len() > 200
-        || expected_roles
-            .iter()
-            .any(|role| !catalog.roles.contains(role))
-    {
-        return Err(AppError::Invalid("Selected role metadata changed during revalidation. Refresh and review before planning.".into()));
-    }
+    catalog.validate_expected_roles(&review.configuration, &expected_roles)?;
     let mut artifact = state.graph_sessions.pim_plan(&review).await?;
     artifact["roleCatalog"] = serde_json::to_value(catalog)?;
     Ok(artifact)
