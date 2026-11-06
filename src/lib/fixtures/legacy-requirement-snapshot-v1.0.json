@@ -1,0 +1,39 @@
+{
+  "digest": "14fbf83bfc4dd6f9bf507f272760987bb0081ce1058f8d6e478f585be948ad0d",
+  "entry": {
+    "id": "legacy-requirement-fixture",
+    "title": "Legacy requirement fixture",
+    "summary": "Synthetic frozen contract",
+    "description": "Compatibility input for the pre-scope-group serializer",
+    "repository": "https://example.invalid/legacy-template",
+    "commit": "local",
+    "subdirectory": null,
+    "tags": [],
+    "platforms": [
+      "windows"
+    ],
+    "manifest": {
+      "schemaVersion": "1.0",
+      "minimumAzdVersion": null,
+      "requiresInteractiveTerminal": false,
+      "prerequisites": [],
+      "connections": [
+        {
+          "id": "graphPowerShell",
+          "name": "Graph",
+          "required": false,
+          "scopes": [
+            "Directory.Read.All"
+          ],
+          "reason": "Legacy serializer compatibility"
+        }
+      ],
+      "configuration": {
+        "groups": []
+      },
+      "permissionChecks": []
+    },
+    "source": "local",
+    "trusted": true
+  }
+}

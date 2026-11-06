@@ -407,6 +407,7 @@ pub struct OperationPersistence {
     database: Arc<Database>,
     project_path: String,
     context: Option<OperationEvidenceContext>,
+    requirements: Option<crate::requirements::RequirementSnapshot>,
 }
 
 impl OperationPersistence {
@@ -415,6 +416,7 @@ impl OperationPersistence {
             database,
             project_path,
             context: None,
+            requirements: None,
         }
     }
 
@@ -427,7 +429,16 @@ impl OperationPersistence {
             database,
             project_path,
             context: Some(context),
+            requirements: None,
         }
+    }
+
+    pub fn with_requirements(
+        mut self,
+        requirements: Option<crate::requirements::RequirementSnapshot>,
+    ) -> Self {
+        self.requirements = requirements;
+        self
     }
 
     fn record(&self, event: &OperationEvent) {
@@ -449,7 +460,16 @@ impl OperationPersistence {
             kind,
             &self.project_path,
             self.context.as_ref(),
-        )
+        )?;
+        if let Some(snapshot) = &self.requirements {
+            self.database.save_requirement_snapshot(
+                operation_id,
+                &self.project_path,
+                kind,
+                snapshot,
+            )?;
+        }
+        Ok(())
     }
 
     fn apply_environment(&self, spec: &mut CommandSpec, operation_id: &str, kind: &str) {

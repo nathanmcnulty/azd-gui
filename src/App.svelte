@@ -16,7 +16,9 @@
   import {
     bootstrap,
     cancelOperation,
-    checkTemplatePrerequisites,
+    checkRequirementPrerequisites,
+    checkRequirementPermissions,
+    reviewWizardRequirements,
     clearLocalAppData,
     chooseFolder,
     createProjectEnvironment,
@@ -41,13 +43,12 @@
     refreshProjectTemplate,
     getProjectEnvironmentValues,
     listProjectEnvironments,
-    runPermissionChecks,
     saveAppSettings,
     selectProjectEnvironment,
     setProjectEnvironmentValues
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
-  import { effectiveRequirements, requirementEnvironmentValues } from "./lib/requirements";
+  import { effectiveRequirements, effectiveConnectionRequirements, requirementEnvironmentValues } from "./lib/requirements";
   import {
     connectionBlockingGuidance,
     hasKnownTargetMismatch,
@@ -153,6 +154,7 @@
   let selectedEntry: CatalogEntry | null = null;
   let evaluatedRequiredTools: ToolStatus[] | null = null;
   let prerequisiteEvaluationKey = "";
+  let requirementReview: Awaited<ReturnType<typeof reviewWizardRequirements>> | null = null;
   let selectedInspection: TemplateInspection | null = null;
   let wizardPlan: WizardPlan | null = null;
   let wizardValues: WizardValues = {};
@@ -354,6 +356,13 @@
   $: selectedPrerequisites = selectedManifest ? effectiveRequirements(selectedManifest.prerequisites, selectedManifest, wizardValues) : [];
   $: requirementValues = selectedManifest ? requirementEnvironmentValues(selectedManifest, wizardValues) : {};
   $: selectedPrerequisiteKey = JSON.stringify({
+    entry: selectedEntry,
+    session: wizardSession,
+    environment: wizardValues.environmentName,
+    tenant: wizardValues.tenantId,
+    subscription: wizardValues.subscriptionId,
+    location: wizardValues.location,
+    resourceGroup: wizardValues.resourceGroup,
     prerequisites: selectedPrerequisites,
     minimumAzdVersion: selectedManifest?.minimumAzdVersion,
     requirementValues
@@ -378,12 +387,18 @@
   } as ToolStatus));
   $: if (selectedPrerequisiteKey !== prerequisiteEvaluationKey) {
     prerequisiteEvaluationKey = selectedPrerequisiteKey;
+    requirementReview = null;
+    permissionCheckResults = [];
     evaluatedRequiredTools = pendingRequiredTools.length ? null : [];
     const requestedKey = selectedPrerequisiteKey;
-    if (selectedManifest) {
-      void checkTemplatePrerequisites(selectedManifest, requirementValues).then(
+    if (selectedEntry) {
+      void reviewWizardRequirements(selectedEntry, structuredClone(wizardValues)).then(async (review) => {
+        if (prerequisiteEvaluationKey !== requestedKey) return null;
+        requirementReview = review;
+        return checkRequirementPrerequisites(review.selection, review.snapshot);
+      }).then(
         (statuses) => {
-          if (prerequisiteEvaluationKey === requestedKey) evaluatedRequiredTools = statuses;
+          if (prerequisiteEvaluationKey === requestedKey && statuses) evaluatedRequiredTools = statuses;
         },
         () => {
           if (prerequisiteEvaluationKey === requestedKey) {
@@ -396,14 +411,19 @@
     }
   }
   $: requiredTools = evaluatedRequiredTools ?? pendingRequiredTools;
+  // Non-controller edits and acknowledgement changes also regenerate the plan.
+  // Keep its requirement binding even when no new native resolution is needed.
+  $: if (wizardPlan && wizardPlan.requirements !== requirementReview?.snapshot) {
+    wizardPlan = { ...wizardPlan, requirements: requirementReview?.snapshot };
+  }
   $: requiredConnections =
-    (selectedManifest ? effectiveRequirements(selectedManifest.connections, selectedManifest, wizardValues) : []).map((required) => {
+    (requirementReview?.snapshot.requirements.connections ?? (selectedManifest ? effectiveConnectionRequirements(selectedManifest, wizardValues) : [])).map((required) => {
       const status = data.connections.find((connection) => connection.id === required.id);
       return status
         ? { ...status, ...required }
         : ({ ...required, state: "unknown" } as ConnectionStatus);
     }) ?? [];
-  $: requiredToolsReady = requiredTools
+  $: requiredToolsReady = Boolean(requirementReview) && requiredTools
     .filter((tool) => tool.required)
     .every((tool) => tool.state === "ready");
   $: requiredConnectionsReady = requiredConnections
@@ -1295,8 +1315,12 @@
   async function runRegisteredPermissionChecks(): Promise<boolean> {
     if (!selectedEntry) return false;
     if (permissionChecksRunning) return false;
-    const manifest = selectedEntry.manifest;
-    const checks = manifest ? effectiveRequirements(manifest.permissionChecks ?? [], manifest, wizardValues) : [];
+    const review = requirementReview;
+    if (!review) {
+      addSystemLog("Wait for the effective requirements to be reviewed before running checks.", "warning");
+      return false;
+    }
+    const checks = review.snapshot.requirements.permissionChecks;
     const requestedConfiguration = JSON.stringify([selectedEntry, wizardValues]);
     permissionCheckResults = [];
     if (checks.length === 0) return true;
@@ -1313,20 +1337,8 @@
         addSystemLog("Select an Azure tenant and subscription before running registered permission checks.", "error");
         return false;
       }
-      const requiredGraphScopes = Array.from(
-        new Set(
-          requiredConnections
-            .filter((connection) => connection.id === "graphPowerShell")
-            .flatMap((connection) => connection.scopes ?? [])
-        )
-      );
-      const results = await runPermissionChecks({
-        checks,
-        tenantId: permissionTenantId,
-        subscriptionId: permissionSubscriptionId,
-        requiredGraphScopes
-      });
-      if (requestedConfiguration !== JSON.stringify([selectedEntry, wizardValues])) {
+      const results = await checkRequirementPermissions(review.selection, review.snapshot);
+      if (review !== requirementReview || requestedConfiguration !== JSON.stringify([selectedEntry, wizardValues])) {
         addSystemLog("Configuration changed during permission checks. Run checks again for the current choices.", "warning");
         return false;
       }
@@ -2698,6 +2710,7 @@
                     {#if connection.expiresOn}<small>Expires <time datetime={connection.expiresOn}>{new Date(connection.expiresOn).toLocaleString()}</time></small>{/if}
                     {#if connection.id === "graphPowerShell" && connection.scopes?.length}
                       <small>Requested scopes: {connection.scopes.join(", ")}</small>
+                      <small>Reducing requested scopes does not revoke consent already granted to this account.</small>
                       <small>Granted scopes: {connection.grantedScopes?.length ? connection.grantedScopes.join(", ") : "None detected"}</small>
                     {/if}
                     {#if missingScopes.length}<small class="scope-warning">Missing scopes: {missingScopes.join(", ")}</small>{/if}
@@ -2902,9 +2915,10 @@
                 <dl class="summary-list">
                   {#each requiredConnections.filter((connection) => connection.required) as connection}
                     {@const assessment = connectionTargetAssessment(connection, connectionTarget, verifiedConnectionTargetKey === checkedConnectionTargetKey && Boolean(checkedConnectionTargetKey))}
-                    <div><dt>{connection.name}</dt><dd>{connection.account ?? "Unknown"} · {assessment.label} · {assessment.action}</dd></div>
+                    <div><dt>{connection.name}</dt><dd>{connection.account ?? "Unknown"} · {assessment.label} · {assessment.action}{#if connection.scopes?.length}<br />Requested scopes: {connection.scopes.join(", ")}{/if}</dd></div>
                   {/each}
                 </dl>
+                <p>Reducing requested scopes does not revoke existing consent. Current access is checked separately.</p>
               </section>
               <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} acknowledgementProofs={wizardAcknowledgements} on:edit={(event) => editReviewSection(event.detail)} />
             </div>

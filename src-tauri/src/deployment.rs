@@ -204,33 +204,17 @@ fn environment_assignments(
                 assignments.insert(name, value);
             }
         }
-        let controllers = crate::manifest::requirement_controller_variables(manifest)?;
-        for field in manifest
-            .configuration
-            .groups
-            .iter()
-            .flat_map(|group| &group.fields)
-        {
-            if controllers.contains(&field.environment_variable) {
-                // Persist the same default used by readiness even when the renderer omits it.
-                // In an existing project, omission must not retain an older, different choice.
-                let default = field
-                    .default
-                    .as_ref()
-                    .and_then(serde_json::Value::as_bool)
-                    .ok_or_else(|| {
-                        AppError::Invalid("Requirement controllers need boolean defaults.".into())
-                    })?;
-                assignments
-                    .entry(field.environment_variable.clone())
-                    .or_insert_with(|| default.to_string());
-            }
-        }
+        // Persist exactly the typed defaults/inputs used by the native snapshot.
+        // Omission in an existing project must overwrite a prior mode choice.
+        assignments.extend(crate::manifest::normalized_requirement_values(
+            manifest,
+            &requirement_environment_values(manifest, &request.environment_values)?,
+        )?);
     }
     Ok(assignments.into_iter().collect())
 }
 
-fn requirement_environment_values(
+pub(crate) fn requirement_environment_values(
     manifest: &crate::models::TemplateManifest,
     environment_values: &HashMap<String, serde_json::Value>,
 ) -> AppResult<HashMap<String, String>> {
@@ -249,7 +233,7 @@ fn requirement_environment_values(
             }
             _ => {
                 return Err(AppError::Invalid(
-                    "Requirement controller values must be booleans or boolean strings.".into(),
+                    "Requirement controller values must be booleans or strings.".into(),
                 ))
             }
         }
@@ -541,7 +525,22 @@ pub async fn prepare(
         )?;
         let requirement_values =
             requirement_environment_values(manifest, &request.environment_values)?;
-        crate::tools::ensure_manifest_requirements(manifest, &requirement_values).await?;
+        let contract =
+            ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;
+        ensure_reviewed_contract_digest(&request, &contract)?;
+        crate::requirements::resolve(
+            &contract,
+            &requirement_values,
+            &request.environment,
+            crate::models::ExecutionTarget {
+                tenant_id: request.tenant.clone(),
+                subscription_id: request.subscription.clone(),
+                location: Some(request.location.clone()),
+                resource_group: request.resource_group.clone(),
+            },
+        )?
+        .ensure_ready()
+        .await?;
     }
     // Verify external content before creating a destination or recording a project.
     // Retain this exact checkout through azd init; do not fetch it a second time.
@@ -852,6 +851,56 @@ mod tests {
             .into_iter()
             .collect();
         assert_eq!(values["INCLUDE_EXCHANGE"], "true");
+    }
+
+    #[test]
+    fn select_requirement_assignments_persist_reviewed_defaults_and_replace_existing_modes() {
+        let mut entry = entry_by_id("myworkid").unwrap();
+        entry.manifest = Some(
+            serde_json::from_str(include_str!(
+                "../../src/lib/fixtures/conditional-requirements-v1.1.json"
+            ))
+            .unwrap(),
+        );
+        let contract = ProjectTemplateSnapshot::new(entry.clone()).unwrap();
+        for supplied in [None, Some("plan"), Some("enforced")] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join(".azure/dev")).unwrap();
+            let file = root.path().join(".azure/dev/.env");
+            std::fs::write(&file, "MODE=enforced\nINCLUDE_AZURE=true\n").unwrap();
+            let mut request = myworkid_request();
+            request.source_mode = "existingProject".into();
+            request.destination = root.path().display().to_string();
+            request.environment_values.clear();
+            if let Some(mode) = supplied {
+                request
+                    .environment_values
+                    .insert("MODE".into(), json!(mode));
+            }
+            let assignments = environment_assignments(&request, Some(&entry)).unwrap();
+            let assigned: HashMap<_, _> = assignments.iter().cloned().collect();
+            assert_eq!(assigned["MODE"], supplied.unwrap_or("plan"));
+            assert_eq!(assigned["INCLUDE_AZURE"], "false");
+            std::fs::write(
+                &file,
+                assignments
+                    .into_iter()
+                    .map(|(name, value)| format!("{name}={value}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            let (values, target) =
+                crate::requirements::saved_context(entry.manifest.as_ref(), root.path(), "dev")
+                    .unwrap();
+            let saved = crate::requirements::resolve(&contract, &values, "dev", target).unwrap();
+            assert_eq!(
+                saved.requirements.controller_values["MODE"],
+                supplied.unwrap_or("plan")
+            );
+        }
+        let mut request = myworkid_request();
+        request.environment_values = HashMap::from([("MODE".into(), json!("unknown"))]);
+        assert!(environment_assignments(&request, Some(&entry)).is_err());
     }
 
     #[test]

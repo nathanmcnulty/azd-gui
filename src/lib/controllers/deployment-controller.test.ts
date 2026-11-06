@@ -9,6 +9,7 @@ const calls = vi.hoisted(() => ({
 
 vi.mock("../bridge", () => ({
   getReviewedContractDigest: async () => "a".repeat(64),
+  reviewWizardRequirements: async () => ({ snapshot: { digest: "c".repeat(64), requirements: {} }, selection: {} }),
   getProjectTemplate: async () => ({ entry, digest: "b".repeat(64) }),
   requestExecutionApproval: async (request: ExecutionApprovalRequest) => {
     calls.approvals.push(request);
@@ -47,6 +48,7 @@ describe("wizard deployment approvals", () => {
     });
 
     expect(calls.approvals[0]?.snapshotDigest).toBe("a".repeat(64));
+    expect(calls.approvals[0]?.requirements?.digest).toBe("c".repeat(64));
     expect(calls.prepares[0]?.reviewedContractDigest).toBe("a".repeat(64));
     expect(calls.approvals[0]?.target).toEqual({
       tenantId: calls.prepares[0]?.tenant,

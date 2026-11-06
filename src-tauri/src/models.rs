@@ -107,7 +107,7 @@ pub struct RecommendationProfile {
     pub values: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Prerequisite {
     pub id: String,
@@ -178,7 +178,7 @@ pub struct ToolInstallApprovalGrant {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionRequirement {
     pub id: String,
@@ -187,6 +187,17 @@ pub struct ConnectionRequirement {
     #[serde(default)]
     pub scopes: Vec<String>,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<FieldCondition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_groups: Option<Vec<ScopeGroup>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScopeGroup {
+    pub id: String,
+    pub scopes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub condition: Option<FieldCondition>,
 }
@@ -298,7 +309,7 @@ pub struct ConfigurationGroup {
     pub fields: Vec<ConfigurationField>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldCondition {
     pub field: String,
@@ -540,7 +551,7 @@ pub struct FieldOption {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PermissionCheck {
     pub id: String,
@@ -743,6 +754,8 @@ pub struct AcknowledgementProof {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionApprovalRequest {
+    #[serde(default)]
+    pub requirements: Option<crate::requirements::RequirementSnapshot>,
     pub action: String,
     pub project_path: String,
     pub environment: String,
@@ -761,7 +774,7 @@ pub struct ExecutionApprovalRequest {
     pub acknowledgement_values: HashMap<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ExecutionTarget {
     pub tenant_id: Option<String>,

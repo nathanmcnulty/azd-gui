@@ -351,9 +351,18 @@ pub fn manifest_prerequisites(
     manifest: &TemplateManifest,
     environment_values: &std::collections::HashMap<String, String>,
 ) -> AppResult<Vec<Prerequisite>> {
-    let mut prerequisites = crate::manifest::effective_prerequisites(manifest, environment_values)?;
-    let Some(minimum_azd_version) = manifest.minimum_azd_version.as_deref() else {
-        return Ok(prerequisites);
+    Ok(effective_prerequisites(
+        crate::manifest::effective_prerequisites(manifest, environment_values)?,
+        manifest.minimum_azd_version.as_deref(),
+    ))
+}
+
+pub fn effective_prerequisites(
+    mut prerequisites: Vec<Prerequisite>,
+    minimum_azd_version: Option<&str>,
+) -> Vec<Prerequisite> {
+    let Some(minimum_azd_version) = minimum_azd_version else {
+        return prerequisites;
     };
     let azd_requirement = minimum_requirement(minimum_azd_version);
     if let Some(azd) = prerequisites
@@ -381,7 +390,7 @@ pub fn manifest_prerequisites(
             condition: None,
         });
     }
-    Ok(prerequisites)
+    prerequisites
 }
 
 fn evaluate_requirement(requirement: &Prerequisite, detected: &[ToolStatus]) -> ToolStatus {

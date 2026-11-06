@@ -16,6 +16,7 @@ mod models;
 mod permissions;
 mod persistence;
 mod redaction;
+mod requirements;
 mod security_groups;
 mod terminal;
 mod tools;
@@ -425,6 +426,32 @@ async fn start_azd_operation_checked<F>(
 where
     F: FnOnce(String, command_runner::CommandSpec, OperationPersistence) -> AppResult<String>,
 {
+    start_azd_operation_with_probe(
+        state,
+        action,
+        project_path,
+        environment,
+        execution_approval_token,
+        |snapshot| async move { snapshot.ensure_ready().await },
+        launch,
+    )
+    .await
+}
+
+async fn start_azd_operation_with_probe<F, P, Fut>(
+    state: &AppState,
+    action: String,
+    project_path: String,
+    environment: Option<String>,
+    execution_approval_token: Option<String>,
+    probe: P,
+    launch: F,
+) -> AppResult<String>
+where
+    F: FnOnce(String, command_runner::CommandSpec, OperationPersistence) -> AppResult<String>,
+    P: FnOnce(requirements::RequirementSnapshot) -> Fut,
+    Fut: std::future::Future<Output = AppResult<()>>,
+{
     // Keep in-app environment writes outside the target read -> approval consume
     // -> operation reservation window. Once reserved, edits fail until completion.
     let _environment_lock = state.environment_writes.lock().await;
@@ -437,6 +464,7 @@ where
     }
     let spec = azd::lifecycle_command(&action, &canonical, environment.as_deref())?;
     let mut persistence_context = None;
+    let mut persistence_requirements = None;
     if matches!(
         action.as_str(),
         "preview" | "up" | "provision" | "deploy" | "down"
@@ -476,7 +504,20 @@ where
                 .transpose()?
                 .unwrap_or_default()
         };
+        let requirements = if action == "down" || snapshot.is_none() {
+            None
+        } else {
+            Some(resolve_effective_requirements(
+                state,
+                None,
+                Some(project.as_ref().expect("registered snapshot").path.clone()),
+                environment.into(),
+                None,
+                None,
+            )?)
+        };
         let expected = ExecutionApprovalRequest {
+            requirements: requirements.clone(),
             action: action.clone(),
             project_path: canonical.display().to_string(),
             environment: environment.to_string(),
@@ -496,7 +537,9 @@ where
         state
             .execution_approvals
             .consume_lifecycle(token, expected.clone(), manifest)?;
-        if let Some(manifest) = manifest {
+        if let Some(requirements) = &requirements {
+            probe(requirements.clone()).await?;
+        } else if let Some(manifest) = manifest {
             let requirement_values =
                 registered_requirement_environment_values(manifest, &canonical, environment)
                     .await?;
@@ -522,11 +565,28 @@ where
                     .into(),
             ));
         }
+        if let Some(requirements) = &requirements {
+            let current = resolve_effective_requirements(
+                state,
+                None,
+                Some(project.as_ref().expect("registered snapshot").path.clone()),
+                environment.into(),
+                None,
+                None,
+            )?;
+            if &current != requirements {
+                return Err(AppError::Invalid(
+                    "Effective requirements changed before launch. Review and approve again."
+                        .into(),
+                ));
+            }
+        }
+        persistence_requirements = requirements;
     }
     launch(
         action,
         spec,
-        match persistence_context {
+        (match persistence_context {
             Some(context) => OperationPersistence::with_context(
                 state.database.clone(),
                 canonical.display().to_string(),
@@ -535,7 +595,8 @@ where
             None => {
                 OperationPersistence::new(state.database.clone(), canonical.display().to_string())
             }
-        },
+        })
+        .with_requirements(persistence_requirements),
     )
 }
 
@@ -662,6 +723,7 @@ async fn prepare_deployment(
         ));
     }
     let mut expected = ExecutionApprovalRequest {
+        requirements: None,
         action: "prepare".into(),
         project_path: request.destination.clone(),
         environment: request.environment.clone(),
@@ -678,10 +740,41 @@ async fn prepare_deployment(
             resource_group: request.resource_group.clone(),
         })?),
     };
+    let contract = state
+        .reviewed_contracts
+        .lock()
+        .map_err(|_| AppError::Invalid("Reviewed contract cache is unavailable.".into()))?
+        .get(&request.reviewed_contract_digest)
+        .cloned()
+        .ok_or_else(|| AppError::Invalid("Review the exact contract before preparation.".into()))?;
+    let requirement_values = contract
+        .entry
+        .manifest
+        .as_ref()
+        .map(|manifest| {
+            deployment::requirement_environment_values(manifest, &request.environment_values)
+        })
+        .transpose()?
+        .unwrap_or_default();
+    expected.requirements = Some(requirements::resolve(
+        &contract,
+        &requirement_values,
+        &request.environment,
+        expected.target.clone().expect("preparation target"),
+    )?);
     prepare_approval_acknowledgements(state.inner(), &mut expected)?;
+    let requirement_snapshot = expected.requirements.clone();
     state
         .execution_approvals
         .consume(&request.execution_approval_token, expected)?;
+    if let Some(snapshot) = requirement_snapshot {
+        state.database.save_requirement_snapshot(
+            &uuid::Uuid::new_v4().to_string(),
+            &request.destination,
+            "prepare",
+            &snapshot,
+        )?;
+    }
     // Preparation can also rewrite an existing environment. Revoke any other
     // pending grants before those writes, including an A -> B -> A sequence.
     state.execution_approvals.clear()?;
@@ -701,6 +794,569 @@ fn reviewed_contract_digest(state: State<'_, AppState>, entry: CatalogEntry) -> 
     }
     contracts.insert(digest.clone(), snapshot);
     Ok(digest)
+}
+
+#[tauri::command]
+fn get_effective_requirements(
+    state: State<'_, AppState>,
+    reviewed_contract_digest: Option<String>,
+    project_path: Option<String>,
+    environment: String,
+    environment_values: Option<HashMap<String, String>>,
+    target: Option<ExecutionTarget>,
+) -> AppResult<requirements::RequirementSnapshot> {
+    resolve_effective_requirements(
+        state.inner(),
+        reviewed_contract_digest,
+        project_path,
+        environment,
+        environment_values,
+        target,
+    )
+}
+
+fn resolve_effective_requirements(
+    state: &AppState,
+    reviewed_contract_digest: Option<String>,
+    project_path: Option<String>,
+    environment: String,
+    environment_values: Option<HashMap<String, String>>,
+    target: Option<ExecutionTarget>,
+) -> AppResult<requirements::RequirementSnapshot> {
+    let (snapshot, values, target) = match (reviewed_contract_digest, project_path) {
+        (Some(digest), None) => {
+            let snapshot = state
+                .reviewed_contracts
+                .lock()
+                .map_err(|_| AppError::Invalid("Reviewed contract cache is unavailable.".into()))?
+                .get(&digest)
+                .cloned()
+                .ok_or_else(|| {
+                    AppError::Invalid(
+                        "Review the exact contract before resolving requirements.".into(),
+                    )
+                })?;
+            (
+                snapshot,
+                environment_values.unwrap_or_default(),
+                target.unwrap_or(ExecutionTarget {
+                    tenant_id: None,
+                    subscription_id: None,
+                    location: None,
+                    resource_group: None,
+                }),
+            )
+        }
+        (None, Some(path)) => {
+            if environment_values.is_some() || target.is_some() {
+                return Err(AppError::Invalid(
+                    "Saved-project requirements use native saved values and target.".into(),
+                ));
+            }
+            let project = state
+                .database
+                .projects()?
+                .into_iter()
+                .find(|project| project.path == path)
+                .ok_or_else(|| AppError::Invalid("This project is not registered.".into()))?;
+            let snapshot = state
+                .database
+                .project_template_exact(&project.path)?
+                .ok_or_else(|| {
+                    AppError::Invalid("This project needs a reviewed template contract.".into())
+                })?;
+            let root = Path::new(&project.path);
+            let (values, target) =
+                requirements::saved_context(snapshot.entry.manifest.as_ref(), root, &environment)?;
+            (snapshot, values, target)
+        }
+        _ => {
+            return Err(AppError::Invalid(
+                "Select exactly one reviewed contract or registered project.".into(),
+            ))
+        }
+    };
+    requirements::resolve(&snapshot, &values, &environment, target)
+}
+
+fn selected_requirements(
+    state: &AppState,
+    selection: &requirements::RequirementSelection,
+    expected_digest: &str,
+) -> AppResult<requirements::RequirementSnapshot> {
+    let snapshot = resolve_effective_requirements(
+        state,
+        selection.reviewed_contract_digest.clone(),
+        selection.project_path.clone(),
+        selection.environment.clone(),
+        selection.environment_values.clone(),
+        selection.target.clone(),
+    )?;
+    if snapshot.digest != expected_digest {
+        return Err(AppError::Invalid(
+            "Requirements changed. Review the effective requirements and run checks again.".into(),
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn bind_approval_requirements(
+    state: &AppState,
+    request: &mut ExecutionApprovalRequest,
+) -> AppResult<()> {
+    if request.action == "down" {
+        request.requirements = None;
+        return Ok(());
+    }
+    let resolved = if request.action == "prepare" {
+        let supplied = request.requirements.as_ref().ok_or_else(|| {
+            AppError::Invalid(
+                "Review the effective requirements before preparation approval.".into(),
+            )
+        })?;
+        resolve_effective_requirements(
+            state,
+            request.snapshot_digest.clone(),
+            None,
+            request.environment.clone(),
+            Some(
+                supplied
+                    .requirements
+                    .controller_values
+                    .clone()
+                    .into_iter()
+                    .collect(),
+            ),
+            request.target.clone(),
+        )?
+    } else {
+        let project = state
+            .database
+            .project_by_path(&request.project_path)?
+            .ok_or_else(|| AppError::Invalid("This project is not registered.".into()))?;
+        resolve_effective_requirements(
+            state,
+            None,
+            Some(project.path),
+            request.environment.clone(),
+            None,
+            None,
+        )?
+    };
+    if request
+        .requirements
+        .as_ref()
+        .is_some_and(|supplied| supplied != &resolved)
+    {
+        return Err(AppError::Invalid(
+            "Effective requirements changed. Review and approve again.".into(),
+        ));
+    }
+    request.requirements = Some(resolved);
+    Ok(())
+}
+
+async fn check_selected_requirements<T, F, Fut>(
+    state: &AppState,
+    selection: &requirements::RequirementSelection,
+    expected_digest: &str,
+    probe: F,
+) -> AppResult<T>
+where
+    F: FnOnce(requirements::RequirementSnapshot) -> Fut,
+    Fut: std::future::Future<Output = AppResult<T>>,
+{
+    let snapshot = selected_requirements(state, selection, expected_digest)?;
+    let result = probe(snapshot).await?;
+    // External editors can change a saved environment while provider/tool probes run.
+    selected_requirements(state, selection, expected_digest)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn check_requirement_prerequisites(
+    state: State<'_, AppState>,
+    selection: requirements::RequirementSelection,
+    expected_digest: String,
+) -> AppResult<Vec<ToolStatus>> {
+    check_selected_requirements(
+        state.inner(),
+        &selection,
+        &expected_digest,
+        |snapshot| async move {
+            Ok(tools::evaluate_prerequisites(&snapshot.requirements.prerequisites).await)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn check_requirement_permissions(
+    state: State<'_, AppState>,
+    selection: requirements::RequirementSelection,
+    expected_digest: String,
+) -> AppResult<Vec<PermissionCheckResult>> {
+    check_selected_requirements(
+        state.inner(),
+        &selection,
+        &expected_digest,
+        |snapshot| async move { permissions::run(snapshot.permission_request()?).await },
+    )
+    .await
+}
+
+#[cfg(test)]
+mod requirement_snapshot_caller_tests {
+    use super::*;
+
+    fn fixture() -> (tempfile::TempDir, AppState, ProjectTemplateSnapshot, String) {
+        let root = tempfile::tempdir().unwrap();
+        let state = AppState {
+            database: Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap()),
+            operations: OperationManager::default(),
+            environment_writes: AsyncMutex::new(()),
+            template_cache: root.path().join("cache"),
+            inspected_manifests: Mutex::new(HashMap::new()),
+            reviewed_contracts: Mutex::new(HashMap::new()),
+            catalog_reviews: CatalogReviews::default(),
+            execution_approvals: execution_approval::ExecutionApprovals::default(),
+            tool_install_approvals: tools::ToolInstallApprovals::default(),
+        };
+        let mut entry = catalog::entry_by_id("myworkid").unwrap();
+        entry.manifest = Some(
+            serde_json::from_str(include_str!(
+                "../../src/lib/fixtures/conditional-requirements-v1.1.json"
+            ))
+            .unwrap(),
+        );
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        let path = root.path().display().to_string();
+        state
+            .database
+            .upsert_project(&ProjectSummary {
+                id: "requirement-test".into(),
+                name: "Requirement test".into(),
+                path: path.clone(),
+                environment: Some("dev".into()),
+                template_id: Some(snapshot.entry.id.clone()),
+                revision: Some(snapshot.entry.commit.clone()),
+                last_operation: None,
+                state: "ready".into(),
+            })
+            .unwrap();
+        let project = state.database.projects().unwrap().remove(0);
+        state
+            .database
+            .save_project_template(&project, &snapshot)
+            .unwrap();
+        state
+            .reviewed_contracts
+            .lock()
+            .unwrap()
+            .insert(snapshot.digest.clone(), snapshot.clone());
+        std::fs::create_dir_all(root.path().join(".azure/dev")).unwrap();
+        std::fs::write(root.path().join("azure.yaml"), "name: requirement-test\n").unwrap();
+        std::fs::write(root.path().join(".azure/dev/.env"),"MODE=enforced\nINCLUDE_AZURE=false\nAZURE_TENANT_ID=11111111-1111-4111-8111-111111111111\nAZURE_SUBSCRIPTION_ID=22222222-2222-4222-8222-222222222222\n").unwrap();
+        (root, state, snapshot, path)
+    }
+
+    #[test]
+    fn saved_snapshot_query_uses_native_values_and_rejects_renderer_overrides() {
+        let (_root, state, _snapshot, path) = fixture();
+        let saved = resolve_effective_requirements(
+            &state,
+            None,
+            Some(path.clone()),
+            "dev".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(saved.requirements.controller_values["MODE"], "enforced");
+        assert!(saved.requirements.connections[0]
+            .scopes
+            .contains(&"Policy.ReadWrite.ConditionalAccess".into()));
+        assert!(resolve_effective_requirements(
+            &state,
+            None,
+            Some(path),
+            "dev".into(),
+            Some(HashMap::new()),
+            None
+        )
+        .is_err());
+    }
+
+    fn approval(
+        state: &AppState,
+        contract: &ProjectTemplateSnapshot,
+        path: &str,
+    ) -> ExecutionApprovalRequest {
+        let mut request = ExecutionApprovalRequest {
+            requirements: None,
+            action: "preview".into(),
+            project_path: path.into(),
+            environment: "dev".into(),
+            template_id: contract.entry.id.clone(),
+            revision: Some(contract.entry.commit.clone()),
+            snapshot_digest: Some(contract.digest.clone()),
+            source_binding: None,
+            target: Some(lifecycle_execution_target(Path::new(path), "dev").unwrap()),
+            acknowledgement_proofs: vec![],
+            acknowledgement_values: HashMap::new(),
+        };
+        bind_approval_requirements(state, &mut request).unwrap();
+        request
+    }
+
+    #[tokio::test]
+    async fn actual_lifecycle_requirement_change_during_probes_never_launches_or_reuses_approval() {
+        for (from, to) in [("enforced", "plan"), ("plan", "enforced")] {
+            let (root, state, contract, path) = fixture();
+            let dotenv = root.path().join(".azure/dev/.env");
+            let original = std::fs::read_to_string(&dotenv).unwrap();
+            std::fs::write(
+                &dotenv,
+                original.replace("MODE=enforced", &format!("MODE={from}")),
+            )
+            .unwrap();
+            let request = approval(&state, &contract, &path);
+            let grant = state.execution_approvals.issue(request).unwrap();
+            let dotenv_ref = &dotenv;
+            let original_ref = &original;
+            let result = start_azd_operation_with_probe(
+                &state,
+                "preview".into(),
+                path.clone(),
+                Some("dev".into()),
+                Some(grant.token.clone()),
+                |snapshot| async move {
+                    assert_eq!(snapshot.requirements.controller_values["MODE"], from);
+                    std::fs::write(
+                        dotenv_ref,
+                        original_ref.replace("MODE=enforced", &format!("MODE={to}")),
+                    )
+                    .unwrap();
+                    Ok(())
+                },
+                |_, _, _| panic!("Changed effective requirements must not launch"),
+            )
+            .await;
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("requirements changed"));
+            std::fs::write(
+                &dotenv,
+                original.replace("MODE=enforced", &format!("MODE={from}")),
+            )
+            .unwrap();
+            assert!(start_azd_operation_with_probe(
+                &state,
+                "preview".into(),
+                path,
+                Some("dev".into()),
+                Some(grant.token),
+                |_| async {
+                    panic!("Consumed grant cannot probe again");
+                    #[allow(unreachable_code)]
+                    Ok(())
+                },
+                |_, _, _| panic!("Consumed grant cannot launch again")
+            )
+            .await
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn preparation_requirement_binding_rejects_forged_arrays_and_both_changed_modes() {
+        let (_root, state, contract, path) = fixture();
+        let mut request = approval(&state, &contract, &path);
+        request.action = "prepare".into();
+        let mut forged = request.clone();
+        forged
+            .requirements
+            .as_mut()
+            .unwrap()
+            .requirements
+            .permission_checks
+            .clear();
+        assert!(bind_approval_requirements(&state, &mut forged).is_err());
+        for mode in ["plan", "enforced"] {
+            let values = HashMap::from([("MODE".into(), mode.into())]);
+            let resolved =
+                requirements::resolve(&contract, &values, "dev", request.target.clone().unwrap())
+                    .unwrap();
+            request.requirements = Some(resolved);
+            bind_approval_requirements(&state, &mut request).unwrap();
+            let grant = state.execution_approvals.issue(request.clone()).unwrap();
+            let mut changed = request.clone();
+            let other = if mode == "plan" { "enforced" } else { "plan" };
+            changed.requirements = Some(
+                requirements::resolve(
+                    &contract,
+                    &HashMap::from([("MODE".into(), other.into())]),
+                    "dev",
+                    request.target.clone().unwrap(),
+                )
+                .unwrap(),
+            );
+            assert!(state
+                .execution_approvals
+                .consume(&grant.token, changed)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn snapshot_query_requires_one_native_known_source_and_exact_registered_path() {
+        let (_root, state, snapshot, path) = fixture();
+        assert!(resolve_effective_requirements(
+            &state,
+            Some(snapshot.digest),
+            Some(path),
+            "dev".into(),
+            None,
+            None
+        )
+        .is_err());
+        assert!(resolve_effective_requirements(
+            &state,
+            Some("forged".into()),
+            None,
+            "dev".into(),
+            None,
+            None
+        )
+        .is_err());
+        for path in [r"\\example.invalid\share\project", "/not/registered"] {
+            let error = resolve_effective_requirements(
+                &state,
+                None,
+                Some(path.into()),
+                "dev".into(),
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("not registered"));
+        }
+    }
+
+    #[tokio::test]
+    async fn requirement_preflight_rejects_forged_digest_before_running_a_probe() {
+        let (_root, state, _snapshot, path) = fixture();
+        let selection = requirements::RequirementSelection {
+            reviewed_contract_digest: None,
+            project_path: Some(path),
+            environment: "dev".into(),
+            environment_values: None,
+            target: None,
+        };
+        let error = check_selected_requirements(&state, &selection, "forged", |_| async {
+            panic!("A stale or forged requirement digest must not reach a provider probe");
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Requirements changed"));
+    }
+
+    #[tokio::test]
+    async fn requirement_preflight_uses_native_checks_and_rejects_external_expansion_and_reduction()
+    {
+        let (root, state, _snapshot, path) = fixture();
+        let selection = requirements::RequirementSelection {
+            reviewed_contract_digest: None,
+            project_path: Some(path),
+            environment: "dev".into(),
+            environment_values: None,
+            target: None,
+        };
+        let dotenv = root.path().join(".azure/dev/.env");
+        let original = std::fs::read_to_string(&dotenv).unwrap();
+        for (from, to) in [("enforced", "plan"), ("plan", "enforced")] {
+            std::fs::write(
+                &dotenv,
+                original.replace("MODE=enforced", &format!("MODE={from}")),
+            )
+            .unwrap();
+            let snapshot = resolve_effective_requirements(
+                &state,
+                None,
+                selection.project_path.clone(),
+                "dev".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            let expected = snapshot.digest.clone();
+            let dotenv = &dotenv;
+            let original = &original;
+            let error =
+                check_selected_requirements(&state, &selection, &expected, |native| async move {
+                    let request = native.permission_request().unwrap();
+                    assert_eq!(request.checks.len(), 1);
+                    assert_eq!(request.checks[0].id, "graph-delegated-scopes");
+                    assert_eq!(
+                        request
+                            .required_graph_scopes
+                            .contains(&"Policy.ReadWrite.ConditionalAccess".into()),
+                        from == "enforced"
+                    );
+                    std::fs::write(
+                        dotenv,
+                        original.replace("MODE=enforced", &format!("MODE={to}")),
+                    )
+                    .unwrap();
+                    Ok(())
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("Requirements changed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn requirement_preflight_rejects_external_target_change_and_accepts_unchanged_context() {
+        let (root, state, _snapshot, path) = fixture();
+        let selection = requirements::RequirementSelection {
+            reviewed_contract_digest: None,
+            project_path: Some(path),
+            environment: "dev".into(),
+            environment_values: None,
+            target: None,
+        };
+        let snapshot = resolve_effective_requirements(
+            &state,
+            None,
+            selection.project_path.clone(),
+            "dev".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            check_selected_requirements(&state, &selection, &snapshot.digest, |_| async { Ok(42) })
+                .await
+                .unwrap(),
+            42
+        );
+        let dotenv = root.path().join(".azure/dev/.env");
+        let error = check_selected_requirements(&state, &selection, &snapshot.digest, |_| async {
+            let content = std::fs::read_to_string(&dotenv).unwrap().replace(
+                "11111111-1111-4111-8111-111111111111",
+                "33333333-3333-4333-8333-333333333333",
+            );
+            std::fs::write(&dotenv, content).unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Requirements changed"));
+    }
 }
 
 fn reviewed_contract_snapshot(mut entry: CatalogEntry) -> AppResult<ProjectTemplateSnapshot> {
@@ -818,6 +1474,7 @@ fn request_execution_approval(
     }
     let request = execution_approval::ExecutionApprovals::validate_request(request)?;
     let mut request = validate_registered_project_approval(&state.database, request)?;
+    bind_approval_requirements(state.inner(), &mut request)?;
     if request.action == "prepare" {
         prepare_approval_acknowledgements(state.inner(), &mut request)?;
     } else {
@@ -856,10 +1513,17 @@ fn request_execution_approval(
         target.location.as_deref().unwrap_or("not selected"),
         target.resource_group.as_deref().unwrap_or("azd/template default")
     );
+    let requirement_summary = request.requirements.as_ref().map(|snapshot| format!(
+        "\n\nEffective requirement snapshot: {}\nTools: {}\nConnections and requested scopes: {}\nPermission checks: {}\nRequested requirements do not prove current access. Reducing requested scopes does not revoke existing consent.",
+        snapshot.digest,
+        snapshot.requirements.prerequisites.iter().map(|tool| tool.id.as_str()).collect::<Vec<_>>().join(", "),
+        snapshot.requirements.connections.iter().map(|connection| format!("{} [{}]",connection.id,connection.scopes.join(", "))).collect::<Vec<_>>().join("; "),
+        snapshot.requirements.permission_checks.iter().map(|check| check.id.as_str()).collect::<Vec<_>>().join(", "),
+    )).unwrap_or_default();
     let approved = app
         .dialog()
         .message(format!(
-            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}{source_binding}{target_summary}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
+            "Approve once to {action}.\n\nProject: {}\nEnvironment: {}\nTemplate: {}{revision}{source_binding}{target_summary}{requirement_summary}\n\nTemplate hooks can change local files, Azure resources, or directory objects.",
             request.project_path, request.environment, request.template_id
         ))
         .title(if destructive {
@@ -892,6 +1556,7 @@ fn request_execution_approval(
     }
     if request.action != "prepare" {
         let mut fresh = request.clone();
+        bind_approval_requirements(state.inner(), &mut fresh)?;
         lifecycle_approval_acknowledgements(&state.database, &mut fresh)?;
         if fresh != request {
             return Err(AppError::Invalid("The saved acknowledgement context changed during approval. Review and acknowledge again.".into()));
@@ -1503,6 +2168,9 @@ pub fn run() {
             save_catalog_source,
             remove_catalog_source,
             reviewed_contract_digest,
+            get_effective_requirements,
+            check_requirement_prerequisites,
+            check_requirement_permissions,
             prepare_deployment,
             request_execution_approval,
             get_project_state,
@@ -1634,6 +2302,7 @@ mod interactive_lifecycle_tests {
         let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
         database.save_project_template(&project, &snapshot).unwrap();
         let request = ExecutionApprovalRequest {
+            requirements: None,
             action: "preview".into(),
             project_path: project.path.clone(),
             environment: "dev".into(),
@@ -1708,6 +2377,7 @@ mod interactive_lifecycle_tests {
         assert_eq!(original.resource_group.as_deref(), Some("rg-original"));
         let approvals = ExecutionApprovals::default();
         let request = ExecutionApprovalRequest {
+            requirements: None,
             action: "down".into(),
             project_path: directory.path().display().to_string(),
             environment: "dev".into(),
@@ -1989,6 +2659,7 @@ mod acknowledgement_caller_tests {
             .unwrap()
             .insert(snapshot.digest.clone(), snapshot.clone());
         let request = ExecutionApprovalRequest {
+            requirements: None,
             action: "preview".into(),
             project_path: project.path,
             environment: "dev".into(),
@@ -2271,6 +2942,7 @@ mod acknowledgement_caller_tests {
                 request.acknowledgement_proofs.clear();
             }
             lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+            bind_approval_requirements(&state, &mut request).unwrap();
             let grant = state.execution_approvals.issue(request.clone()).unwrap();
             let launches = AtomicUsize::new(0);
             let result = start_azd_operation_checked(
