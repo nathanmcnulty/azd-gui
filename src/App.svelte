@@ -3429,7 +3429,7 @@
                 <div class="operation-row">
                   <span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span>
                   <div>
-                    <strong>azd {event.kind}</strong>
+                    <strong>{event.kind === "validate" ? "Read-only validation" : `azd ${event.kind}`}</strong>
                     {#if operationEnvironmentLabel(event)}<small>{operationEnvironmentLabel(event)}</small>{/if}
                     <span>{event.outcome?.summary ?? event.message}</span>
                     {#if event.outcome && event.state !== "succeeded"}<small>{event.outcome.guidance}</small>{/if}
