@@ -55,6 +55,21 @@ describe("loadProjectWorkspace", () => {
     expect(snapshot.failedSources).toBe(0);
   });
 
+  it("retains the registered starter environment when source inspection fails and azd default differs", async () => {
+    vi.mocked(getProjectTemplate).mockRejectedValueOnce(new Error("Saved source mismatch"));
+    vi.mocked(listProjectEnvironments).mockResolvedValueOnce([
+      { name: "dev", dotEnvPath: "", hasLocal: true, hasRemote: false, isDefault: true },
+      { name: "test", dotEnvPath: "", hasLocal: true, hasRemote: false, isDefault: false }
+    ]);
+    const snapshot = await loadProjectWorkspace({ ...project, templateId: "deployment-check", environment: "test" });
+    expect(snapshot.currentEnvironment).toBe("test");
+    expect(snapshot.environments.find(environment => environment.isDefault)?.name).toBe("test");
+    expect(snapshot.state).toBeNull();
+    expect(snapshot.template).toBeNull();
+    expect(getProjectState).not.toHaveBeenCalled();
+    expect(getOperationHistory).toHaveBeenCalledWith(project.path, "test");
+  });
+
   it("uses the saved environment and reports discovery failures", async () => {
     vi.mocked(listProjectEnvironments).mockRejectedValue(new Error("unavailable"));
     const snapshot = await loadProjectWorkspace({ ...project, environment: "dev" });

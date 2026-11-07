@@ -31,7 +31,7 @@ export async function loadProjectWorkspace(project: ProjectSummary): Promise<Pro
   if (project.templateId === 'pim-pilot' || templateResult.status === 'fulfilled' && templateResult.value?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim') {
     return { template: templateResult.status === 'fulfilled' ? templateResult.value : null, state: null, environments: [], history: [], currentEnvironment: project.environment, failedSources: 0 };
   }
-  const passiveOverview = templateResult.status === 'fulfilled' && templateResult.value?.entry.repository === 'https://github.com/nathanmcnulty/azd-reference' && templateResult.value.entry.commit === 'abc6e896620990e68360a63dd14efda66a3f75cd' && templateResult.value.entry.subdirectory === 'examples/deployment-check';
+  const passiveOverview = project.templateId === 'deployment-check' || templateResult.status === 'fulfilled' && templateResult.value?.entry.repository === 'https://github.com/nathanmcnulty/azd-reference' && templateResult.value.entry.commit === 'abc6e896620990e68360a63dd14efda66a3f75cd' && templateResult.value.entry.subdirectory === 'examples/deployment-check';
   const environments =
     environmentsResult.status === "fulfilled"
       ? environmentsResult.value
