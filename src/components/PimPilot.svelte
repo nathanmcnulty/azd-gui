@@ -1,13 +1,17 @@
 <script lang="ts">
+  import PimSavedOverview from './PimSavedOverview.svelte';
   import StatusPill from './StatusPill.svelte';
-  import { onDestroy, createEventDispatcher } from 'svelte';
+  import { onDestroy, createEventDispatcher, tick } from 'svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import { invoke } from '@tauri-apps/api/core';
   import { cancelPimPlan, type PimPlanInput } from '../lib/pim-plan';
   export let input: PimPlanInput;
   export let projects: { path: string; name: string; templateId?: string | null; environment?: string | null }[] = [];
   const dispatch = createEventDispatcher();
-  let projectPath = '';
+  export let sourceContext: unknown = null;
+  export let selectedProject: { path: string; environment?: string | null } | null = null;
+  let projectPath = selectedProject?.path ?? '';
+  $: if (selectedProject) { projectPath = selectedProject.path; environment = selectedProject.environment ?? 'pilot'; }
   let environment = 'pilot';
   let bindingDigest = '';
   let result: any = null;
@@ -18,7 +22,7 @@
   let generation = 0;
   let prior = '';
   let disposal: Promise<void> = Promise.resolve();
-  $: context = JSON.stringify({ input, projectPath, environment });
+  $: context = JSON.stringify({ input, projectPath, environment, selectedProject, sourceContext });
   $: if (context !== prior) { prior = context; invalidate(); }
   $: pending = result?.state?.pendingRoleRules && Object.keys(result.state.pendingRoleRules).length > 0 ||
     Object.values(result?.state?.contexts ?? {}).some((v: any) => v.pendingIntent) ||
@@ -62,8 +66,27 @@
       if (typeof path !== 'string') return;
       const project = await invoke<any>('register_pim_pilot', { projectPath: path });
       projects = [...projects.filter(p => p.path !== project.path), project];
+      dispatch('registered', project);
       projectPath = project.path;
     } catch (cause) { error = String(cause); }
+  }
+  async function selectEnvironment() {
+    invalidate();
+    const target = { projectPath, environment };
+    await tick();
+    if (target.projectPath !== projectPath || target.environment !== environment) return;
+    const current = generation;
+    try {
+      await invoke('select_pim_environment', target);
+      if (current === generation) dispatch('environment', target);
+    } catch { if (current === generation) error = 'Environment could not be saved. Use letters, digits, hyphens or underscores.'; }
+  }
+  async function saveDraft() {
+    invalidate(); const current = generation;
+    try { await disposal; if (current !== generation) return;
+      await invoke('save_pim_pilot_draft', { input: request() });
+      if (current === generation) error = 'Configuration saved locally. No sign-in, approval or tenant change was performed.';
+    } catch { if (current === generation) error = 'Could not save the draft. Check identity, role IDs and workspace access. Existing recovery records are retained.'; }
   }
   async function restore() {
     invalidate(); const current = generation;
@@ -78,11 +101,13 @@
 </script>
 
 <section class="pilot">
-  <h2>Apply a selected-role pilot</h2>
+  <h2>Project pilot and verification</h2>
+  {#if projectPath}<PimSavedOverview {projectPath} {environment} refreshKey={[input, result, error, busy, selectedProject, sourceContext]} />{/if}
   <p>Choose a registered azd-pim project and environment. Sign-in for this stage requests write permissions; it does not approve application or new consent.</p>
   <button class="secondary" on:click={registerWorkspace} disabled={busy}>Register pilot workspace</button>
   <label>Project <select bind:value={projectPath} disabled={busy}><option value="">Select project</option>{#each projects as project}<option value={project.path}>{project.name} — {project.path}</option>{/each}</select></label>
-  <label>Environment <input bind:value={environment} disabled={busy} /></label>
+  <label>Environment <input bind:value={environment} on:change={selectEnvironment} disabled={busy} /></label>
+  <button class="secondary" on:click={saveDraft} disabled={!projectPath || busy}>Save pilot configuration locally</button>
   <button class="secondary" on:click={restore} disabled={!projectPath || busy}>Restore saved pilot configuration</button>
   <button class="secondary" on:click={() => run('connect')} disabled={!projectPath || busy}>Review sign-in and recheck pilot</button>
   {#if bindingDigest}<button class="secondary" on:click={() => run('recheck')} disabled={busy}>Read-only recheck</button>{/if}
@@ -90,6 +115,7 @@
   {#if busy}<p role="status">Working in the owned pilot process… Cancellation may leave changes needing verification.</p>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   {#if result}
+    <p>Current session read-back and proposal. Application receipts below remain historical; activation checks are a separate administrator task.</p>
     <p><StatusPill tone={result.digest && !remaining && !pending ? "success" : "warning"} label={result.digest ? !remaining && !pending ? "Planner settings match" : "Review required" : result.receipt?.completed ? "Applied · recheck required" : "Partial or uncertain"} /> · Tenant {input.tenantId} · {projectPath} · {environment}</p>
     {#if result.receipt}<h3>Latest attempt receipt</h3>
       {#each result.receipt.writeResults ?? [] as write}<p>{write.method} {write.uri}: <strong>{write.outcome === 'confirmed' ? 'Write succeeded; recheck required' : write.outcome === 'rejected' ? 'Write failed (Graph rejected it)' : 'Outcome uncertain; verification required'}</strong></p>{/each}

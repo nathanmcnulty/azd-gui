@@ -49,6 +49,23 @@
       "tags": ["Start here", "Azure", "Validation"],
       "platforms": ["windows"],
       "manifest": "manifests/deployment-check.json"
+    },
+    {
+      "id": "pim-pilot",
+      "title": "Selected-role PIM pilot",
+      "summary": "Configure selected Entra roles, inspect saved attempts and verify core PIM controls.",
+      "description": "Uses the supported native azd-pim planner and recovery engine. Sign-in and application require separate explicit review. No generic template hooks.",
+      "repository": "https://github.com/nathanmcnulty/azd-pim",
+      "commit": "48bdbadb6a02c06fb4144e616ed9562b905b36ec",
+      "tags": [
+        "Identity",
+        "PIM",
+        "Native workflow"
+      ],
+      "platforms": [
+        "windows"
+      ],
+      "manifest": "manifests/pim-pilot.json"
     }
   ]
 }

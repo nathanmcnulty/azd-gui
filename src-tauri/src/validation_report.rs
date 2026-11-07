@@ -134,6 +134,8 @@ pub struct ValidationSummary {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationCheck {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub phase: ValidationPhase,
     pub status: ValidationStatus,
     pub side_effect: ValidationSideEffect,
@@ -400,6 +402,13 @@ fn project_report(
                 ValidationStatus::Planned => summary.planned += 1,
             }
             Some(ValidationCheck {
+                id: matches!(
+                    check.id.as_str(),
+                    "context.template-root"
+                        | "context.azure-cli-session"
+                        | "infrastructure.resource-group"
+                )
+                .then_some(check.id),
                 phase: check.phase,
                 status: check.status,
                 side_effect: check.side_effect,

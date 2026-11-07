@@ -66,3 +66,21 @@ it('discards a late worker reply after cancellation', async () => {
   await waitFor(() => expect(planApi.cancelPimPlan).toHaveBeenCalledWith('binding'));
   expect(screen.queryByText(/Review exact-live-review/)).toBeNull();
 });
+
+it('saves a local draft without connecting or granting application authority', async () => {
+ vi.mocked(invoke).mockImplementation(async command => command==='inspect_pim_pilot' ? {hasDraft:false,attemptCount:0,pendingWrites:0} : null);
+ render(PimPilot,{input,selectedProject:{path:'C:/pilot',environment:'recovery'}});
+ await fireEvent.click(screen.getByText('Save pilot configuration locally'));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('save_pim_pilot_draft',{input:{projectPath:'C:/pilot',environment:'recovery',input}}));
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>/connect|run_pim|review_pim/.test(command))).toBe(false);
+ expect(screen.queryByText('Approve application / resume')).toBeNull();
+});
+it('persists the selected environment after reactive invalidation without connecting', async () => {
+ vi.mocked(invoke).mockImplementation(async command => command==='inspect_pim_pilot' ? {hasDraft:false,attemptCount:0,pendingWrites:0} : null);
+ render(PimPilot,{input,projects:[{path:'C:/pilot',name:'Pilot'}]});
+ await fireEvent.change(screen.getByLabelText('Project'),{target:{value:'C:/pilot'}});
+ await fireEvent.input(screen.getByLabelText('Environment'),{target:{value:'recovery'}});
+ await fireEvent.change(screen.getByLabelText('Environment'));
+ await waitFor(()=>expect(invoke).toHaveBeenCalledWith('select_pim_environment',{projectPath:'C:/pilot',environment:'recovery'}));
+ expect(vi.mocked(invoke).mock.calls.some(([command])=>/connect|run_pim|review_pim/.test(command))).toBe(false);
+});

@@ -1,6 +1,8 @@
 # PIM solution planning in the Windows GUI
 
-From Home, choose **Plan PIM solution**. Enter the Graph account, tenant and an
+From Catalog, choose **Selected-role PIM pilot**, or reopen a saved PIM project.
+The Home shortcut is **Configure PIM pilot**. See [administrator journeys](ADMIN-JOURNEYS.md)
+for local draft restoration, recovery inspection and separate application approval. Enter the Graph account, tenant and an
 existing public client ID. Select role definition IDs in their appropriate tiers,
 authentication profiles and device requirements. Review the configuration, approve
 the exact sign-in, then choose **Generate read-only plan**. The screen shows proposed

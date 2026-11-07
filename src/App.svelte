@@ -9,6 +9,7 @@
   import Icon from "./components/Icon.svelte";
   import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
   import OutputPanel from "./components/OutputPanel.svelte";
+  import ProjectVerification from "./components/ProjectVerification.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
   import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
   import StatusPill from "./components/StatusPill.svelte";
@@ -211,6 +212,7 @@
   let installingToolId: string | null = null;
   let selectedProject: ProjectSummary | null = null;
   let selectedProjectTemplate: ProjectTemplateSnapshot | null = null;
+  let verificationRefresh = 0;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
@@ -2043,6 +2045,23 @@
     if (selectedProject) void launchExternalTerminal(selectedProject.path, selectedProject.environment);
   }
 
+  function isPimProject(project: ProjectSummary) { return project.templateId === 'pim-pilot' || selectedProject?.path === project.path && selectedProjectTemplate?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim'; }
+  function verificationFinished(event: CustomEvent<OperationEvent>) {
+    verificationRefresh += 1;
+    if (!selectedProject) return;
+    const path = selectedProject.path;
+    selectedProject = { ...selectedProject, lastOperation: event.detail.timestamp };
+    data = { ...data, projects: data.projects.map(project => project.path === path ? { ...project, lastOperation: event.detail.timestamp } : project) };
+    projectOperationHistory = [event.detail, ...projectOperationHistory.filter(item => item.operationId !== event.detail.operationId)];
+  }
+  function pilotEnvironment(event: CustomEvent<{ projectPath: string; environment: string }>) {
+    data = { ...data, projects: data.projects.map(p => p.path === event.detail.projectPath ? { ...p, environment: event.detail.environment } : p) };
+    if (selectedProject?.path === event.detail.projectPath) selectedProject = { ...selectedProject, environment: event.detail.environment };
+  }
+  function registeredPilot(event: CustomEvent<ProjectSummary>) {
+    const project = event.detail;
+    data = { ...data, projects: [...data.projects.filter(p => p.path !== project.path), project] };
+  }
   async function openProjectWorkspace(
     project: ProjectSummary,
     preserveView = false
@@ -2082,9 +2101,11 @@
       if (!isCurrent()) return;
     }
     projectWaitingForEnvironment = false;
+    if (isPimProject(project)) { projectLoading = false; return; }
     const snapshot = await loadProjectWorkspace(project);
     if (!isCurrent()) return;
     selectedProjectTemplate = snapshot.template;
+    if (isPimProject(project)) { projectLoading = false; return; }
     projectState = snapshot.state;
     projectEnvironments = snapshot.environments;
     applyProjectEnvironments(projectEnvironments);
@@ -3070,7 +3091,7 @@
           <div class="section-toolbar"><div><h2>Continue working</h2><p>Your recent azd projects and environments.</p></div><button class="text-button" on:click={() => navigate("projects")}>View all <Icon name="chevron" size={14} /></button></div>
           <div class="project-grid">
             {#each data.projects as project}
-              <button class="project-card" on:click={() => navigate("projects")}>
+              <button class="project-card" on:click={() => openProjectWorkspace(project)}>
                 <div class="project-icon"><Icon name="cloud" size={21} /></div>
                 <div><strong>{project.name}</strong><span>{project.environment} · {project.path}</span><small>{project.lastOperation}</small></div>
                 <StatusPill tone={project.state === "ready" ? "success" : "warning"} label={project.state} />
@@ -3080,7 +3101,7 @@
         </div>
       </section>
     {:else if activeNav === "pimPlan"}
-      <PimPlan projects={data.projects} />
+      <PimPlan projects={data.projects} on:registered={registeredPilot} on:environment={pilotEnvironment} />
     {:else if activeNav === "catalog"}
       <section class="page">
         <div class="page-header">
@@ -3099,14 +3120,18 @@
               <p>{entry.summary}</p>
               <div class="tag-row">{#each entry.tags.slice(0, 3) as tag}<span class="tag">{tag}</span>{/each}</div>
               <div class="catalog-meta"><span>{entry.platforms.join(" · ")}</span><code>{entry.commit.slice(0, 7)}</code></div>
-              <button class="primary full-width" on:click={() => startWizard(entry)}>Configure deployment <Icon name="chevron" size={15} /></button>
+              <button class="primary full-width" on:click={() => entry.source === "bundled" && entry.id === "pim-pilot" ? navigate("pimPlan") : startWizard(entry)}>{entry.id === "pim-pilot" && entry.source === "bundled" ? "Configure PIM pilot" : "Configure deployment"} <Icon name="chevron" size={15} /></button>
             </article>
           {/each}
         </div>
       </section>
     {:else if activeNav === "projects"}
       <section class="page">
-        {#if selectedProject}
+        {#if selectedProject && isPimProject(selectedProject)}
+          <button class="text-button back-link" on:click={closeProjectWorkspace}>‹ All projects</button>
+          <section class="workspace-panel"><h2>Source</h2><p>Supported native PIM engine · https://github.com/nathanmcnulty/azd-pim</p><code>{selectedProject.revision}</code><p>Local project: {selectedProject.path}. Reports and checkpoints remain private in this workspace.</p></section>
+          {#key selectedProject.path}<PimPlan projects={data.projects} {selectedProject} sourceContext={selectedProjectTemplate?.digest} on:registered={registeredPilot} on:environment={pilotEnvironment} />{/key}
+        {:else if selectedProject}
           <div class="project-workspace-header">
             <button class="text-button back-link" on:click={closeProjectWorkspace}>‹ All projects</button>
             <div class="page-header">
@@ -3142,8 +3167,11 @@
                 {/if}
                 <dl class="summary-list"><div><dt>Current path</dt><dd><code>{selectedProject.path}</code></dd></div><div><dt>Retained repository</dt><dd>{selectedProjectTemplate?.entry.repository ?? "Saved contract unavailable"}</dd></div><div><dt>Retained revision</dt><dd><code>{selectedProjectTemplate?.entry.commit ?? selectedProject.revision ?? "unavailable"}</code></dd></div>{#if selectedProjectTemplate}<div><dt>Saved contract digest</dt><dd><code>{selectedProjectTemplate.digest}</code><small>Local consistency for the retained reviewed snapshot; not a publisher signature or a hash of current files.</small></dd></div>{/if}<div><dt>Current working tree</dt><dd>Mutable; current files are not compared with the saved contract.</dd></div><div><dt>Last activity</dt><dd>{selectedProject.lastOperation ?? "No recorded operations"}</dd></div></dl>
               </section>
-              <ProjectValidationReport project={selectedProject} />
-              <ProjectDeploymentReceipt project={selectedProject} />
+              {#if selectedProjectTemplate?.entry.repository === 'https://github.com/nathanmcnulty/azd-reference' && selectedProjectTemplate.entry.commit === 'abc6e896620990e68360a63dd14efda66a3f75cd' && selectedProjectTemplate.entry.subdirectory === 'examples/deployment-check'}
+                <ProjectVerification project={selectedProject} verificationContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate.digest]} on:finished={verificationFinished} />
+              {/if}
+              <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />
+              <ProjectDeploymentReceipt project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest]} />
               {#if activeOperationKind === "up" || projectDeploymentResult}
                 <section class="workspace-panel full project-deployment-result" aria-label="Latest deployment">
                   <div class="section-toolbar">
@@ -3401,7 +3429,7 @@
                 <div class="operation-row">
                   <span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span>
                   <div>
-                    <strong>azd {event.kind}</strong>
+                    <strong>{event.kind === "validate" ? "Read-only validation" : `azd ${event.kind}`}</strong>
                     {#if operationEnvironmentLabel(event)}<small>{operationEnvironmentLabel(event)}</small>{/if}
                     <span>{event.outcome?.summary ?? event.message}</span>
                     {#if event.outcome && event.state !== "succeeded"}<small>{event.outcome.guidance}</small>{/if}
