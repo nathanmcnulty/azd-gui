@@ -23,7 +23,7 @@
     {/each}
     {#each connections as connection}
       {@const assessment = connectionTargetAssessment(connection, target, fresh)}
-      <li><strong>{connection.name} account</strong> — {connection.state}; {connection.account ?? 'no account detected'}<br />{connection.reason}<br />Detected tenant: {connection.tenantId ?? 'unknown'} · subscription: {connection.subscriptionId ?? 'unknown'}<br />{connection.required ? assessment.label : 'Optional; does not block continuing'} · Next: {assessment.action}</li>
+      <li><strong>{connection.name} account</strong> — {connection.state}; {connection.account ?? 'no account detected'}<br />{connection.reason}<br />Detected tenant: {connection.tenantId ?? 'unknown'} · subscription: {connection.subscriptionId ?? 'unknown'}<br />{#if connection.azureCloud}Provider cloud: {connection.azureCloud}<br />{/if}{connection.required ? assessment.label : 'Optional; does not block continuing'} · Next: {assessment.action}</li>
     {/each}
   </ul>
   {#if interactive}<p><strong>Terminal handoff required.</strong> After approval, prepare the project and finish its prompts in an external terminal. Opening it does not run the command or prove deployment.</p>{/if}

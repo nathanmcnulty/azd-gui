@@ -11,7 +11,7 @@ export function missingRequestedScopes(connection: ConnectionStatus): string[] {
 }
 
 export function connectionMeetsRequirements(connection: ConnectionStatus): boolean {
-  return connection.state === "connected" && missingRequestedScopes(connection).length === 0;
+  return connection.state === "connected" && (!connection.azureCloud || connection.azureCloud === "AzureCloud") && missingRequestedScopes(connection).length === 0;
 }
 
 export function connectionMeetsTarget(
@@ -33,6 +33,7 @@ export function connectionTargetAssessment(
 ): { label: string; action: string } {
   if (!target) return { label: "Target not selected", action: "Choose an Azure tenant and subscription" };
   if (!fresh || connection.state === "checking") return { label: "Unverified", action: "Check this provider for the selected target" };
+  if (connection.azureCloud && connection.azureCloud !== "AzureCloud") return { label: "Unsupported cloud", action: "Select the public Azure cloud in this provider, then check again" };
   if (connection.state === "expired") return { label: "Expired", action: "Reconnect this provider" };
   if (connection.wrongActiveAccount) return { label: "Wrong active account", action: "Reconnect this provider with the intended account" };
   if (connection.state === "disconnected") return { label: "No current connection", action: "Connect this provider" };

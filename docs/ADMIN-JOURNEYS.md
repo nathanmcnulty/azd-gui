@@ -110,6 +110,12 @@ proves the operator's write authority or the deployed identity's grants. Target
 edits invalidate target verification and late results cannot restore it.
 Tenant-only providers (azd and Graph) explicitly say that they do not check
 subscription access; their connected status is not subscription evidence.
+Tool checks also bind a monotonically increasing request number, configuration
+edit generation and required providers' observed identities. Returning A → B → A
+cannot revive an earlier success or error. Account, reported provider cloud and
+derived-tenant changes discard earlier tool and permission results. The existing
+Azure CLI account probe retains its reported cloud; known non-public contexts,
+or a cloud change between current and target probes, cannot pass readiness.
 The existing-project wizard omits Retry because its route does not use the
 new-project preparation approvals. Use its Open external terminal action to run
 that route's current checks again. Projects and newly prepared wizards retain

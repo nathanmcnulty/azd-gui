@@ -224,6 +224,8 @@ pub struct ConnectionStatus {
     #[serde(default)]
     pub account: Option<String>,
     #[serde(default)]
+    pub azure_cloud: Option<String>,
+    #[serde(default)]
     pub tenant_id: Option<String>,
     #[serde(default)]
     pub subscription_id: Option<String>,

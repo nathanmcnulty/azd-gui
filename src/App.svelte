@@ -163,6 +163,7 @@
   let selectedEntry: CatalogEntry | null = null;
   let evaluatedRequiredTools: ToolStatus[] | null = null;
   let prerequisiteEvaluationKey = "";
+  let prerequisiteEvaluationRequest = 0;
   let graphExpectedAccount = "";
   let graphExpectedClientId = "";
   let graphSessionDisposal = Promise.resolve();
@@ -385,6 +386,13 @@
   $: selectedPrerequisiteKey = JSON.stringify({
     entry: selectedEntry,
     session: wizardSession,
+    // Edits may return to the same values, or affect non-controller context
+    // (for example a template's cloud choice). Do not retain earlier checks.
+    editGeneration: wizardEditGeneration,
+    identities: data.connections.filter(connection => selectedManifest &&
+      effectiveConnectionRequirements(selectedManifest, wizardValues).some(required => required.id === connection.id))
+      .map(({ id, account, azureCloud, tenantId, subscriptionId, state, grantedScopes, wrongActiveAccount }) =>
+        ({ id, account, azureCloud, tenantId, subscriptionId, state, grantedScopes: grantedScopes ?? [], wrongActiveAccount: Boolean(wrongActiveAccount) })),
     environment: wizardValues.environmentName,
     tenant: wizardValues.tenantId,
     subscription: wizardValues.subscriptionId,
@@ -418,17 +426,18 @@
     permissionCheckResults = [];
     evaluatedRequiredTools = pendingRequiredTools.length ? null : [];
     const requestedKey = selectedPrerequisiteKey;
+    const request = ++prerequisiteEvaluationRequest;
     if (selectedEntry) {
       void reviewWizardRequirements(selectedEntry, structuredClone(wizardValues)).then(async (review) => {
-        if (prerequisiteEvaluationKey !== requestedKey) return null;
+        if (prerequisiteEvaluationRequest !== request || prerequisiteEvaluationKey !== requestedKey) return null;
         requirementReview = review;
         return checkRequirementPrerequisites(review.selection, review.snapshot);
       }).then(
         (statuses) => {
-          if (prerequisiteEvaluationKey === requestedKey && statuses) evaluatedRequiredTools = statuses;
+          if (prerequisiteEvaluationRequest === request && prerequisiteEvaluationKey === requestedKey && statuses) evaluatedRequiredTools = statuses;
         },
         () => {
-          if (prerequisiteEvaluationKey === requestedKey) {
+          if (prerequisiteEvaluationRequest === request && prerequisiteEvaluationKey === requestedKey) {
             evaluatedRequiredTools = pendingRequiredTools.map(
               (tool) => ({ ...tool, state: "unknown" } as ToolStatus)
             );
@@ -2864,6 +2873,7 @@
                     <strong>{connection.name}</strong>
                     <span>{connection.reason}</span>
                     <small>{connection.required ? "Required" : "Optional; does not block continuing"} · Detected account: {connection.account ?? "Unknown"} · {connection.state}</small>
+                    {#if connection.azureCloud}<small>Provider cloud: {connection.azureCloud}</small>{/if}
                     <small>Detected tenant: {connection.tenantId ?? "unknown"} · subscription: {connection.subscriptionId ?? "unknown"}{connection.subscriptionName ? ` (${connection.subscriptionName})` : ""}</small>
                     {#if connection.required}<small>Target check: {assessment.label} · {assessment.action}</small>{/if}
                     {#if connection.expiresOn}<small>Expires <time datetime={connection.expiresOn}>{new Date(connection.expiresOn).toLocaleString()}</time></small>{/if}
