@@ -831,12 +831,16 @@ fn open_external_terminal(
     project_path: String,
     environment: Option<String>,
 ) -> AppResult<terminal::TerminalLaunch> {
-    if let Some(project) = state.database.project_by_path(&project_path)? {
-        if let Some(contract) = state.database.project_template_exact(&project.path)? {
-            graph_session::reject_unadapted_execution(&contract)?;
-        }
-    }
-    terminal::open(&project_path, environment.as_deref())
+    terminal::open_recorded(&state.database, &project_path, environment.as_deref())
+}
+
+#[tauri::command]
+fn get_external_terminal_handoff(
+    state: State<'_, AppState>,
+    project_path: String,
+    environment: Option<String>,
+) -> AppResult<Option<terminal::TerminalLaunch>> {
+    terminal::saved(&state.database, &project_path, environment.as_deref())
 }
 
 #[tauri::command]
@@ -2705,6 +2709,7 @@ pub fn run() {
             get_project_verification_target,
             cancel_operation,
             open_external_terminal,
+            get_external_terminal_handoff,
             preview_external_catalog,
             save_catalog_source,
             remove_catalog_source,

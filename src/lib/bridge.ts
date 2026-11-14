@@ -370,11 +370,20 @@ export async function openExternalTerminal(
 ): Promise<ExternalTerminalLaunch> {
   if (!isTauri()) {
     return {
+      projectPath,
+      environment,
       workingDirectory: projectPath,
-      command: environment ? `azd up --environment ${environment}` : "azd up"
+      command: environment ? `azd up --environment ${environment}` : "azd up",
+      opened: true,
+      historical: false
     };
   }
   return invoke<ExternalTerminalLaunch>("open_external_terminal", { projectPath, environment });
+}
+
+export async function getExternalTerminalHandoff(projectPath: string, environment?: string): Promise<ExternalTerminalLaunch | null> {
+  if (!isTauri()) return null;
+  return invoke<ExternalTerminalLaunch | null>("get_external_terminal_handoff", { projectPath, environment });
 }
 
 export async function prepareDeployment(request: PrepareDeploymentRequest): Promise<ProjectSummary> {

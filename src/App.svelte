@@ -10,6 +10,7 @@
   import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
   import OutputPanel from "./components/OutputPanel.svelte";
   import ProjectVerification from "./components/ProjectVerification.svelte";
+  import TerminalHandoff from "./components/TerminalHandoff.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
   import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
   import StatusPill from "./components/StatusPill.svelte";
@@ -25,6 +26,8 @@
     disposeGraphSession,
     clearLocalAppData,
     chooseFolder,
+    getExternalTerminalHandoff,
+    getOperationHistory,
     createProjectEnvironment,
     discoverAzureScope,
     inspectGitHubTemplate,
@@ -206,6 +209,7 @@
   let preparedEnvironmentName: string | null = null;
   let preparedEnvironmentVariables = new Map<string, Set<string>>();
   let terminalLaunch: ExternalTerminalLaunch | null = null;
+  let terminalRequest = 0;
   let terminalOpening = false;
   let interactivePreparing = false;
   let installPlan: ToolInstallPlan | null = null;
@@ -682,7 +686,7 @@
     selectedInspection = null;
     sourceTrustAccepted = Boolean(entry.trusted);
     hookExecutionAccepted = false;
-    terminalLaunch = null;
+    clearTerminalHandoff();
     wizardAcknowledgements = [];
     wizardValues = initializeValues(entry);
     wizardPlan = calculateWizardPlan(entry, wizardValues);
@@ -716,6 +720,7 @@
   }
 
   function closeWizard() {
+    clearTerminalHandoff();
     invalidateGraphSession();
     flushDraftSave();
     wizardSession += 1;
@@ -725,6 +730,7 @@
   }
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    clearTerminalHandoff();
     invalidateGraphSession();
     wizardEditGeneration += 1;
     if (["tenantId", "subscriptionId", "location"].includes(id)) azureTargetGeneration += 1;
@@ -1794,11 +1800,11 @@
     }
   }
 
-  function addSystemLog(message: string, level: OperationEvent["level"]) {
+  function addSystemLog(message: string, level: OperationEvent["level"], operationId: string | null = activeOperationId) {
     handleOperationEvent({
-      operationId: activeOperationId ?? "system",
+      operationId: operationId ?? "system",
       kind: "system",
-      state: activeOperationId ? "running" : "succeeded",
+      state: operationId ? "running" : "succeeded",
       timestamp: new Date().toISOString(),
       stream: "system",
       level,
@@ -1828,6 +1834,7 @@
 
   function closeProjectWorkspace() {
     if (!canLeaveProjectEdits()) return;
+    clearTerminalHandoff();
     projectWorkspaceRequest += 1;
     selectedProject = null;
     projectAcknowledgements = [];
@@ -2008,12 +2015,13 @@
   }
 
   async function copyText(value: string) {
-    await navigator.clipboard?.writeText(value);
-    addSystemLog("Copied command to clipboard.", "success");
-  }
-
-  function copyTerminalCommand() {
-    if (terminalLaunch) void copyText(terminalLaunch.command);
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard is unavailable");
+      await navigator.clipboard.writeText(value);
+      addSystemLog("Copied to clipboard.", "success", null);
+    } catch {
+      addSystemLog("Could not copy to clipboard. Select and copy the displayed text manually.", "error", null);
+    }
   }
 
   async function openProjectUrl(url: string | undefined) {
@@ -2027,22 +2035,89 @@
   }
 
   async function launchExternalTerminal(projectPath: string, environment?: string) {
-    if (!projectPath || terminalOpening) return;
+    if (!projectPath || terminalOpening || activeOperationId) return;
     terminalOpening = true;
+    const request = ++terminalRequest;
     try {
-      terminalLaunch = await openExternalTerminal(projectPath, environment);
-      addSystemLog(`Opened an external terminal in ${terminalLaunch.workingDirectory}.`, "success");
+      const result = await openExternalTerminal(projectPath, environment);
+      if (request !== terminalRequest) return;
+      terminalLaunch = result;
+      const matches = (path: string) => [projectPath, result.projectPath, result.workingDirectory].includes(path);
+      if (selectedProject && matches(selectedProject.path)) {
+        try {
+          const history = await getOperationHistory(selectedProject.path, environment);
+          if (request === terminalRequest) {
+            // A handoff refresh must not replace a newer lifecycle event.
+            projectOperationHistory = [...history.filter(event => event.kind === "terminalHandoff"),
+              ...projectOperationHistory.filter(event => event.kind !== "terminalHandoff")];
+          }
+        } catch { addSystemLog("Terminal handoff history could not be refreshed. Reopen the project to check it.", "warning", null); }
+      }
+      addSystemLog(result.opened ? "Terminal opened. Prepared, deployment not observed. The app did not run the command." : result.detail ?? "No terminal opened. Copy the reviewed instructions or retry the handoff.", result.opened ? "info" : "error", null);
     } catch (error) {
-      addSystemLog(`Could not open an external terminal: ${String(error)}`, "error");
+      if (request !== terminalRequest) return;
+      // A rejected native request (for example a newly blocked contract) must
+      // not leave previously reviewed, now stale instructions available.
+      terminalLaunch = null;
+      addSystemLog(`Could not open an external terminal: ${String(error)}`, "error", null);
       outputOpen = true;
     } finally {
       terminalOpening = false;
     }
   }
 
+  function clearTerminalHandoff() { terminalRequest += 1; terminalLaunch = null; }
+
+  async function restoreTerminalHandoff(path: string, environment: string | undefined, isCurrent: () => boolean) {
+    const request = ++terminalRequest;
+    try {
+      const saved = await getExternalTerminalHandoff(path, environment);
+      if (isCurrent() && request === terminalRequest) terminalLaunch = saved;
+    } catch {
+      if (isCurrent() && request === terminalRequest) terminalLaunch = null;
+    }
+  }
+
   function launchSelectedProjectTerminal() {
+    if (activeOperationId) return;
     if (!canLeaveProjectEdits()) return;
     if (selectedProject) void launchExternalTerminal(selectedProject.path, selectedProject.environment);
+  }
+
+  async function retryTerminalHandoff() {
+    // Re-enter the current handoff guards, never project preparation. Saved
+    // instructions confer no source approval or authority to execute a lifecycle.
+    const handoff = terminalLaunch;
+    if (!handoff || terminalOpening || interactivePreparing || activeOperationId) return;
+    const samePath = (path: string) => {
+      const normalize = (value: string) => data.platform === "windows"
+        ? value.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "").toLowerCase()
+        : value;
+      return normalize(path) === normalize(handoff.projectPath);
+    };
+    if (selectedEntry) {
+      const session = wizardSession;
+      const generation = wizardEditGeneration;
+      const entry = selectedEntry;
+      const approved = () => session === wizardSession && generation === wizardEditGeneration && selectedEntry === entry
+        && terminalLaunch === handoff && samePath(String(wizardValues.projectPath || ""))
+        && handoff.environment === String(wizardValues.environmentName || "dev")
+        && projectPrepared && hookExecutionAccepted && (entry.trusted || sourceTrustAccepted)
+        && selectedPlatformSupported && requiredToolsReady && requiredConnectionsReady && !requiredTenantMismatch && requiredConnectionsMatchTarget
+        && !activeOperationId && !interactivePreparing && !terminalOpening;
+      if (!approved()) {
+        addSystemLog("Review the current project, source approval, tools and account target before retrying the terminal handoff.", "warning");
+        return;
+      }
+      if (!(await runRegisteredPermissionChecks())) return;
+      // Approval checkboxes do not increment the edit generation. Recheck them
+      // and the entire current handoff context after the asynchronous checks.
+      if (!approved()) return;
+      await launchExternalTerminal(String(wizardValues.projectPath), handoff.environment);
+    } else if (selectedProject) {
+      if (projectLoading || environmentBusy || environmentConfigurationBusy || !samePath(selectedProject.path) || handoff.environment !== selectedProject.environment) return;
+      launchSelectedProjectTerminal();
+    }
   }
 
   function isPimProject(project: ProjectSummary) { return project.templateId === 'pim-pilot' || selectedProject?.path === project.path && selectedProjectTemplate?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim'; }
@@ -2075,7 +2150,7 @@
       projectPreview = null;
       projectDeploymentResult = null;
       projectExecutionAccepted = false;
-      terminalLaunch = null;
+      clearTerminalHandoff();
       projectTab = "overview";
     }
     selectedProject = project;
@@ -2114,6 +2189,7 @@
     }
     if (!isCurrent()) return;
     projectOperationHistory = snapshot.history;
+    void restoreTerminalHandoff(project.path, selectedProject?.environment, isCurrent);
     if (snapshot.failedSources > 0) {
       addSystemLog(
         `Could not refresh ${snapshot.failedSources} project data source${snapshot.failedSources === 1 ? "" : "s"}.`,
@@ -2154,6 +2230,7 @@
     projectEnvironments = environments;
     const current = environments.find((environment) => environment.isDefault);
     if (!current || !selectedProject) return;
+    if (current.name !== selectedProject.environment) clearTerminalHandoff();
     selectedProject = { ...selectedProject, environment: current.name };
     data = {
       ...data,
@@ -2231,6 +2308,7 @@
     if (!selectedProject || environmentBusy || environmentConfigurationBusy || environment.isDefault) return;
     if (projectEnvironmentWrites.has(selectedProject.path)) return;
     const project = selectedProject;
+    clearTerminalHandoff();
     const workspace = ++projectWorkspaceRequest;
     const isCurrent = () => isCurrentProject(workspace, project.path);
     environmentBusy = true;
@@ -2249,6 +2327,7 @@
       await refreshEnvironmentProjectState(project.path, environment.name);
       if (!isCurrent()) return;
       await loadEnvironmentConfiguration(project.path, environment.name);
+      if (isCurrent()) await restoreTerminalHandoff(project.path, environment.name, isCurrent);
     } catch (error) {
       if (isCurrent()) environmentError = String(error);
     } finally {
@@ -2536,18 +2615,9 @@
 
   <main class="workspace">
     {#if terminalLaunch}
-      <div class="terminal-launch-notice" role="status">
-        <Icon name="terminal" size={18} />
-        <div>
-          <strong>External terminal opened</strong>
-          <span>{terminalLaunch.workingDirectory}</span>
-          <code>{terminalLaunch.command}</code>
-        </div>
-        <div class="terminal-launch-actions">
-          <button class="secondary compact" on:click={copyTerminalCommand}>Copy command</button>
-          <button class="icon-button" aria-label="Dismiss terminal notice" on:click={() => (terminalLaunch = null)}><Icon name="close" size={14} /></button>
-        </div>
-      </div>
+      <TerminalHandoff handoff={terminalLaunch} busy={terminalOpening || Boolean(activeOperationId)}
+        onCopy={copyText} onRetry={retryTerminalHandoff}
+        onDismiss={clearTerminalHandoff} />
     {/if}
     {#if selectedEntry && wizardPlan && activePage}
       <section class="wizard-page">
@@ -3094,7 +3164,7 @@
               <button class="project-card" on:click={() => openProjectWorkspace(project)}>
                 <div class="project-icon"><Icon name="cloud" size={21} /></div>
                 <div><strong>{project.name}</strong><span>{project.environment} · {project.path}</span><small>{project.lastOperation}</small></div>
-                <StatusPill tone={project.state === "ready" ? "success" : "warning"} label={project.state} />
+                <StatusPill tone={project.state === "ready" ? "success" : "warning"} label={project.state === "prepared" ? "Prepared, deployment not observed" : project.state} />
               </button>
             {/each}
           </div>
@@ -3141,7 +3211,7 @@
                 <p>{selectedProject.path}</p>
               </div>
               <div class="project-actions">
-                <button class="secondary" disabled={terminalOpening} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
+                <button class="secondary" disabled={terminalOpening || Boolean(activeOperationId)} on:click={launchSelectedProjectTerminal}><Icon name="terminal" size={15} /> Terminal</button>
                 <button class="secondary" on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={15} /> Refresh</button>
                 <button class="danger" disabled={!projectContractReady || projectRequiresInteractiveTerminal || !projectExecutionAccepted || !projectEnvironmentReady || Boolean(activeOperationId)} title={!projectContractReady ? "Review and restore the saved template contract first; use Terminal for independent cleanup." : projectRequiresInteractiveTerminal ? "Run azd down in the project terminal" : !projectExecutionAccepted ? "Approve template code execution below first" : undefined} on:click={() => runProjectAction("down")}>Down</button>
               </div>
@@ -3429,13 +3499,14 @@
                 <div class="operation-row">
                   <span class={`status-dot ${event.state === "succeeded" ? "online" : ""}`}></span>
                   <div>
-                    <strong>{event.kind === "validate" ? "Read-only validation" : `azd ${event.kind}`}</strong>
+                    <strong>{event.kind === "terminalHandoff" ? "Terminal handoff" : event.kind === "validate" ? "Read-only validation" : `azd ${event.kind}`}</strong>
                     {#if operationEnvironmentLabel(event)}<small>{operationEnvironmentLabel(event)}</small>{/if}
                     <span>{event.outcome?.summary ?? event.message}</span>
+                    {#if event.kind === "terminalHandoff"}<small>{event.message}</small>{/if}
                     {#if event.outcome && event.state !== "succeeded"}<small>{event.outcome.guidance}</small>{/if}
                   </div>
                   <time>{new Date(event.timestamp).toLocaleString()}</time>
-                  <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.state} />
+                  <StatusPill tone={event.level === "error" ? "danger" : event.level === "success" ? "success" : "neutral"} label={event.kind === "terminalHandoff" ? event.state === "succeeded" ? "Opened" : "Not opened" : event.state} />
                   {#if event.outcome?.retryable && ["preview", "provision", "deploy", "refresh", "down"].includes(event.kind)}
                     <button
                       class="secondary compact"
@@ -3511,7 +3582,7 @@
               <button class="table-row" on:click={() => openProjectWorkspace(project)}>
                 <span><strong>{project.name}</strong><small>{project.path}</small></span>
                 <span>{project.environment}</span><code>{project.revision}</code><span>{project.lastOperation}</span>
-                <StatusPill tone={project.state === "ready" ? "success" : "warning"} label={project.state} />
+                <StatusPill tone={project.state === "ready" ? "success" : "warning"} label={project.state === "prepared" ? "Prepared, deployment not observed" : project.state} />
               </button>
             {/each}
           </div>

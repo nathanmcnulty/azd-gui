@@ -123,6 +123,12 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
 }
 
 fn recover_interrupted_operations(connection: &mut Connection) -> AppResult<()> {
+    let handoff_outcome = serde_json::to_string(&crate::models::OperationOutcome {
+        resource_state: "unchanged".into(),
+        summary: "The app closed before the terminal handoff reported completion. Deployment was not observed.".into(),
+        guidance: "Check whether a terminal opened. Retry only the handoff if needed; do not prepare or deploy automatically.".into(),
+        retryable: true,
+    })?;
     let timestamp = Utc::now().to_rfc3339();
     let outcome = serde_json::to_string(&crate::models::OperationOutcome {
         resource_state: "possiblyModified".into(),
@@ -135,18 +141,18 @@ fn recover_interrupted_operations(connection: &mut Connection) -> AppResult<()> 
         "UPDATE projects
          SET state = 'attention', last_operation = ?1
          WHERE path IN (
-             SELECT project_path FROM operation_history WHERE state IN ('queued', 'running')
+             SELECT project_path FROM operation_history WHERE state IN ('queued', 'running') AND kind <> 'terminalHandoff'
          )",
         [&timestamp],
     )?;
     transaction.execute(
         "UPDATE operation_history
          SET state = 'failed', completed_at = ?1,
-             summary = 'The app closed before this operation reported completion.',
-             outcome_json = ?2,
+             summary = CASE WHEN kind = 'terminalHandoff' THEN 'Terminal handoff was interrupted. Deployment was not observed.' ELSE 'The app closed before this operation reported completion.' END,
+             outcome_json = CASE WHEN kind = 'terminalHandoff' THEN ?3 ELSE ?2 END,
              interrupted = 1
          WHERE state IN ('queued', 'running')",
-        params![timestamp, outcome],
+        params![timestamp, outcome, handoff_outcome],
     )?;
     transaction.commit()?;
     Ok(())
@@ -580,6 +586,7 @@ impl Database {
             "show",
             "down",
             "validate",
+            "terminalHandoff",
         ]
         .contains(&kind)
         {
@@ -597,10 +604,12 @@ impl Database {
              VALUES (?1, ?2, ?3, 'running', ?4, 'Operation started.', ?5)",
             params![operation_id, project_path, kind, timestamp, context_json],
         )?;
-        connection.execute(
-            "UPDATE projects SET last_operation = ?1 WHERE path = ?2",
-            params![timestamp, project_path],
-        )?;
+        if kind != "terminalHandoff" {
+            connection.execute(
+                "UPDATE projects SET last_operation = ?1 WHERE path = ?2",
+                params![timestamp, project_path],
+            )?;
+        }
         Ok(())
     }
 
@@ -620,6 +629,7 @@ impl Database {
             "show",
             "down",
             "validate",
+            "terminalHandoff",
         ]
         .contains(&event.kind.as_str())
             || !["succeeded", "failed", "cancelled"].contains(&event.state.as_str())
@@ -662,18 +672,20 @@ impl Database {
                 context_json
             ],
         )?;
-        transaction.execute(
-            "UPDATE projects SET last_operation = ?1, state = ?2 WHERE path = ?3",
-            params![
-                event.timestamp,
-                if event.state == "succeeded" {
-                    "ready"
-                } else {
-                    "attention"
-                },
-                project_path
-            ],
-        )?;
+        if event.kind != "terminalHandoff" {
+            transaction.execute(
+                "UPDATE projects SET last_operation = ?1, state = ?2 WHERE path = ?3",
+                params![
+                    event.timestamp,
+                    if event.state == "succeeded" {
+                        "ready"
+                    } else {
+                        "attention"
+                    },
+                    project_path
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
