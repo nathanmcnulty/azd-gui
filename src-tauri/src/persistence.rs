@@ -141,7 +141,7 @@ fn recover_interrupted_operations(connection: &mut Connection) -> AppResult<()> 
         "UPDATE projects
          SET state = 'attention', last_operation = ?1
          WHERE path IN (
-             SELECT project_path FROM operation_history WHERE state IN ('queued', 'running')
+             SELECT project_path FROM operation_history WHERE state IN ('queued', 'running') AND kind <> 'terminalHandoff'
          )",
         [&timestamp],
     )?;
@@ -604,10 +604,12 @@ impl Database {
              VALUES (?1, ?2, ?3, 'running', ?4, 'Operation started.', ?5)",
             params![operation_id, project_path, kind, timestamp, context_json],
         )?;
-        connection.execute(
-            "UPDATE projects SET last_operation = ?1 WHERE path = ?2",
-            params![timestamp, project_path],
-        )?;
+        if kind != "terminalHandoff" {
+            connection.execute(
+                "UPDATE projects SET last_operation = ?1 WHERE path = ?2",
+                params![timestamp, project_path],
+            )?;
+        }
         Ok(())
     }
 
@@ -670,20 +672,20 @@ impl Database {
                 context_json
             ],
         )?;
-        transaction.execute(
-            "UPDATE projects SET last_operation = ?1, state = ?2 WHERE path = ?3",
-            params![
-                event.timestamp,
-                if event.kind == "terminalHandoff" && event.state == "succeeded" {
-                    "prepared"
-                } else if event.state == "succeeded" {
-                    "ready"
-                } else {
-                    "attention"
-                },
-                project_path
-            ],
-        )?;
+        if event.kind != "terminalHandoff" {
+            transaction.execute(
+                "UPDATE projects SET last_operation = ?1, state = ?2 WHERE path = ?3",
+                params![
+                    event.timestamp,
+                    if event.state == "succeeded" {
+                        "ready"
+                    } else {
+                        "attention"
+                    },
+                    project_path
+                ],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }

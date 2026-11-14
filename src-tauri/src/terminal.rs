@@ -228,6 +228,7 @@ fn open_recorded_with(
     environment: Option<&str>,
     launch: impl FnOnce(TerminalLaunch) -> TerminalLaunch,
 ) -> AppResult<TerminalLaunch> {
+    ensure_allowed(database, project_path)?;
     let mut handoff = describe(project_path, environment)?;
     let Some(project) = database.project_by_path(project_path)? else {
         return Ok(launch(handoff));
@@ -283,6 +284,7 @@ pub fn saved(
     project_path: &str,
     environment: Option<&str>,
 ) -> AppResult<Option<TerminalLaunch>> {
+    ensure_allowed(database, project_path)?;
     let Some(project) = database.project_by_path(project_path)? else {
         return Ok(None);
     };
@@ -308,6 +310,15 @@ pub fn saved(
         handoff.detail = Some(event.message);
     }
     Ok(Some(handoff))
+}
+
+fn ensure_allowed(database: &crate::persistence::Database, project_path: &str) -> AppResult<()> {
+    if let Some(project) = database.project_by_path(project_path)? {
+        if let Some(contract) = database.project_template_exact(&project.path)? {
+            crate::graph_session::reject_unadapted_execution(&contract)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -401,10 +412,7 @@ mod tests {
             handoff
         })
         .unwrap();
-        assert_eq!(
-            db.project_by_path(path).unwrap().unwrap().state,
-            "attention"
-        );
+        assert_eq!(db.project_by_path(path).unwrap().unwrap().state, "ready");
         drop(db);
         let db = Database::open(&db_path).unwrap();
         let failed = super::saved(&db, path, Some("test")).unwrap().unwrap();
@@ -417,7 +425,7 @@ mod tests {
             handoff
         })
         .unwrap();
-        assert_eq!(db.project_by_path(path).unwrap().unwrap().state, "prepared");
+        assert_eq!(db.project_by_path(path).unwrap().unwrap().state, "ready");
         let history = db
             .operation_history_for_environment(path, Some("test"))
             .unwrap();
@@ -460,6 +468,120 @@ mod tests {
                 .resource_state,
             "unchanged"
         );
+        assert_eq!(db.project_by_path(path).unwrap().unwrap().state, "ready");
+        assert_eq!(
+            db.project_by_path(path).unwrap().unwrap().last_operation,
+            None
+        );
+    }
+
+    #[test]
+    fn terminal_outcomes_preserve_running_and_completed_lifecycle_state() {
+        use crate::{
+            models::{OperationEvent, ProjectSummary},
+            persistence::Database,
+        };
+        for state in ["running", "succeeded", "failed"] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::write(directory.path().join("azure.yaml"), "name: test").unwrap();
+            let path = directory.path().to_str().unwrap();
+            let db = Database::open(&directory.path().join("app.sqlite")).unwrap();
+            db.upsert_project(&ProjectSummary {
+                id: "fixture".into(),
+                name: "fixture".into(),
+                path: path.into(),
+                environment: Some("test".into()),
+                template_id: None,
+                revision: None,
+                last_operation: None,
+                state: "deploying".into(),
+            })
+            .unwrap();
+            db.begin_operation("lifecycle", "up", path, None).unwrap();
+            if state != "running" {
+                db.record_operation(
+                    &OperationEvent {
+                        operation_id: "lifecycle".into(),
+                        kind: "up".into(),
+                        state: state.into(),
+                        timestamp: "2026-11-01T00:00:00Z".into(),
+                        stream: "system".into(),
+                        level: "info".into(),
+                        message: "Lifecycle result".into(),
+                        progress: None,
+                        outcome: None,
+                        environment_binding: None,
+                    },
+                    path,
+                )
+                .unwrap();
+            }
+            let before = db.project_by_path(path).unwrap().unwrap();
+            for opened in [false, true] {
+                super::open_recorded_with(&db, path, Some("test"), |mut handoff| {
+                    handoff.opened = opened;
+                    handoff
+                })
+                .unwrap();
+                let after = db.project_by_path(path).unwrap().unwrap();
+                assert_eq!(after.state, before.state);
+                assert_eq!(after.last_operation, before.last_operation);
+                assert_eq!(
+                    db.operation_history(path)
+                        .unwrap()
+                        .iter()
+                        .find(|event| event.operation_id == "lifecycle")
+                        .unwrap()
+                        .state,
+                    state
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn changed_contract_blocks_restoring_and_retrying_saved_instructions() {
+        use crate::{
+            models::{ProjectSummary, ProjectTemplateSnapshot},
+            persistence::Database,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("azure.yaml"), "name: test").unwrap();
+        let path = directory.path().to_str().unwrap();
+        let db = Database::open(&directory.path().join("app.sqlite")).unwrap();
+        let mut entry = crate::catalog::entry_by_id("deployment-check").unwrap();
+        let project = ProjectSummary {
+            id: "fixture".into(),
+            name: "fixture".into(),
+            path: path.into(),
+            environment: Some("test".into()),
+            template_id: Some(entry.id.clone()),
+            revision: Some(entry.commit.clone()),
+            last_operation: None,
+            state: "prepared".into(),
+        };
+        db.upsert_project(&project).unwrap();
+        db.save_project_template(
+            &project,
+            &ProjectTemplateSnapshot::new(entry.clone()).unwrap(),
+        )
+        .unwrap();
+        super::open_recorded_with(&db, path, Some("test"), |handoff| handoff).unwrap();
+        assert!(super::saved(&db, path, Some("test")).unwrap().is_some());
+        let manifest = entry.manifest.as_mut().unwrap();
+        let mut graph = manifest.connections[0].clone();
+        graph.id = "graphPowerShell".into();
+        manifest.connections.push(graph);
+        db.save_project_template(&project, &ProjectTemplateSnapshot::new(entry).unwrap())
+            .unwrap();
+        assert!(super::saved(&db, path, Some("test")).is_err());
+        assert!(
+            super::open_recorded_with(&db, path, Some("test"), |_| panic!(
+                "blocked contract must never launch"
+            ))
+            .is_err()
+        );
+        assert_eq!(db.operation_history(path).unwrap().len(), 1);
     }
 
     #[test]

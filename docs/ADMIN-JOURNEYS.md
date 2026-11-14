@@ -93,6 +93,13 @@ and never launches it automatically. The administrator runs the command and
 reviews the resulting reports independently; a handoff creates no deployment
 receipt.
 
+Handoff history does not replace a running or completed lifecycle operation's
+project status or timestamp. Primary Terminal and Retry are blocked while an
+operation is active. Wizard retry rechecks current source/hook approval after
+permission checks finish. Restored instructions are subject to the current
+native contract; a contract that blocks handoff also blocks restoring a copyable
+command.
+
 Run npm run verify, then tools/Test-AdminJourneys.ps1 -BuildRoot <private-dir>
 with Node 22, PowerShell 7.6+, .NET 8 and Rust. The latter runs real frontend
 fixtures, the pinned validation scripts through the native process boundary with

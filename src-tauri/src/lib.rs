@@ -831,11 +831,6 @@ fn open_external_terminal(
     project_path: String,
     environment: Option<String>,
 ) -> AppResult<terminal::TerminalLaunch> {
-    if let Some(project) = state.database.project_by_path(&project_path)? {
-        if let Some(contract) = state.database.project_template_exact(&project.path)? {
-            graph_session::reject_unadapted_execution(&contract)?;
-        }
-    }
     terminal::open_recorded(&state.database, &project_path, environment.as_deref())
 }
 
