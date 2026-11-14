@@ -45,7 +45,9 @@ export function connectionTargetAssessment(
       ? { label: "Wrong target", action: "Reconnect this provider with the intended account" }
       : { label: "Unverified", action: "Reconnect this provider, then check again" };
   }
-  return { label: "Verified for target", action: "Continue" };
+  return ["azureCli", "azPowerShell"].includes(connection.id)
+    ? { label: "Verified for target", action: "Continue" }
+    : { label: "Verified for tenant", action: "Continue; this provider does not check subscription access" };
 }
 
 export function retainGrantedGraphScopes(

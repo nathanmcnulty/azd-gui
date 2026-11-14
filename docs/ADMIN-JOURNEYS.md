@@ -100,6 +100,21 @@ permission checks finish. Restored instructions are subject to the current
 native contract; a contract that blocks handoff also blocks restoring a copyable
 command.
 
+The generic wizard shows readiness for the current configuration on its
+configuration, environment and review pages, using the existing effective
+requirement snapshot and provider target checks. Tool rows explain their local
+purpose, conditional choice, detected version and next action. Optional tools
+and available upgrades do not block continuing. Account rows separate a detected
+connection from a fresh check for the selected tenant/subscription; neither
+proves the operator's write authority or the deployed identity's grants. Target
+edits invalidate target verification and late results cannot restore it.
+Tenant-only providers (azd and Graph) explicitly say that they do not check
+subscription access; their connected status is not subscription evidence.
+The existing-project wizard omits Retry because its route does not use the
+new-project preparation approvals. Use its Open external terminal action to run
+that route's current checks again. Projects and newly prepared wizards retain
+their supported launch-only Retry.
+
 Run npm run verify, then tools/Test-AdminJourneys.ps1 -BuildRoot <private-dir>
 with Node 22, PowerShell 7.6+, .NET 8 and Rust. The latter runs real frontend
 fixtures, the pinned validation scripts through the native process boundary with
