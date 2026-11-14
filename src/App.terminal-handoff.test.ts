@@ -56,3 +56,30 @@ it('does not transfer a late launch reply to another navigation context', async 
   finish(failed);
   await waitFor(() => expect(screen.queryByRole('region', { name: 'Terminal handoff' })).not.toBeInTheDocument());
 });
+
+it('routes handoff retry through the unsaved project edit guard', async () => {
+  vi.spyOn(bridge, 'getExternalTerminalHandoff').mockResolvedValue({ ...failed, historical: true });
+  const launch = vi.spyOn(bridge, 'openExternalTerminal');
+  const prepare = vi.spyOn(bridge, 'prepareDeployment');
+  render(App);
+  await fireEvent.click(screen.getByRole('button', { name: /^Projects,/ }));
+  await fireEvent.click(screen.getByRole('button', { name: /maester/i }));
+  await screen.findByRole('heading', { name: 'Terminal not opened' });
+  await fireEvent.click(screen.getByRole('button', { name: 'environments' }));
+  await fireEvent.input(await screen.findByLabelText(/variable name/i), { target: { value: 'LOCAL_DRAFT' } });
+  await fireEvent.input(screen.getByLabelText(/new value/i), { target: { value: 'unsaved' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Retry terminal handoff' }));
+  expect(launch).not.toHaveBeenCalled(); expect(prepare).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert')).toBeInTheDocument();
+});
+
+it('cannot retry a saved handoff for another environment', async () => {
+  vi.spyOn(bridge, 'getExternalTerminalHandoff').mockResolvedValue({ ...failed, environment: 'other', historical: true });
+  const launch = vi.spyOn(bridge, 'openExternalTerminal');
+  render(App);
+  await fireEvent.click(screen.getByRole('button', { name: /^Projects,/ }));
+  await fireEvent.click(screen.getByRole('button', { name: /maester/i }));
+  await screen.findByRole('heading', { name: 'Terminal not opened' });
+  await fireEvent.click(screen.getByRole('button', { name: 'Retry terminal handoff' }));
+  expect(launch).not.toHaveBeenCalled();
+});

@@ -2078,6 +2078,36 @@
     if (selectedProject) void launchExternalTerminal(selectedProject.path, selectedProject.environment);
   }
 
+  async function retryTerminalHandoff() {
+    // Re-enter the current handoff guards, never project preparation. Saved
+    // instructions confer no source approval or authority to execute a lifecycle.
+    const handoff = terminalLaunch;
+    if (!handoff || terminalOpening || interactivePreparing || activeOperationId) return;
+    const samePath = (path: string) => {
+      const normalize = (value: string) => data.platform === "windows"
+        ? value.replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "").toLowerCase()
+        : value;
+      return normalize(path) === normalize(handoff.projectPath);
+    };
+    if (selectedEntry) {
+      const session = wizardSession;
+      const generation = wizardEditGeneration;
+      if (!samePath(String(wizardValues.projectPath || "")) || handoff.environment !== String(wizardValues.environmentName || "dev")) return;
+      if (wizardValues.sourceMode === "existingProject") { await openExistingProjectTerminal(); return; }
+      if (!projectPrepared || !hookExecutionAccepted || (!selectedEntry.trusted && !sourceTrustAccepted)
+        || !selectedPlatformSupported || !requiredToolsReady || !requiredConnectionsReady || requiredTenantMismatch || !requiredConnectionsMatchTarget) {
+        addSystemLog("Review the current project, source approval, tools and account target before retrying the terminal handoff.", "warning");
+        return;
+      }
+      if (!(await runRegisteredPermissionChecks())) return;
+      if (session !== wizardSession || generation !== wizardEditGeneration || terminalLaunch !== handoff) return;
+      await launchExternalTerminal(String(wizardValues.projectPath), handoff.environment);
+    } else if (selectedProject) {
+      if (projectLoading || environmentBusy || environmentConfigurationBusy || !samePath(selectedProject.path) || handoff.environment !== selectedProject.environment) return;
+      launchSelectedProjectTerminal();
+    }
+  }
+
   function isPimProject(project: ProjectSummary) { return project.templateId === 'pim-pilot' || selectedProject?.path === project.path && selectedProjectTemplate?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim'; }
   function verificationFinished(event: CustomEvent<OperationEvent>) {
     verificationRefresh += 1;
@@ -2574,7 +2604,7 @@
   <main class="workspace">
     {#if terminalLaunch}
       <TerminalHandoff handoff={terminalLaunch} busy={terminalOpening}
-        onCopy={copyText} onRetry={() => terminalLaunch && launchExternalTerminal(terminalLaunch.projectPath, terminalLaunch.environment)}
+        onCopy={copyText} onRetry={retryTerminalHandoff}
         onDismiss={clearTerminalHandoff} />
     {/if}
     {#if selectedEntry && wizardPlan && activePage}
