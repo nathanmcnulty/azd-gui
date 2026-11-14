@@ -753,7 +753,17 @@ pub async fn prepare(
     azd::environment_set_values(&destination, &request.environment, &environment_assignments)
         .await?;
 
-    project.state = "ready".into();
+    project.state = if snapshot
+        .entry
+        .manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.requires_interactive_terminal)
+    {
+        "prepared"
+    } else {
+        "ready"
+    }
+    .into();
     project.last_operation = Some(Utc::now().to_rfc3339());
     database.upsert_project(&project)?;
     Ok(project)

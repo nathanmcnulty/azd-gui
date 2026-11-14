@@ -336,7 +336,7 @@ export interface ProjectSummary {
   templateId?: string;
   revision?: string;
   lastOperation?: string;
-  state: "ready" | "attention" | "deploying";
+  state: "ready" | "attention" | "deploying" | "prepared";
 }
 
 export interface ProjectTemplateSnapshot {
@@ -545,6 +545,11 @@ export interface LocalSourceBinding {
 }
 
 export interface ExternalTerminalLaunch {
+  projectPath: string;
+  environment?: string;
   workingDirectory: string;
   command: string;
+  opened: boolean;
+  detail?: string;
+  historical: boolean;
 }

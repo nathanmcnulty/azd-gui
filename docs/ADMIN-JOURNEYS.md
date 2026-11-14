@@ -83,6 +83,16 @@ either draft or create a competing general provenance/report browser. The
 existing sanitized deployment receipt and validation views remain the common
 report surface. Report text and source strings remain inert.
 
+Interactive templates retain a validated project directory and a copyable
+environment command even when no terminal can be opened. A terminal launch is
+recorded as a handoff, separately from azd lifecycle operations: **Prepared,
+deployment not observed**. Windows tries the next fixed provider when an app
+execution alias or launch fails. Retry opens the terminal only; it does not
+prepare again or run the command. Reopening restores the last handoff as history
+and never launches it automatically. The administrator runs the command and
+reviews the resulting reports independently; a handoff creates no deployment
+receipt.
+
 Run npm run verify, then tools/Test-AdminJourneys.ps1 -BuildRoot <private-dir>
 with Node 22, PowerShell 7.6+, .NET 8 and Rust. The latter runs real frontend
 fixtures, the pinned validation scripts through the native process boundary with
