@@ -14,6 +14,7 @@
   } from "../lib/types";
 
   export let project: ProjectSummary;
+  export let reportContext: unknown = null;
 
   let result: ValidationReportRead = { state: "notFound" };
   let loading = false;
@@ -34,14 +35,14 @@
   function tone(outcome: ValidationOutcome, binding: EvidenceBindingState): "success" | "warning" | "danger" | "neutral" {
     if (outcome === "failed") return "danger";
     if (binding !== "current") return binding === "mismatch" ? "danger" : "warning";
-    if (outcome === "passed") return "success";
+    if (outcome === "passed") return "neutral";
     if (outcome === "passedWithWarnings") return "warning";
     return "neutral";
   }
 
   function outcomeLabel(outcome: ValidationOutcome, binding: EvidenceBindingState): string {
     if (outcome === "failed") return "failed";
-    if (binding === "current") return outcome;
+    if (binding === "current") return "Historical record";
     if (binding === "mismatch") return "Context mismatch";
     if (binding === "stale") return "Stale record";
     if (binding === "legacyUnbound") return "Legacy record";
@@ -55,12 +56,17 @@
     return "neutral";
   }
 
+  function checkTitle(check: ValidationCheck, index: number) {
+    const supported: Record<string, string> = { 'context.template-root': 'Project files are present', 'context.azure-cli-session': 'Existing Azure CLI account matches the tenant and subscription', 'infrastructure.resource-group': 'Deployed resource group can be read' };
+    return supported[check.id ?? ''] ?? `Check ${index + 1}`;
+  }
   function checkLabel(check: ValidationCheck): string {
     return `${check.phase} · ${check.sideEffect} · ${check.durationMs} ms`;
   }
 
   async function refresh() {
     const requestId = ++request;
+    result = { state: "notFound" };
     loading = true;
     try {
       const next = await getProjectValidationReport(project.path);
@@ -72,7 +78,7 @@
     }
   }
 
-  $: projectBindingKey = `${project.path}\u0000${project.environment ?? ""}`;
+  $: projectBindingKey = JSON.stringify([project, reportContext]);
   $: if (projectBindingKey) void refresh();
 </script>
 
@@ -80,7 +86,7 @@
   <div class="section-toolbar">
     <div>
       <h2>Validation report</h2>
-      <p>Recorded validation checks are separate from provisioning and deployment success.</p>
+      <p>Historical recorded checks. Run a supported check explicitly for current evidence; deployment success and administrator activation checks are separate.</p>
     </div>
     {#if loading}
       <StatusPill tone="accent" label="Reading" />
@@ -110,6 +116,7 @@
       <div><dt>Correlation</dt><dd>{result.report.bindingState}</dd></div>
     </dl>
     <p class="muted-copy">{modeDetail[result.report.mode]}</p>
+    <p class="muted-copy">Stale as live evidence after reopening or an account, environment, source or configuration change. A matching recorded context does not establish a current live check.</p>
     <p class="muted-copy">{bindingDetail[result.report.environmentBinding]}</p>
     <p class="muted-copy">{evidenceBindingDetail[result.report.bindingState]}</p>
     {#if result.report.nextActions.length > 0}
@@ -124,7 +131,7 @@
       <div class="validation-check-list" aria-label="Validation checks">
         {#each result.report.checks as check, index}
           <div class="validation-check">
-            <div><strong>Check {index + 1}</strong><small>{checkLabel(check)}</small></div>
+            <div><strong>{checkTitle(check, index)}</strong><small>{checkLabel(check)}</small></div>
             <StatusPill tone={statusTone(check.status)} label={check.status} />
           </div>
         {/each}

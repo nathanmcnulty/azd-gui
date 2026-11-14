@@ -579,11 +579,12 @@ impl Database {
             "refresh",
             "show",
             "down",
+            "validate",
         ]
         .contains(&kind)
         {
             return Err(AppError::Invalid(
-                "Only azd lifecycle operations are persisted.".into(),
+                "Only supported project operations are persisted.".into(),
             ));
         }
         let project_path = self.stored_project_path(project_path)?;
@@ -618,12 +619,13 @@ impl Database {
             "refresh",
             "show",
             "down",
+            "validate",
         ]
         .contains(&event.kind.as_str())
             || !["succeeded", "failed", "cancelled"].contains(&event.state.as_str())
         {
             return Err(AppError::Invalid(
-                "Only terminal azd lifecycle operations are persisted.".into(),
+                "Only terminal supported project operations are persisted.".into(),
             ));
         }
         let message = redact(&event.message);

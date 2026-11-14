@@ -244,6 +244,8 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     pub cwd: Option<PathBuf>,
     pub environment: Vec<(String, String)>,
+    pub assets: Option<Arc<tempfile::TempDir>>,
+    pub directory_guards: Vec<Arc<crate::pim_pilot::Root>>,
 }
 
 // Template transport never inherits repository, credential-helper, or proxy policy
@@ -304,6 +306,8 @@ impl CommandSpec {
             args: args.into_iter().map(Into::into).collect(),
             cwd: None,
             environment: Vec::new(),
+            assets: None,
+            directory_guards: Vec::new(),
         }
     }
 
@@ -772,6 +776,7 @@ fn operation_timeout(kind: &str) -> Duration {
         "up" | "provision" | "deploy" | "down" => Duration::from_secs(4 * 60 * 60),
         "preview" => Duration::from_secs(60 * 60),
         "refresh" | "show" => Duration::from_secs(30 * 60),
+        "validate" => Duration::from_secs(5 * 60),
         _ if kind.starts_with("login:") => Duration::from_secs(15 * 60),
         _ if kind.starts_with("install:") => Duration::from_secs(30 * 60),
         _ => Duration::from_secs(60 * 60),
@@ -781,7 +786,7 @@ fn operation_timeout(kind: &str) -> Duration {
 fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
     let mutating = matches!(kind, "up" | "provision" | "deploy" | "down");
     let may_run_hooks = kind == "preview";
-    if !mutating && !matches!(kind, "preview" | "refresh" | "show") {
+    if !mutating && !matches!(kind, "preview" | "refresh" | "show" | "validate") {
         return None;
     }
     let action = match kind {
@@ -791,6 +796,7 @@ fn terminal_outcome(kind: &str, state: &str) -> Option<OperationOutcome> {
         "deploy" => "Service deployment",
         "refresh" => "Environment refresh",
         "show" => "Project refresh",
+        "validate" => "Read-only validation",
         "down" => "Resource removal",
         _ => unreachable!("known lifecycle action"),
     };
@@ -902,6 +908,8 @@ pub fn spawn_operation(
 
     let result_id = operation_id.clone();
     tauri::async_runtime::spawn(async move {
+        let _assets = spec.assets.clone();
+        let _directories = spec.directory_guards.clone();
         let (mut command, executable) = match spec.process() {
             Ok(command) => command,
             Err(error) => {
@@ -1447,5 +1455,66 @@ mod tests {
         assert_eq!(operation_timeout("login:azd"), Duration::from_secs(15 * 60));
         assert_eq!(operation_timeout("preview"), Duration::from_secs(60 * 60));
         assert_eq!(operation_timeout("up"), Duration::from_secs(4 * 60 * 60));
+    }
+    #[test]
+    fn validation_operation_persists_started_terminal_and_bound_context() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap());
+        let path = root.path().display().to_string();
+        database
+            .upsert_project(&crate::models::ProjectSummary {
+                id: "check".into(),
+                name: "Check".into(),
+                path: path.clone(),
+                environment: Some("dev".into()),
+                template_id: Some("deployment-check".into()),
+                revision: Some(crate::project_verification::REVISION.into()),
+                last_operation: None,
+                state: "ready".into(),
+            })
+            .unwrap();
+        let context = OperationEvidenceContext {
+            project_id: "check".into(),
+            environment: "dev".into(),
+            azure_cloud: Some("AzureCloud".into()),
+            tenant_id: Some("11111111-1111-4111-8111-111111111111".into()),
+            subscription_id: Some("22222222-2222-4222-8222-222222222222".into()),
+            resource_group: Some("rg-fixture".into()),
+            template_id: "deployment-check".into(),
+            revision: Some(crate::project_verification::REVISION.into()),
+            contract_digest: Some("a".repeat(64)),
+        };
+        let persistence =
+            OperationPersistence::with_context(database.clone(), path.clone(), context.clone());
+        for state in ["succeeded", "failed", "cancelled"] {
+            let id = format!("validation-{state}");
+            persistence.begin(&id, "validate").unwrap();
+            assert!(database
+                .evidence_operations(&path)
+                .unwrap()
+                .iter()
+                .any(|op| op.id == id && op.context.as_ref() == Some(&context)));
+            let outcome = terminal_outcome("validate", state).unwrap();
+            assert_eq!(outcome.resource_state, "unchanged");
+            persistence.record(&crate::models::OperationEvent {
+                operation_id: id.clone(),
+                kind: "validate".into(),
+                state: state.into(),
+                stream: "system".into(),
+                level: "info".into(),
+                message: "Validation completed".into(),
+                progress: Some(100),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                outcome: Some(outcome),
+                environment_binding: None,
+            });
+            let history = database.operation_history(&path).unwrap();
+            assert!(history
+                .iter()
+                .any(|op| op.operation_id == id && op.kind == "validate" && op.state == state));
+        }
+        assert!(persistence
+            .begin("not-supported", "arbitrary-template")
+            .is_err());
     }
 }

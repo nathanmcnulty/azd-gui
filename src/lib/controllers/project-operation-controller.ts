@@ -25,19 +25,26 @@ export type ProjectWorkspaceSnapshot = {
 
 export async function loadProjectWorkspace(project: ProjectSummary): Promise<ProjectWorkspaceSnapshot> {
   const [environmentsResult, templateResult] = await Promise.allSettled([
-    listProjectEnvironments(project.path),
+    project.templateId === 'pim-pilot' ? Promise.resolve([]) : listProjectEnvironments(project.path),
     getProjectTemplate(project.path)
   ]);
+  if (project.templateId === 'pim-pilot' || templateResult.status === 'fulfilled' && templateResult.value?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim') {
+    return { template: templateResult.status === 'fulfilled' ? templateResult.value : null, state: null, environments: [], history: [], currentEnvironment: project.environment, failedSources: 0 };
+  }
+  const passiveOverview = project.templateId === 'deployment-check' || templateResult.status === 'fulfilled' && templateResult.value?.entry.repository === 'https://github.com/nathanmcnulty/azd-reference' && templateResult.value.entry.commit === 'abc6e896620990e68360a63dd14efda66a3f75cd' && templateResult.value.entry.subdirectory === 'examples/deployment-check';
   const environments =
     environmentsResult.status === "fulfilled"
       ? environmentsResult.value
       : project.environment
         ? [{ name: project.environment, dotEnvPath: "", hasLocal: false, hasRemote: false, isDefault: true }]
         : [];
-  const currentEnvironment =
+  if (passiveOverview) {
+    for (const environment of environments) environment.isDefault = environment.name === project.environment;
+  }
+  const currentEnvironment = passiveOverview ? project.environment :
     environments.find((environment) => environment.isDefault)?.name ?? project.environment;
   const [stateResult, historyResult] = await Promise.allSettled([
-    getProjectState(project.path, currentEnvironment),
+    passiveOverview ? Promise.resolve(null) : getProjectState(project.path, currentEnvironment),
     getOperationHistory(project.path, currentEnvironment)
   ]);
   return {

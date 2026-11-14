@@ -1,6 +1,8 @@
 # Selected-role core PIM pilot
 
-The PIM page continues from the named role picker into a project-bound pilot.
+The Catalog and saved Projects open the named role picker and project-bound pilot.
+See [administrator journeys](ADMIN-JOURNEYS.md) for local drafts, saved recovery
+overviews and the supported verification actions.
 It uses the pinned azd-pim planner, `Invoke-AzdPimApply`, ownership state and
 checkpoint recovery. It does not invoke project hooks, deploy Azure resources,
 activate/assign roles, enable notifications/session revocation or expand to all

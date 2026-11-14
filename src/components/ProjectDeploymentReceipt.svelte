@@ -7,12 +7,14 @@
   import type { DeploymentReceiptRead, ProjectSummary } from "../lib/types";
 
   export let project: ProjectSummary;
+  export let reportContext: unknown = null;
   let result: DeploymentReceiptRead = { state: "notFound" };
   let loading = false;
   let request = 0;
 
   async function refresh() {
     const requestId = ++request;
+    result = { state: "notFound" };
     loading = true;
     try {
       const next = await getProjectDeploymentReceipt(project.path);
@@ -24,7 +26,7 @@
     }
   }
 
-  $: projectKey = `${project.path}\u0000${project.environment ?? ""}`;
+  $: projectKey = JSON.stringify([project, reportContext]);
   $: if (projectKey) void refresh();
   $: receipt = result.receipt;
   $: needsReview = Boolean(receipt && (receipt.bindingState !== "current" || receipt.summary.failed || receipt.summary.warnings || receipt.outstandingActionCount || receipt.nextActions.length));

@@ -1570,9 +1570,9 @@ describe("desktop experience", () => {
       expect(screen.queryByRole("dialog", { name: /add catalog source/i })).not.toBeInTheDocument();
     });
     const externalSource = screen.getByText("External catalog preview").closest<HTMLElement>(".setting-row")!;
-    expect(within(externalSource).getByText(/4 pinned templates/i)).toBeInTheDocument();
+    expect(within(externalSource).getByText(/5 pinned templates/i)).toBeInTheDocument();
     expect(screen.getByText("Bundled catalog").closest<HTMLElement>(".setting-row")).toHaveTextContent(
-      "4 pinned templates"
+      "5 pinned templates"
     );
 
     await fireEvent.click(within(externalSource).getByRole("button", { name: /review latest/i }));

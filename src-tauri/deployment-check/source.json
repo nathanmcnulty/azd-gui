@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/nathanmcnulty/azd-reference",
+  "commit": "abc6e896620990e68360a63dd14efda66a3f75cd",
+  "subdirectory": "examples/deployment-check",
+  "files": {
+    "scripts/Test-Deployment.ps1": "a54a0c2df639d16a6d454d0c63913289007e33cf2af11e1c9c920cfebdeafdd5",
+    "scripts/Deployment.Validation.psm1": "9694d859d26fa4aebc1c1dab761087f9c33001fe9abee8515b0f736c84cd6e4c",
+    "scripts/vendor/Azd.DeploymentValidation/Azd.DeploymentValidation.psd1": "eabf223b704c962c27f722482e1240a50ce4247c57705030d74515aae179818e",
+    "scripts/vendor/Azd.DeploymentValidation/Azd.DeploymentValidation.psm1": "fcf075cbea2dea568ad18145632185a82cb50210628ea332765434c3b62f7b5e",
+    "scripts/vendor/Azd.DeploymentValidation/deployment-validation.schema.json": "f219f008bb04a2eed5230a623191a8caff5363b319d02cbd8c9dd0e239848828",
+    "LICENSE": "6b0382b16279f26ff69014300541967a356a666eb0b91b422f6862f6b7dad17e"
+  }
+}
