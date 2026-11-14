@@ -123,6 +123,7 @@ export interface ConnectionStatus extends ConnectionRequirement {
   state: ConnectionState;
   grantedScopes?: string[];
   account?: string;
+  azureCloud?: string;
   tenantId?: string;
   subscriptionId?: string;
   subscriptionName?: string;

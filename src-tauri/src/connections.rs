@@ -40,12 +40,20 @@ fn status(
             .iter()
             .find_map(|key| value.pointer(key).and_then(Value::as_str).map(Into::into))
     });
+    let azure_cloud = value
+        .and_then(|value| value["environmentName"].as_str())
+        .map(str::to_owned);
+    let unsupported_cloud = azure_cloud
+        .as_deref()
+        .is_some_and(|cloud| cloud != "AzureCloud");
     ConnectionStatus {
         id: id.into(),
         name: name.into(),
         required: id == "azd",
         reason: reason.into(),
-        state: if value.is_some() {
+        state: if unsupported_cloud {
+            "unknown"
+        } else if value.is_some() {
             "connected"
         } else {
             "disconnected"
@@ -54,11 +62,12 @@ fn status(
         scopes: vec![],
         granted_scopes: vec![],
         account,
+        azure_cloud,
         tenant_id,
         subscription_id,
         subscription_name,
         expires_on: None,
-        detail: None,
+        detail: unsupported_cloud.then(|| "This workflow supports the public Azure cloud only. Select AzureCloud in this provider and check again.".into()),
         wrong_active_account: false,
     }
 }
@@ -350,7 +359,12 @@ fn apply_target_context(
         .account
         .as_deref()
         .zip(target_status.account.as_deref());
-    if accounts.is_none() {
+    if current.azure_cloud != target_status.azure_cloud {
+        current.state = "unknown".into();
+        current.detail = Some(
+            "The provider cloud changed during the target check. Check this provider again.".into(),
+        );
+    } else if accounts.is_none() {
         current.state = "unknown".into();
         current.detail = Some("The selected target account could not be identified. Reconnect this provider, then check again.".into());
     } else if accounts.is_some_and(|(a, b)| !a.eq_ignore_ascii_case(b)) {
@@ -461,6 +475,53 @@ pub fn tenant_mismatch(statuses: &[ConnectionStatus]) -> Option<Vec<(String, Str
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn azure_cli_cloud_is_retained_and_non_public_context_is_not_ready() {
+        for (cloud, ready) in [("AzureCloud", true), ("AzureUSGovernment", false)] {
+            let value = serde_json::json!({"environmentName":cloud,"user":{"name":"operator@example.test"},"tenantId":"11111111-1111-4111-8111-111111111111","id":"22222222-2222-4222-8222-222222222222"});
+            let result = super::status(
+                "azureCli",
+                "Azure CLI",
+                "fixture",
+                Some(&value),
+                &["/user/name"],
+                &["/tenantId"],
+                (&["/id"], &[]),
+            );
+            assert_eq!(serde_json::to_value(&result).unwrap()["azureCloud"], cloud);
+            assert_eq!(result.state == "connected", ready);
+        }
+    }
+
+    #[test]
+    fn a_cloud_change_during_target_probing_invalidates_the_current_context() {
+        let target = super::ConnectionTarget {
+            tenant_id: "11111111-1111-4111-8111-111111111111".into(),
+            subscription_id: "22222222-2222-4222-8222-222222222222".into(),
+        };
+        let mut value = serde_json::json!({"environmentName":"AzureCloud","user":{"name":"operator@example.test"},"tenantId":target.tenant_id,"id":target.subscription_id});
+        let mut current = super::status(
+            "azureCli",
+            "Azure CLI",
+            "fixture",
+            Some(&value),
+            &["/user/name"],
+            &["/tenantId"],
+            (&["/id"], &[]),
+        );
+        value["environmentName"] = "AzureUSGovernment".into();
+        super::apply_target_context(
+            &mut current,
+            Some(&value),
+            &target,
+            &["/user/name"],
+            &["/tenantId"],
+            &["/id"],
+            &[],
+        );
+        assert_ne!(current.state, "connected");
+        assert!(current.detail.unwrap().contains("cloud changed"));
+    }
     use super::*;
 
     #[test]
@@ -561,6 +622,7 @@ mod tests {
             scopes: vec![],
             granted_scopes: vec![],
             account: None,
+            azure_cloud: None,
             tenant_id: Some(tenant_id.into()),
             subscription_id: None,
             subscription_name: None,

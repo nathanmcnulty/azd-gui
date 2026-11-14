@@ -30,6 +30,9 @@ describe("connection scope requirements", () => {
     const connection = graphConnection({ id: "azureCli", scopes: [], grantedScopes: [], subscriptionId: target.subscriptionId });
     expect(connectionTargetAssessment(connection, target, false).label).toBe("Unverified");
     expect(connectionTargetAssessment(connection, target, true).label).toBe("Verified for target");
+    expect(connectionTargetAssessment({ ...connection, id: "azd", subscriptionId: undefined }, target, true)).toEqual({
+      label: "Verified for tenant", action: "Continue; this provider does not check subscription access"
+    });
     expect(connectionTargetAssessment({ ...connection, subscriptionId: "other" }, target, true)).toEqual({ label: "Wrong target", action: "Reconnect this provider with the intended account" });
     expect(connectionTargetAssessment({ ...connection, state: "expired" }, target, true).label).toBe("Expired");
     expect(connectionTargetAssessment({ ...connection, state: "disconnected", wrongActiveAccount: true }, target, true).label).toBe("Wrong active account");

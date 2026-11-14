@@ -3,6 +3,7 @@
   import Icon from './Icon.svelte';
   export let handoff: ExternalTerminalLaunch;
   export let busy = false;
+  export let canRetry = true;
   export let onCopy: (text: string) => void;
   export let onRetry: () => void;
   export let onDismiss: () => void;
@@ -16,12 +17,12 @@
   {#if handoff.detail}<p>{handoff.detail}</p>{/if}
   <p>Project directory: <code>{handoff.workingDirectory}</code></p>
   <p>Reviewed command: <code>{handoff.command}</code></p>
-  <p>Use this directory in your terminal. Review the source, account and selected environment before running the command yourself. Retry opens a terminal only; it does not prepare the project again.</p>
+  <p>Use this directory in your terminal. Review the source, account and selected environment before running the command yourself. {canRetry ? 'Retry opens a terminal only; it does not prepare the project again.' : 'To try again, use Open external terminal after reviewing the current project checks.'}</p>
   </div>
   <div class="terminal-launch-actions">
     <button class="secondary compact" on:click={() => onCopy(handoff.workingDirectory)}>Copy project directory</button>
     <button class="secondary compact" on:click={() => onCopy(handoff.command)}>Copy command</button>
-    <button class="secondary compact" disabled={busy} on:click={onRetry}>Retry terminal handoff</button>
+    {#if canRetry}<button class="secondary compact" disabled={busy} on:click={onRetry}>Retry terminal handoff</button>{/if}
     <button class="secondary compact" on:click={onDismiss} aria-label="Dismiss terminal notice">Dismiss</button>
   </div>
 </section>

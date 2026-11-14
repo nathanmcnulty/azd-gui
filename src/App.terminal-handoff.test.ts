@@ -87,8 +87,13 @@ it('cannot retry a saved handoff for another environment', async () => {
 it.each(['hook', 'source'])('rechecks %s approval after deferred wizard permission checks', async (approval) => {
   const launch = vi.spyOn(bridge, 'openExternalTerminal');
   const prepare = vi.spyOn(bridge, 'prepareDeployment');
+  const data = await bridge.bootstrap();
+  data.catalog.entries = data.catalog.entries.map(entry => entry.id === 'maester-automation' ? { ...entry, trusted: false } : entry);
+  vi.spyOn(bridge, 'bootstrap').mockResolvedValue(data);
   render(App);
-  await fireEvent.click(screen.getByRole('button', { name: /open project/i }));
+  await fireEvent.click(screen.getByRole('button', { name: /browse catalog/i }));
+  await fireEvent.click(screen.getAllByRole('button', { name: /configure deployment/i })[1]);
+  await fireEvent.input(screen.getByPlaceholderText(/empty destination folder/i), { target: { value: failed.projectPath } });
   await fireEvent.click(screen.getByRole('button', { name: /^continue$/i }));
   await fireEvent.click(screen.getByRole('checkbox', { name: /reviewed this source and approve/i }));
   for (let attempt = 0; attempt < 10 && !screen.queryByRole('heading', { name: /review deployment/i }); attempt += 1) {

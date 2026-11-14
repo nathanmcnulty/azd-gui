@@ -56,6 +56,8 @@
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
   import { effectiveRequirements, effectiveConnectionRequirements, requirementEnvironmentValues } from "./lib/requirements";
+  import { toolReadiness } from "./lib/readiness";
+  import WizardReadiness from "./components/WizardReadiness.svelte";
   import {
     connectionBlockingGuidance,
     hasKnownTargetMismatch,
@@ -161,6 +163,7 @@
   let selectedEntry: CatalogEntry | null = null;
   let evaluatedRequiredTools: ToolStatus[] | null = null;
   let prerequisiteEvaluationKey = "";
+  let prerequisiteEvaluationRequest = 0;
   let graphExpectedAccount = "";
   let graphExpectedClientId = "";
   let graphSessionDisposal = Promise.resolve();
@@ -383,6 +386,13 @@
   $: selectedPrerequisiteKey = JSON.stringify({
     entry: selectedEntry,
     session: wizardSession,
+    // Edits may return to the same values, or affect non-controller context
+    // (for example a template's cloud choice). Do not retain earlier checks.
+    editGeneration: wizardEditGeneration,
+    identities: data.connections.filter(connection => selectedManifest &&
+      effectiveConnectionRequirements(selectedManifest, wizardValues).some(required => required.id === connection.id))
+      .map(({ id, account, azureCloud, tenantId, subscriptionId, state, grantedScopes, wrongActiveAccount }) =>
+        ({ id, account, azureCloud, tenantId, subscriptionId, state, grantedScopes: grantedScopes ?? [], wrongActiveAccount: Boolean(wrongActiveAccount) })),
     environment: wizardValues.environmentName,
     tenant: wizardValues.tenantId,
     subscription: wizardValues.subscriptionId,
@@ -416,17 +426,18 @@
     permissionCheckResults = [];
     evaluatedRequiredTools = pendingRequiredTools.length ? null : [];
     const requestedKey = selectedPrerequisiteKey;
+    const request = ++prerequisiteEvaluationRequest;
     if (selectedEntry) {
       void reviewWizardRequirements(selectedEntry, structuredClone(wizardValues)).then(async (review) => {
-        if (prerequisiteEvaluationKey !== requestedKey) return null;
+        if (prerequisiteEvaluationRequest !== request || prerequisiteEvaluationKey !== requestedKey) return null;
         requirementReview = review;
         return checkRequirementPrerequisites(review.selection, review.snapshot);
       }).then(
         (statuses) => {
-          if (prerequisiteEvaluationKey === requestedKey && statuses) evaluatedRequiredTools = statuses;
+          if (prerequisiteEvaluationRequest === request && prerequisiteEvaluationKey === requestedKey && statuses) evaluatedRequiredTools = statuses;
         },
         () => {
-          if (prerequisiteEvaluationKey === requestedKey) {
+          if (prerequisiteEvaluationRequest === request && prerequisiteEvaluationKey === requestedKey) {
             evaluatedRequiredTools = pendingRequiredTools.map(
               (tool) => ({ ...tool, state: "unknown" } as ToolStatus)
             );
@@ -2616,6 +2627,7 @@
   <main class="workspace">
     {#if terminalLaunch}
       <TerminalHandoff handoff={terminalLaunch} busy={terminalOpening || Boolean(activeOperationId)}
+        canRetry={!selectedEntry || wizardValues.sourceMode !== "existingProject"}
         onCopy={copyText} onRetry={retryTerminalHandoff}
         onDismiss={clearTerminalHandoff} />
     {/if}
@@ -2792,20 +2804,24 @@
             {/if}
           {:else if activePage.kind === "prerequisites"}
             <div class="section-toolbar">
-              <div><h2>Required for this template</h2><p>Checks are read-only until you approve an installation.</p></div>
+              <div><h2>Required for this template</h2><p>Only tools for your current choices are listed. Optional tools and newer available versions do not block continuing. Checks are read-only until you approve an installation.</p></div>
               <button class="secondary" on:click={checkTools}><Icon name="refresh" size={15} /> Check again</button>
             </div>
             <div class="data-list">
               {#each requiredTools as tool}
+                {@const readiness = toolReadiness(tool, selectedManifest)}
                 <div class="data-row">
                   <div class={`state-icon ${tool.state}`}>
                     {#if tool.state === "ready"}<Icon name="check" size={16} />{:else}<Icon name="tools" size={16} />{/if}
                   </div>
                   <div class="data-primary">
                     <strong>{tool.name}</strong>
-                    <span>{tool.installedVersion ? `Installed ${tool.installedVersion}` : "Not detected"} · Required {tool.minimumVersion ?? "any version"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion}` : ""}{tool.executablePath ? ` · ${tool.executablePath}` : ""}</span>
+                    <span>{readiness.why}</span>
+                    <span>{readiness.detected} · {tool.required ? "Required" : "Optional"}{tool.updateAvailable && tool.latestVersion ? ` · Latest ${tool.latestVersion} (optional update)` : ""}</span>
+                    <small>{tool.executablePath ?? "No executable path detected"}</small>
+                    <span>Next: {readiness.action}</span>
                   </div>
-                  <StatusPill tone={tool.updateAvailable ? "warning" : tool.state === "ready" ? "success" : tool.state === "missing" ? "warning" : "neutral"} label={tool.updateAvailable ? "update available" : tool.state} />
+                  <StatusPill tone={tool.state === "ready" ? "success" : tool.required && tool.state === "missing" ? "warning" : "neutral"} label={!tool.required ? `optional · ${tool.state}` : tool.state} />
                   {#if tool.updateAvailable && tool.installCommand}
                     <button class="secondary" on:click={() => copyText(tool.installCommand!)}>Copy update preview</button>
                   {:else if tool.state !== "ready"}
@@ -2834,9 +2850,11 @@
               </section>
             {/if}
             <div class="section-toolbar">
-              <div><h2>Template connections</h2><p>Each tool keeps its own credentials. Graph credentials stay in the owned session; tokens never enter this interface.</p></div>
+              <div><h2>Template connections</h2><p>Each tool keeps its own credentials. A connected operator account still needs a check for the selected tenant and subscription. These checks do not prove permission to grant the deployed identity its roles. Review those grants in configuration.</p></div>
               <button class="primary" on:click={connectRequired}><Icon name="connections" size={15} /> Connect required</button>
             </div>
+            <p>Selected target: tenant <code>{connectionTarget?.tenantId ?? "not selected"}</code> · subscription <code>{connectionTarget?.subscriptionId ?? "not selected"}</code>. Choose the target on Configure environment, then check these accounts again.</p>
+            <button class="secondary compact" on:click={checkConnections}>Check accounts again</button>
             {#if requiredTenantMismatch}
               <div class="callout warning">
                 <Icon name="warning" size={18} />
@@ -2854,7 +2872,9 @@
                   <div class="data-primary">
                     <strong>{connection.name}</strong>
                     <span>{connection.reason}</span>
-                    <small>Current account: {connection.account ?? "Unknown"}{connection.tenantId ? ` · ${connection.tenantId}` : ""}{connection.subscriptionName ? ` · ${connection.subscriptionName}` : ""}</small>
+                    <small>{connection.required ? "Required" : "Optional; does not block continuing"} · Detected account: {connection.account ?? "Unknown"} · {connection.state}</small>
+                    {#if connection.azureCloud}<small>Provider cloud: {connection.azureCloud}</small>{/if}
+                    <small>Detected tenant: {connection.tenantId ?? "unknown"} · subscription: {connection.subscriptionId ?? "unknown"}{connection.subscriptionName ? ` (${connection.subscriptionName})` : ""}</small>
                     {#if connection.required}<small>Target check: {assessment.label} · {assessment.action}</small>{/if}
                     {#if connection.expiresOn}<small>Expires <time datetime={connection.expiresOn}>{new Date(connection.expiresOn).toLocaleString()}</time></small>{/if}
                     {#if connection.id === "graphPowerShell" && connection.scopes?.length}
@@ -2868,8 +2888,8 @@
                     {/if}
                   </div>
                   <StatusPill
-                    tone={missingScopes.length || connection.state === "expired" ? "warning" : connection.state === "connected" ? "success" : connection.state === "checking" ? "neutral" : "danger"}
-                    label={missingScopes.length ? "scope update required" : connection.state}
+                    tone={!connection.required ? "neutral" : assessment.label.startsWith("Verified for ") ? "success" : "warning"}
+                    label={connection.required ? assessment.label : "optional"}
                   />
                   <button class="secondary" on:click={() => connect(connection, connectionTarget ?? undefined)}>
                     {connection.state === "connected" ? (missingScopes.length ? "Update scopes" : "Reconnect") : "Connect"}
@@ -2906,7 +2926,7 @@
             {#if selectedTenantMismatch}
               <div class="callout warning">
                 <Icon name="warning" size={18} />
-                <div><strong>Selected tenant does not match</strong><p>Reconnect the required tools to this tenant or choose a subscription in their connected tenant.</p></div>
+                <div><strong>Selected target does not match</strong><p>Reconnect the required tools to the selected tenant and subscription, or choose their connected target.</p></div>
                 <button class="secondary" on:click={alignRequiredConnections}>Reconnect required tools</button>
               </div>
             {/if}
@@ -3125,6 +3145,11 @@
               <div class="progress-track"><span style={`width: ${wizardDeploymentProgress}%`}></span></div>
               <div><span>{wizardDeploymentEvent?.message ?? (wizardDeploymentState === "running" ? "Starting azd up…" : "Waiting to start")}</span><strong>{wizardDeploymentProgress}%</strong></div>
             </div>
+          {/if}
+          {#if ["configuration", "environment", "review"].includes(activePage.kind)}
+            <WizardReadiness tools={requiredTools} connections={requiredConnections} manifest={selectedManifest}
+              target={connectionTarget} fresh={Boolean(checkedConnectionTargetKey) && verifiedConnectionTargetKey === checkedConnectionTargetKey}
+              interactive={requiresInteractiveTerminal} onCheckTools={checkTools} onCheckAccounts={checkConnections} />
           {/if}
         </div>
 
