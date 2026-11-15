@@ -85,6 +85,16 @@ it('recovers from a quota rejection in a new region with Minimal choices and a f
   expect(screen.getByText('westus')).toBeInTheDocument();
   const coverage = screen.getByRole('region', { name: 'Review Maester coverage' });
   expect(within(coverage).getByText('Include Exchange checks').parentElement).toHaveTextContent('No');
+  const recoveredReview = review.mock.calls.find(([entry, values]) => entry.id === 'maester-automation' && values.location === 'westus');
+  expect(recoveredReview?.[0]).toMatchObject({ commit: '1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff' });
+  expect(recoveredReview?.[1]).toMatchObject({
+    includeWebApp: false,
+    includeExchange: false,
+    includeTeams: false,
+    includeAzure: false,
+    permissionProfile: 'Minimal',
+    mailRecipient: ''
+  });
   await fireEvent.click(screen.getByRole('checkbox', { name: /approve pinned template code execution/i }));
   await fireEvent.click(screen.getByRole('button', { name: 'Prepare and open terminal' }));
   await waitFor(() => expect(launch).toHaveBeenCalledTimes(2));
@@ -96,7 +106,7 @@ it('recovers from a quota rejection in a new region with Minimal choices and a f
     'maester-regional-fixture',
     expect.arrayContaining([expect.objectContaining({ name: 'AZURE_LOCATION', value: 'westus' })])
   ));
-  expect(review.mock.calls.some(([entry, values]) => entry.id === 'maester-automation' && values.location === 'westus')).toBe(true);
+  expect(recoveredReview).toBeDefined();
 });
 
 it('keeps an inconclusive terminal result distinct from a confirmed quota response', async () => {
