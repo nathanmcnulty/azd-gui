@@ -116,3 +116,13 @@ cleanup. See the [live pilot record](maester-minimal-pilot-20260921.md). Commit
 The bounded follow-ups through `1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`
 passed repository validation, dependency review, and CodeQL. They have not been
 redeployed, so live resource evidence remains bound to the exact predecessor.
+
+## Regional deployment recovery
+
+For the interactive Maester workflow, the application cannot observe an external terminal's deployment result. The operator can record an Azure error code or short quota detail after a stopped attempt. Only an explicit quota code or Azure detail naming an Automation Account regional quota is labeled as a quota rejection, and the UI states that this is operator-supplied evidence; all other details or a blank result remain unconfirmed. The wizard keeps the selected solution and configuration, blocks another terminal handoff to the failed region, invalidates the old handoff when the region changes, reruns the existing target-bound readiness review, and prepares a new handoff only after the current checks and approvals. It keeps only the classification, not the supplied text. This flow does not check quota, prove that a failed deployment left no resources, or replay an uncertain write.
+
+The current Minimal pilot uses a separately confirmed Azure portal quota view for target selection. Automatic quota preflight is proposed below and is not a prerequisite for this pilot.
+
+## Regional capacity preflight (roadmap)
+
+A template's count-based Automation Account warning cannot establish the subscription's effective per-region limit or remaining capacity, so ARM can still reject account creation after preparation. azd-gui needs a fresh, target-bound capacity result before any deployment action the active project contract allows. Azure Automation guidance describes portal views for regional Automation Account usage and limits; the public Microsoft Quota REST API documents a provider set that does not include Automation and requires provider registration plus the Quota Request Operator role. The stable Automation ARM specification version 2024-10-23 defines account listing and an account-scoped Usages route, but no subscription/region account-quota operation; the account Usages endpoint does not answer the pre-create quota question. The new [GUI-017 backlog item](backlog.md) will determine whether another supported read-only programmatic path exists and define safe behavior when the answer is unknown, without adding a blocked deployment path, terminal handoff, or copyable reviewed command. A quota check is not a reservation, so Azure may still reject a later create.
