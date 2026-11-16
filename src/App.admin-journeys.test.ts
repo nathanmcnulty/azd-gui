@@ -34,6 +34,8 @@ it('opens deployment-check and shows the native saved target even when generic e
   if(command==='list_project_environments')return [{name:'prod',isDefault:true,hasLocal:true,hasRemote:false,dotEnvPath:''},{name:'dev',isDefault:false,hasLocal:true,hasRemote:false,dotEnvPath:''}];
   if(command==='get_project_state')return {name:'Check'};
   if(command==='get_operation_history')return [];
+  if(command==='get_project_component_provenance')return {state:'notFound',unknownMetadata:false,components:[]};
+  if(command==='get_project_report_artifacts')return {context:null,observedAt:'',artifacts:[]};
   if(command==='get_project_environment_values')return ['AZURE_TENANT_ID','AZURE_SUBSCRIPTION_ID','AZURE_RESOURCE_GROUP'].map(name=>({name,isSet:true,sensitive:true,declared:false}));
   if(command==='get_project_validation_report'||command==='get_project_deployment_receipt')return {state:'notFound'};
   if(command==='get_project_verification_target')return {tenant:'11111111-1111-4111-8111-111111111111',subscription:'22222222-2222-4222-8222-222222222222',resourceGroup:'rg-fixture',digest:'reviewed-target'};

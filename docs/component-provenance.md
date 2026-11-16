@@ -89,3 +89,8 @@ is needed for this slice.
 Remote update availability is [#158](https://github.com/nathanmcnulty/azd-gui/issues/158).
 Explicitly trusted sync is [#159](https://github.com/nathanmcnulty/azd-gui/issues/159).
 This PR does not close those follow-on issues or claim all of GUI-007 is done.
+
+
+## Current integration
+
+The reader and project panel from #164 are reconciled with main after #181. Windows declared component and report children use #178's handle-relative file API; existing PIM, receipt and verification flows are retained. Drafts #164 and #167 are superseded by this review branch and should not be merged as their old stack. No remote repository access or update operation is added.

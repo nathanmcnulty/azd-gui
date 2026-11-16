@@ -251,7 +251,6 @@ impl Root {
 // Keep every ancestor pinned, and inspect the opened handle itself for reparse points.
 #[cfg(windows)]
 pub(crate) struct Root {
-    path: std::path::PathBuf,
     _ancestors: Vec<File>,
 }
 
@@ -306,29 +305,43 @@ impl Root {
             }
         }
         Ok(Self {
-            path: current,
             _ancestors: ancestors,
         })
     }
 
     pub(crate) fn file(&self, relative: &str) -> Result<File, ReadError> {
-        let mut current = self.path.clone();
+        if !safe_relative_path(relative) {
+            return Err(unsafe_path());
+        }
+        let mut parent = self._ancestors.last().ok_or_else(unsafe_path)?;
         let mut parents = Vec::new();
         let parts: Vec<_> = relative.split('/').collect();
         for (index, part) in parts.iter().enumerate() {
-            current.push(part);
             let last = index + 1 == parts.len();
-            let file = windows_open(&current, !last)?;
+            let file = crate::windows_file_handles::open_existing(parent, part, !last).map_err(
+                |error| match error {
+                    crate::error::AppError::Io(ref error)
+                        if matches!(error.raw_os_error(), Some(267 | 1920 | 4390 | 4393)) =>
+                    {
+                        unsafe_path()
+                    }
+                    crate::error::AppError::Io(error) => io_error(error),
+                    _ => unsafe_path(),
+                },
+            )?;
             if last {
+                reject_hard_links(&file)?;
                 return Ok(file);
             }
             parents.push(file);
+            parent = parents.last().ok_or_else(unsafe_path)?;
         }
         Err(unsafe_path())
     }
 }
 
 pub(crate) fn bounded_bytes(mut file: File, limit: u64) -> Result<Vec<u8>, ReadError> {
+    reject_hard_links(&file)?;
     if file.metadata().map_err(io_error)?.len() > limit {
         return Err(ReadError::Unsupported(Reason::LimitExceeded));
     }
@@ -341,6 +354,51 @@ pub(crate) fn bounded_bytes(mut file: File, limit: u64) -> Result<Vec<u8>, ReadE
         return Err(ReadError::Unsupported(Reason::LimitExceeded));
     }
     Ok(bytes)
+}
+
+fn reject_hard_links(file: &File) -> Result<(), ReadError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if file.metadata().map_err(io_error)?.nlink() != 1 {
+            return Err(unsafe_path());
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        #[repr(C)]
+        struct FileInformation {
+            attributes: u32,
+            creation: [u32; 2],
+            access: [u32; 2],
+            write: [u32; 2],
+            volume: u32,
+            size_high: u32,
+            size_low: u32,
+            links: u32,
+            index_high: u32,
+            index_low: u32,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileInformationByHandle(
+                handle: *mut std::ffi::c_void,
+                information: *mut FileInformation,
+            ) -> i32;
+        }
+        let mut information = std::mem::MaybeUninit::<FileInformation>::uninit();
+        // SAFETY: the handle is borrowed from a live File; the API initializes this C structure on success.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
+            == 0
+        {
+            return Err(io_error(io::Error::last_os_error()));
+        }
+        if unsafe { information.assume_init() }.links != 1 {
+            return Err(unsafe_path());
+        }
+    }
+    Ok(())
 }
 
 fn valid_hex(value: &str, length: usize) -> bool {
@@ -565,6 +623,7 @@ fn verify_file(
     remaining: &mut u64,
 ) -> Result<Status, ReadError> {
     let mut file = root.file(target)?;
+    reject_hard_links(&file)?;
     let metadata = file.metadata().map_err(io_error)?;
     let limit = MAX_FILE_BYTES.min(*remaining);
     if metadata.len() > limit {

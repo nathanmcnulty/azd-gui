@@ -1,9 +1,6 @@
 # Read-only deployment report artifacts (GUI-010 / issue #55)
 
-This is the first bounded report-viewing slice, based on the confined native
-file reader in provenance draft #164. It does not close #55. Verification
-checklists, typed actions (#157), and producer-bound freshness evidence remain
-separate work. No catalog consumer is opted in by this patch.
+This bounded local report viewer complements the verification and receipt views shipped in #178. It reuses the declaration and reveal behavior from #167 and the component reader from #164, with Windows child reads using the shared handle-relative API shipped in #178. No catalog consumer is opted in by this patch. Producer-bound freshness evidence remains separate work.
 
 ## Reviewed declaration
 
@@ -106,3 +103,9 @@ limitation must stay visible rather than suggesting a stale report has passed.
   read tool/provider status; no sign-in, preview, deployment, terminal launch or
   permission change was invoked. Signed packaging, clean-profile authentication,
   release acceptance and broader #55 verification work remain separate.
+
+## Reconciliation with existing project inspection
+
+This change starts from main after #181. It retains #178's PIM recovery, supported verification actions, private receipt readers and context reset behavior. Declared reports are additional local evidence, rendered as escaped text; they do not replace verification status or authorize actions. Component hashes establish local consistency only.
+
+The useful local inspection pieces from drafts #164 and #167 are reconciled here. Those drafts should be superseded by this PR after review, rather than merged as their old stack. Their dependency update is omitted because current main already contains the maintained dependency state. Remote update availability and trusted synchronization remain outside this change.

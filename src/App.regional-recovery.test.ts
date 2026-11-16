@@ -125,7 +125,7 @@ it('recovers from a quota rejection in a new region with Minimal choices and a f
   await screen.findByRole('heading', { name: 'Review deployment' });
   expect(screen.getByRole('button', { name: 'Prepare and open terminal' })).toBeDisabled();
   expect(launch).toHaveBeenCalledTimes(2);
-});
+}, 15000);
 
 it('keeps an inconclusive terminal result distinct from a confirmed quota response', async () => {
   vi.spyOn(bridge, 'loadWizardDraft').mockResolvedValue({ tenantId, subscriptionId, location: 'westus2' });

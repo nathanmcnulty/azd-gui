@@ -201,6 +201,27 @@ pub fn read(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_hard_linked_reports_without_revealing_external_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("reports")).unwrap();
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "external sensitive bytes").unwrap();
+        std::fs::hard_link(&secret, root.path().join("reports/plan.json")).unwrap();
+        let ordinary = read(
+            root.path(),
+            &contract("reports/plan.json", false),
+            context(),
+            None,
+        );
+        assert_no_payload(&ordinary.artifacts[0], ArtifactState::UnsafePath);
+        let sensitive = contract("reports/plan.json", true);
+        let hidden = read(root.path(), &sensitive, context(), None);
+        assert_no_payload(&hidden.artifacts[0], ArtifactState::Hidden);
+        let revealed = read(root.path(), &sensitive, context(), Some("plan"));
+        assert_no_payload(&revealed.artifacts[0], ArtifactState::UnsafePath);
+    }
     use super::*;
     fn contract(path: &str, sensitive: bool) -> ArtifactContract {
         ArtifactContract {
