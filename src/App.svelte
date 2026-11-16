@@ -172,6 +172,7 @@
   let commandQuery = "";
   let catalogQuery = "";
   let selectedEntry: CatalogEntry | null = null;
+  let reviewedCatalogFallback: { entry: CatalogEntry; values: WizardValues } | null = null;
   let evaluatedRequiredTools: ToolStatus[] | null = null;
   let prerequisiteEvaluationKey = "";
   let prerequisiteEvaluationRequest = 0;
@@ -708,6 +709,7 @@
     wizardEditGeneration = 0;
     draftNotice = null;
     selectedEntry = entry;
+    reviewedCatalogFallback = null;
     selectedInspection = null;
     sourceTrustAccepted = Boolean(entry.trusted);
     hookExecutionAccepted = false;
@@ -754,11 +756,35 @@
     flushDraftSave();
     wizardSession += 1;
     selectedEntry = null;
+    reviewedCatalogFallback = null;
     wizardAcknowledgements = [];
     draftNotice = null;
   }
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    const currentCatalogMode = selectedEntry?.source === "external" ? "externalCatalog" : "catalog";
+    if (
+      id === "sourceMode" &&
+      selectedEntry &&
+      selectedEntry.source !== "local" &&
+      wizardValues.sourceMode === currentCatalogMode &&
+      value !== currentCatalogMode
+    ) {
+      reviewedCatalogFallback = {
+        entry: structuredClone(selectedEntry),
+        values: structuredClone(wizardValues)
+      };
+    }
+    if (id === "sourceMode" && (value === "catalog" || value === "externalCatalog") && selectedEntry?.source === "local") {
+      if (!reviewedCatalogFallback) return;
+      selectedEntry = reviewedCatalogFallback.entry;
+      wizardValues = structuredClone(reviewedCatalogFallback.values);
+      reviewedCatalogFallback = null;
+      selectedInspection = null;
+      wizardAcknowledgements = [];
+      sourceTrustAccepted = Boolean(selectedEntry.trusted);
+      value = selectedEntry.source === "external" ? "externalCatalog" : "catalog";
+    }
     clearTerminalHandoff();
     if (id !== "location") regionalFailureReport = null;
     terminalFailureEvidence = "";
@@ -2722,6 +2748,8 @@
                 class:active={wizardValues.sourceMode === "catalog" || wizardValues.sourceMode === "externalCatalog"}
                 class="choice-card"
                 aria-pressed={wizardValues.sourceMode === "catalog" || wizardValues.sourceMode === "externalCatalog"}
+                disabled={selectedEntry.source === "local" && !reviewedCatalogFallback}
+                title={selectedEntry.source === "local" && !reviewedCatalogFallback ? "Open a reviewed catalog template first to return to its pinned source." : undefined}
                 on:click={() => setWizardValue("sourceMode", selectedEntry?.source === "external" ? "externalCatalog" : "catalog")}
               >
                 <Icon name="catalog" size={24} />
