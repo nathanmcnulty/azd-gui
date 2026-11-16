@@ -13,6 +13,8 @@
   import TerminalHandoff from "./components/TerminalHandoff.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
   import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
+  import ProjectReportArtifacts from "./components/ProjectReportArtifacts.svelte";
+  import ProjectComponentProvenance from "./components/ProjectComponentProvenance.svelte";
   import StatusPill from "./components/StatusPill.svelte";
   import VisibleProfiles from "./components/VisibleProfiles.svelte";
   import WizardConfigurationReview from "./components/WizardConfigurationReview.svelte";
@@ -3400,6 +3402,8 @@
               {/if}
               <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />
               <ProjectDeploymentReceipt project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest]} />
+              <ProjectComponentProvenance project={selectedProject} />
+              <ProjectReportArtifacts project={selectedProject} reportContext={{ snapshot: selectedProjectTemplate?.digest, connections: data.connections, configuration: environmentConfigurationValues, savedConfiguration: projectEnvironmentValues, outputs: projectState, configurationBusy: environmentConfigurationBusy, environmentBusy }} />
               {#if activeOperationKind === "up" || projectDeploymentResult}
                 <section class="workspace-panel full project-deployment-result" aria-label="Latest deployment">
                   <div class="section-toolbar">

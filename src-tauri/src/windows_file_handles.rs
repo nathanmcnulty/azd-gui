@@ -106,6 +106,11 @@ fn child(directory: &File, name: &str, is_directory: bool, guard: bool) -> AppRe
         )
     };
     if result < 0 {
+        if matches!(result as u32, 0xC00000BA | 0xC0000103 | 0xC000050B) {
+            return Err(AppError::Invalid(
+                "Unsafe native child type or reparse point.".into(),
+            ));
+        }
         return Err(AppError::Io(std::io::Error::from_raw_os_error(unsafe {
             RtlNtStatusToDosError(result)
         }
