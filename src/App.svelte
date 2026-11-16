@@ -55,6 +55,7 @@
     setProjectEnvironmentValues
   } from "./lib/bridge";
   import { mockBootstrap } from "./lib/mock-data";
+  import { classifyAzureQuotaEvidence, type ConfirmedQuotaErrorCode } from "./lib/regional-recovery";
   import { effectiveRequirements, effectiveConnectionRequirements, requirementEnvironmentValues } from "./lib/requirements";
   import { toolReadiness } from "./lib/readiness";
   import WizardReadiness from "./components/WizardReadiness.svelte";
@@ -132,6 +133,16 @@
     state?: AzdProjectState;
     refreshError?: string;
   };
+  type RegionalFailureReport = {
+    templateId: string;
+    environment: string;
+    location: string;
+    subscriptionId: string;
+    classification: "quota-reported" | "quota-unconfirmed";
+    azureCode?: ConfirmedQuotaErrorCode;
+    regionalMessageReported?: boolean;
+    recordedAt: string;
+  };
 
   const navigation: { id: NavId; label: string; icon: IconName }[] = [
     { id: "home", label: "Home", icon: "home" },
@@ -161,6 +172,7 @@
   let commandQuery = "";
   let catalogQuery = "";
   let selectedEntry: CatalogEntry | null = null;
+  let reviewedCatalogFallback: { entry: CatalogEntry; values: WizardValues } | null = null;
   let evaluatedRequiredTools: ToolStatus[] | null = null;
   let prerequisiteEvaluationKey = "";
   let prerequisiteEvaluationRequest = 0;
@@ -212,6 +224,8 @@
   let preparedEnvironmentName: string | null = null;
   let preparedEnvironmentVariables = new Map<string, Set<string>>();
   let terminalLaunch: ExternalTerminalLaunch | null = null;
+  let terminalFailureEvidence = "";
+  let regionalFailureReport: RegionalFailureReport | null = null;
   let terminalRequest = 0;
   let terminalOpening = false;
   let interactivePreparing = false;
@@ -462,6 +476,11 @@
   $: requiredToolsReady = Boolean(requirementReview) && requiredTools
     .filter((tool) => tool.required)
     .every((tool) => tool.state === "ready");
+  $: regionalRetryBlocked = Boolean(
+    regionalFailureReport &&
+    String(wizardValues.subscriptionId || "").trim().toLowerCase() === regionalFailureReport.subscriptionId.trim().toLowerCase() &&
+    String(wizardValues.location || "").trim().toLowerCase() === regionalFailureReport.location.trim().toLowerCase()
+  );
   $: requiredConnectionsReady = requiredConnections
     .filter((connection) => connection.required)
     .every(connectionMeetsRequirements);
@@ -694,10 +713,13 @@
     wizardEditGeneration = 0;
     draftNotice = null;
     selectedEntry = entry;
+    reviewedCatalogFallback = null;
     selectedInspection = null;
     sourceTrustAccepted = Boolean(entry.trusted);
     hookExecutionAccepted = false;
     clearTerminalHandoff();
+    terminalFailureEvidence = "";
+    regionalFailureReport = null;
     wizardAcknowledgements = [];
     wizardValues = initializeValues(entry);
     wizardPlan = calculateWizardPlan(entry, wizardValues);
@@ -732,16 +754,43 @@
 
   function closeWizard() {
     clearTerminalHandoff();
+    terminalFailureEvidence = "";
+    regionalFailureReport = null;
     invalidateGraphSession();
     flushDraftSave();
     wizardSession += 1;
     selectedEntry = null;
+    reviewedCatalogFallback = null;
     wizardAcknowledgements = [];
     draftNotice = null;
   }
 
   function setWizardValue(id: string, value: string | boolean | string[]) {
+    const currentCatalogMode = selectedEntry?.source === "external" ? "externalCatalog" : "catalog";
+    if (
+      id === "sourceMode" &&
+      selectedEntry &&
+      selectedEntry.source !== "local" &&
+      wizardValues.sourceMode === currentCatalogMode &&
+      value !== currentCatalogMode
+    ) {
+      reviewedCatalogFallback = {
+        entry: structuredClone(selectedEntry),
+        values: structuredClone(wizardValues)
+      };
+    }
+    if (id === "sourceMode" && (value === "catalog" || value === "externalCatalog") && selectedEntry?.source === "local") {
+      if (!reviewedCatalogFallback) return;
+      selectedEntry = reviewedCatalogFallback.entry;
+      wizardValues = structuredClone(reviewedCatalogFallback.values);
+      reviewedCatalogFallback = null;
+      selectedInspection = null;
+      wizardAcknowledgements = [];
+      sourceTrustAccepted = Boolean(selectedEntry.trusted);
+      value = selectedEntry.source === "external" ? "externalCatalog" : "catalog";
+    }
     clearTerminalHandoff();
+    terminalFailureEvidence = "";
     invalidateGraphSession();
     wizardEditGeneration += 1;
     if (["tenantId", "subscriptionId", "location"].includes(id)) azureTargetGeneration += 1;
@@ -1451,6 +1500,10 @@
 
   async function prepareAndOpenInteractiveTerminal() {
     if (!selectedEntry || activeOperationId || interactivePreparing) return;
+    if (regionalRetryBlocked) {
+      addSystemLog("Choose a different subscription or region and rerun readiness before preparing a new terminal handoff. The failed target will not be replayed.", "warning");
+      return;
+    }
     const session = wizardSession;
     const generation = wizardEditGeneration;
     const environment = String(wizardValues.environmentName || "dev");
@@ -2077,6 +2130,37 @@
     }
   }
 
+  function recordInteractiveDeploymentFailure() {
+    if (!selectedEntry || !requiresInteractiveTerminal || !terminalLaunch?.opened || terminalLaunch.historical) return;
+    const quotaEvidence = classifyAzureQuotaEvidence(terminalFailureEvidence);
+    regionalFailureReport = {
+      templateId: selectedEntry.id,
+      environment: String(wizardValues.environmentName || "dev"),
+      location: String(wizardValues.location || ""),
+      subscriptionId: String(wizardValues.subscriptionId || ""),
+      classification: quotaEvidence ? "quota-reported" : "quota-unconfirmed",
+      ...(quotaEvidence?.kind === "error-code" ? { azureCode: quotaEvidence.code } : {}),
+      ...(quotaEvidence?.kind === "regional-quota-message" ? { regionalMessageReported: true } : {}),
+      recordedAt: new Date().toISOString()
+    };
+    terminalFailureEvidence = "";
+    // A failed interactive attempt must not leave its old target handoff available to retry.
+    clearTerminalHandoff();
+  }
+
+  function openRegionalRecoveryTarget() {
+    if (!wizardPlan || !regionalFailureReport) return;
+    const environmentPage = wizardPlan.pages.findIndex((page) => page.kind === "environment");
+    if (environmentPage >= 0) activeStep = environmentPage;
+  }
+
+  function azureLocationLabel(location: string) {
+    const discovered = azureDiscovery?.locations.find((item) => item.name.toLowerCase() === location.toLowerCase());
+    if (discovered) return discovered.regionalDisplayName ?? discovered.displayName;
+    const known: Record<string, string> = { westus: "West US", westus2: "West US 2", eastus: "East US", centralus: "Central US", westeurope: "West Europe" };
+    return known[location.toLowerCase()] ?? location;
+  }
+
   function clearTerminalHandoff() { terminalRequest += 1; terminalLaunch = null; }
 
   async function restoreTerminalHandoff(path: string, environment: string | undefined, isCurrent: () => boolean) {
@@ -2667,6 +2751,8 @@
                 class:active={wizardValues.sourceMode === "catalog" || wizardValues.sourceMode === "externalCatalog"}
                 class="choice-card"
                 aria-pressed={wizardValues.sourceMode === "catalog" || wizardValues.sourceMode === "externalCatalog"}
+                disabled={selectedEntry.source === "local" && !reviewedCatalogFallback}
+                title={selectedEntry.source === "local" && !reviewedCatalogFallback ? "Open a reviewed catalog template first to return to its pinned source." : undefined}
                 on:click={() => setWizardValue("sourceMode", selectedEntry?.source === "external" ? "externalCatalog" : "catalog")}
               >
                 <Icon name="catalog" size={24} />
@@ -2973,12 +3059,14 @@
                       <option value={location.name}>{location.regionalDisplayName ?? location.displayName}</option>
                     {/each}
                   {:else}
+                    <option value="westus">West US</option>
                     <option value="westus2">West US 2</option>
                     <option value="eastus">East US</option>
                     <option value="centralus">Central US</option>
                     <option value="westeurope">West Europe</option>
                   {/if}
                 </select>
+                <small>Readiness checks do not query Automation Account quota. Confirm regional capacity separately before deploying.</small>
               </label>
               <label class="field">
                 <span>Resource group</span>
@@ -2986,6 +3074,22 @@
                 <small>Choose an existing group or enter a new name.</small>
               </label>
             </div>
+            {#if regionalFailureReport}
+              <section class="regional-attempt" aria-label="Regional deployment recovery status">
+                <h3>{regionalFailureReport.classification === "quota-reported" ? "Previous quota rejection" : "Previous quota result unconfirmed"}</h3>
+                <p>Previous target: {azureLocationLabel(regionalFailureReport.location)} ({regionalFailureReport.location}) · environment {regionalFailureReport.environment} · subscription {regionalFailureReport.subscriptionId || "not recorded"}</p>
+                {#if regionalFailureReport.classification === "quota-reported"}
+                  <p>{regionalFailureReport.azureCode ? `The operator-entered Azure error code ${regionalFailureReport.azureCode} reports a quota limit.` : "The operator-entered Azure detail explicitly reports an Automation Account regional quota limit."} The app has not checked live quota.</p>
+                {:else}
+                  <p>No recognized quota code was provided. Quota exhaustion remains unconfirmed; this app cannot query regional capacity.</p>
+                {/if}
+                {#if regionalRetryBlocked}
+                  <p>Choose a different subscription or region before creating another terminal handoff for this project.</p>
+                {:else}
+                  <p>This report is historical evidence for the previous target. Current target: subscription {wizardValues.subscriptionId || "not selected"}, {azureLocationLabel(String(wizardValues.location || ""))}. Continue through readiness to refresh checks for this target; quota is still not checked.</p>
+                {/if}
+              </section>
+            {/if}
             <datalist id="azure-resource-groups">
               {#each azureDiscovery?.resourceGroups ?? [] as group}<option value={group.name}>{group.location}</option>{/each}
             </datalist>
@@ -3032,7 +3136,7 @@
               <h2>{requiresInteractiveTerminal ? "Prepare for interactive terminal" : preflightRan ? "Preview completed" : "Run checks and template preview"}</h2>
               <p>{requiresInteractiveTerminal ? "Permission checks remain read-only. Prepare the approved project, then finish its prompts in an external terminal." : preflightRan ? "Manifest, tools, connections, environment inputs, and infrastructure preview completed. Review Output for hook-driven changes." : "Permission checks are read-only. Project initialization and azd preview can execute pinned template hooks that modify local or cloud state."}</p>
               {#if requiresInteractiveTerminal}
-                <button class="primary large" disabled={wizardAcknowledgementIssues.length > 0 || terminalOpening || interactivePreparing || Boolean(activeOperationId)} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+                <button class="primary large" disabled={wizardAcknowledgementIssues.length > 0 || terminalOpening || interactivePreparing || Boolean(activeOperationId) || regionalRetryBlocked} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
               {:else}
                 <button class="primary large" on:click={runPreflight} disabled={wizardAcknowledgementIssues.length > 0 || preflightStarting || operationState === "running" || Boolean(activeOperationId)}><Icon name="play" size={16} /> {permissionChecksRunning ? "Checking access…" : preflightRan ? "Run again" : "Run checks and preview"}</button>
               {/if}
@@ -3091,6 +3195,35 @@
               </section>
               <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} acknowledgementProofs={wizardAcknowledgements} on:edit={(event) => editReviewSection(event.detail)} />
             </div>
+            {#if terminalLaunch?.opened && !terminalLaunch.historical && requiresInteractiveTerminal}
+              <section class="regional-attempt" aria-label="Record deployment outcome">
+                <h3>After the terminal attempt</h3>
+                <p>The app cannot see what happened in the external terminal. If you ran the deployment and it stopped, record the Azure quota error code below. This only records your observation; it does not retry or change Azure.</p>
+                <label class="field">
+                  <span>Azure quota error code or short quota detail, if shown</span>
+                  <input value={terminalFailureEvidence} maxlength="512" autocomplete="off" placeholder="For example: ResourceQuotaExceeded or an Automation Account quota message" on:input={(event) => (terminalFailureEvidence = event.currentTarget.value)} />
+                  <small>Enter an error code or short Azure quota detail. Leave blank when no reliable result was available. Do not paste full terminal output or secrets; only the classification is kept.</small>
+                </label>
+                <button class="secondary" on:click={recordInteractiveDeploymentFailure}>Record stopped attempt</button>
+              </section>
+            {/if}
+            {#if regionalFailureReport}
+              <section class="regional-attempt" aria-label="Previous regional deployment attempt">
+                <h3>{regionalFailureReport.classification === "quota-reported" ? "Quota rejection reported" : "Quota could not be confirmed"}</h3>
+                <p>Previous target: {azureLocationLabel(regionalFailureReport.location)} ({regionalFailureReport.location}) · environment {regionalFailureReport.environment} · subscription {regionalFailureReport.subscriptionId || "not recorded"}</p>
+                {#if regionalFailureReport.classification === "quota-reported"}
+                  <p>{regionalFailureReport.azureCode ? `Operator-entered Azure error code ${regionalFailureReport.azureCode} reports a quota limit for this attempt.` : "The operator-entered Azure detail explicitly reports an Automation Account regional quota limit for this attempt."} The app did not independently check regional capacity.</p>
+                {:else}
+                  <p>No recognized Azure quota error code was provided. Quota exhaustion is unconfirmed, and this app cannot query regional capacity. Check the service quota separately before choosing another subscription or region.</p>
+                {/if}
+                {#if regionalRetryBlocked}
+                  <p>The failed attempt is for the current subscription and region. The selected solution and configuration remain in this wizard.</p>
+                  <button class="secondary" on:click={openRegionalRecoveryTarget}>Choose a different subscription or region and rerun readiness</button>
+                {:else}
+                  <p>This is historical evidence for subscription {regionalFailureReport.subscriptionId || "not recorded"}, {azureLocationLabel(regionalFailureReport.location)}. Current target: subscription {wizardValues.subscriptionId || "not selected"}, {azureLocationLabel(String(wizardValues.location || ""))}. Continue through the readiness pages before creating a new terminal handoff. Readiness does not confirm quota.</p>
+                {/if}
+              </section>
+            {/if}
             <div class="callout warning interactive-hook-warning">
               <Icon name="warning" size={18} />
               <div>
@@ -3098,7 +3231,7 @@
                 <p>Project initialization, preview, and deployment can execute template hooks. Hooks may change local files, Azure resources, or directory objects. A hook that requests input may require the external terminal.</p>
               </div>
               {#if requiresInteractiveTerminal}
-                <button class="secondary" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={14} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+                <button class="secondary" disabled={terminalOpening || interactivePreparing || regionalRetryBlocked} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={14} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
               {/if}
             </div>
             <label class="toggle-line card">
@@ -3116,7 +3249,7 @@
                 <button class="danger" disabled={!currentWizardDeployment?.operationId} on:click={stopWizardDeployment}><Icon name="stop" size={15} /> Cancel deployment</button>
               {:else}
                 {#if requiresInteractiveTerminal}
-                  <button class="primary large" disabled={terminalOpening || interactivePreparing} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
+                  <button class="primary large" disabled={terminalOpening || interactivePreparing || regionalRetryBlocked} on:click={prepareAndOpenInteractiveTerminal}><Icon name="terminal" size={16} /> {interactivePreparing ? "Preparing…" : "Prepare and open terminal"}</button>
                 {:else}
                   <button class="primary large" disabled={wizardAcknowledgementIssues.length > 0} on:click={() => runDeployment("up")}><Icon name="play" size={16} /> {wizardDeploymentState === "succeeded" ? "Deploy again" : wizardDeploymentEvent?.outcome?.retryable ? "Retry azd up" : "Deploy with azd up"}</button>
                 {/if}

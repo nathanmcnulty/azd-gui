@@ -2689,6 +2689,40 @@ button.compact {
   color: var(--success);
 }
 
+.regional-attempt {
+  display: grid;
+  margin-top: 18px;
+  padding: 16px;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.regional-attempt h3,
+.regional-attempt p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.regional-attempt h3 {
+  font-size: 15px;
+}
+
+.regional-attempt p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.regional-attempt .field {
+  margin-top: 4px;
+}
+
+.regional-attempt button {
+  justify-self: start;
+}
+
 .permission-results {
   display: grid;
   margin-top: 12px;

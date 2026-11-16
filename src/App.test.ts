@@ -593,6 +593,7 @@ describe("desktop experience", () => {
       "maester-automation",
       expect.objectContaining({ id: "maester-automation" })
     ));
+    expect(screen.getByRole("button", { name: /reviewed catalog/i })).toBeDisabled();
     const folder = screen.getByPlaceholderText("Choose a folder");
     expect(folder).toHaveValue("C:\\GitHub\\sample-azd-project");
     await act(() => {
@@ -607,6 +608,37 @@ describe("desktop experience", () => {
       "aria-pressed",
       "true"
     );
+  });
+
+  it("returns to the pinned catalog source after inspecting an existing project", async () => {
+    const inspectLocal = vi.spyOn(bridge, "inspectLocalTemplate");
+    render(App);
+
+    await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
+    const maesterCard = screen.getByRole("heading", { name: /Maester.*Automation Account/i }).closest("article");
+    expect(maesterCard).not.toBeNull();
+    await fireEvent.click(within(maesterCard!).getByRole("button", { name: /configure deployment/i }));
+    await fireEvent.click(screen.getByRole("button", { name: /open existing project/i }));
+    await fireEvent.input(screen.getByPlaceholderText("Choose a folder"), {
+      target: { value: "C:\\Deployments\\maester-existing" }
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /^continue/i }));
+
+    expect(await screen.findByText("Mutable local source")).toBeInTheDocument();
+    expect(inspectLocal).toHaveBeenCalledWith("C:\\Deployments\\maester-existing");
+    await fireEvent.click(screen.getByRole("button", { name: /^Back$/i }));
+
+    const reviewedCatalog = screen.getByRole("button", { name: /reviewed catalog/i });
+    expect(reviewedCatalog).toBeEnabled();
+    await fireEvent.click(reviewedCatalog);
+    expect(reviewedCatalog).toHaveAttribute("aria-pressed", "true");
+    const destination = screen.getByPlaceholderText(/empty destination folder/i);
+    expect(destination).toHaveValue("");
+    await fireEvent.input(destination, { target: { value: "C:\\Deployments\\maester-pinned" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^continue/i }));
+
+    expect(await screen.findByText("1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff")).toBeInTheDocument();
+    expect(screen.queryByText("Mutable local source")).not.toBeInTheDocument();
   });
 
   it("advances an external catalog template without source inspection", async () => {
