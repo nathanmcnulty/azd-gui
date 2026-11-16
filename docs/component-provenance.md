@@ -82,7 +82,7 @@ remain manual-only under [the Actions usage policy](actions-policy.md); ordinary
 pushes and draft PRs should not schedule a workflow.
 
 This remains a reviewable draft until independent review and applicable checks
-complete. Clean-VM Windows visual/native acceptance stays separate. No live
+complete. Synthetic packaged Windows acceptance covers reopen, drift, missing files, declared report reveal and context reset, hard links, report-directory junctions, oversized and binary reports. Clean-VM release qualification remains separate. No live
 Azure validation, authentication, permissions, signing, release, or deployment
 is needed for this slice.
 
