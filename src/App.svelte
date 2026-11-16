@@ -476,7 +476,11 @@
   $: requiredToolsReady = Boolean(requirementReview) && requiredTools
     .filter((tool) => tool.required)
     .every((tool) => tool.state === "ready");
-  $: regionalRetryBlocked = Boolean(regionalFailureReport && String(wizardValues.location || "").toLowerCase() === regionalFailureReport.location.toLowerCase());
+  $: regionalRetryBlocked = Boolean(
+    regionalFailureReport &&
+    String(wizardValues.subscriptionId || "").trim().toLowerCase() === regionalFailureReport.subscriptionId.trim().toLowerCase() &&
+    String(wizardValues.location || "").trim().toLowerCase() === regionalFailureReport.location.trim().toLowerCase()
+  );
   $: requiredConnectionsReady = requiredConnections
     .filter((connection) => connection.required)
     .every(connectionMeetsRequirements);
@@ -786,7 +790,6 @@
       value = selectedEntry.source === "external" ? "externalCatalog" : "catalog";
     }
     clearTerminalHandoff();
-    if (id !== "location") regionalFailureReport = null;
     terminalFailureEvidence = "";
     invalidateGraphSession();
     wizardEditGeneration += 1;
@@ -1498,7 +1501,7 @@
   async function prepareAndOpenInteractiveTerminal() {
     if (!selectedEntry || activeOperationId || interactivePreparing) return;
     if (regionalRetryBlocked) {
-      addSystemLog("Choose a different region and rerun readiness before preparing a new terminal handoff. The failed target will not be replayed.", "warning");
+      addSystemLog("Choose a different subscription or region and rerun readiness before preparing a new terminal handoff. The failed target will not be replayed.", "warning");
       return;
     }
     const session = wizardSession;
@@ -3080,10 +3083,10 @@
                 {:else}
                   <p>No recognized quota code was provided. Quota exhaustion remains unconfirmed; this app cannot query regional capacity.</p>
                 {/if}
-                {#if String(wizardValues.location || "").toLowerCase() === regionalFailureReport.location.toLowerCase()}
-                  <p>Choose a different region before creating another terminal handoff for this project.</p>
+                {#if regionalRetryBlocked}
+                  <p>Choose a different subscription or region before creating another terminal handoff for this project.</p>
                 {:else}
-                  <p>This report is historical for the previous region. Continue through readiness to refresh checks for the selected target; quota is still not checked.</p>
+                  <p>This report is historical evidence for the previous target. Current target: subscription {wizardValues.subscriptionId || "not selected"}, {azureLocationLabel(String(wizardValues.location || ""))}. Continue through readiness to refresh checks for this target; quota is still not checked.</p>
                 {/if}
               </section>
             {/if}
@@ -3211,13 +3214,13 @@
                 {#if regionalFailureReport.classification === "quota-reported"}
                   <p>{regionalFailureReport.azureCode ? `Operator-entered Azure error code ${regionalFailureReport.azureCode} reports a quota limit for this attempt.` : "The operator-entered Azure detail explicitly reports an Automation Account regional quota limit for this attempt."} The app did not independently check regional capacity.</p>
                 {:else}
-                  <p>No recognized Azure quota error code was provided. Quota exhaustion is unconfirmed, and this app cannot query regional capacity. Check the service quota separately before choosing another region.</p>
+                  <p>No recognized Azure quota error code was provided. Quota exhaustion is unconfirmed, and this app cannot query regional capacity. Check the service quota separately before choosing another subscription or region.</p>
                 {/if}
-                {#if String(wizardValues.location || "").toLowerCase() === regionalFailureReport.location.toLowerCase()}
-                  <p>The failed attempt is for the current region. The selected solution and configuration remain in this wizard.</p>
-                  <button class="secondary" on:click={openRegionalRecoveryTarget}>Choose a different region and rerun readiness</button>
+                {#if regionalRetryBlocked}
+                  <p>The failed attempt is for the current subscription and region. The selected solution and configuration remain in this wizard.</p>
+                  <button class="secondary" on:click={openRegionalRecoveryTarget}>Choose a different subscription or region and rerun readiness</button>
                 {:else}
-                  <p>This is historical evidence for {azureLocationLabel(regionalFailureReport.location)}. The selected target is now {azureLocationLabel(String(wizardValues.location || ""))}; continue through the readiness pages before creating a new terminal handoff. Readiness does not confirm quota.</p>
+                  <p>This is historical evidence for subscription {regionalFailureReport.subscriptionId || "not recorded"}, {azureLocationLabel(regionalFailureReport.location)}. Current target: subscription {wizardValues.subscriptionId || "not selected"}, {azureLocationLabel(String(wizardValues.location || ""))}. Continue through the readiness pages before creating a new terminal handoff. Readiness does not confirm quota.</p>
                 {/if}
               </section>
             {/if}

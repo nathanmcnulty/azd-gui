@@ -70,13 +70,19 @@ it('recovers from a quota rejection in a new region with Minimal choices and a f
   expect(screen.getByRole('button', { name: /Prepare and open terminal/i })).toBeDisabled();
   expect(launch).toHaveBeenCalledTimes(1);
 
-  await fireEvent.click(screen.getByRole('button', { name: 'Choose a different region and rerun readiness' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Choose a different subscription or region and rerun readiness' }));
+  const resourceGroup = screen.getByPlaceholderText('Created from environment name');
+  await fireEvent.input(resourceGroup, { target: { value: 'rg-maester-regional-fixture-edited' } });
+  expect(screen.getByRole('heading', { name: /Previous quota rejection/ })).toBeInTheDocument();
+  expect(screen.getByText(/Choose a different subscription or region before creating another terminal handoff/)).toBeInTheDocument();
+
   const region = screen.getByRole('combobox', { name: /Azure region/i });
   expect(region).toHaveValue('westus2');
+  const westusReadinessCallsBeforeChange = readiness.mock.calls.filter(([selection]) => selection.target?.location === 'westus').length;
   await fireEvent.change(region, { target: { value: 'westus' } });
-  await waitFor(() => expect(readiness.mock.calls.some(([selection]) => selection.target?.location === 'westus')).toBe(true));
+  await waitFor(() => expect(readiness.mock.calls.filter(([selection]) => selection.target?.location === 'westus').length).toBeGreaterThan(westusReadinessCallsBeforeChange));
   expect(screen.getByRole('heading', { name: /Previous quota rejection/ })).toBeInTheDocument();
-  expect(screen.getByText(/historical for the previous region/i)).toBeInTheDocument();
+  expect(screen.getByText(/historical evidence for the previous target/i)).toBeInTheDocument();
   expect(screen.queryByRole('region', { name: 'Terminal handoff' })).not.toBeInTheDocument();
 
   // Continue through the current target's checks; the catalog source and Minimal profile are preserved.
@@ -107,6 +113,18 @@ it('recovers from a quota rejection in a new region with Minimal choices and a f
     expect.arrayContaining([expect.objectContaining({ name: 'AZURE_LOCATION', value: 'westus' })])
   ));
   expect(recoveredReview).toBeDefined();
+
+  await fireEvent.click(screen.getByRole('button', { name: 'Edit Azure environment' }));
+  const returnedRegion = screen.getByRole('combobox', { name: /Azure region/i });
+  const failedTargetReadinessCallsBeforeReturn = readiness.mock.calls.filter(([selection]) => selection.target?.location === 'westus2').length;
+  await fireEvent.change(returnedRegion, { target: { value: 'westus2' } });
+  await waitFor(() => expect(readiness.mock.calls.filter(([selection]) => selection.target?.location === 'westus2').length).toBeGreaterThan(failedTargetReadinessCallsBeforeReturn));
+  expect(screen.getByRole('heading', { name: /Previous quota rejection/ })).toBeInTheDocument();
+  expect(screen.getByText(/Choose a different subscription or region before creating another terminal handoff/)).toBeInTheDocument();
+  for (let attempt = 0; attempt < 12 && !screen.queryByRole('heading', { name: 'Review deployment' }); attempt += 1) await next();
+  await screen.findByRole('heading', { name: 'Review deployment' });
+  expect(screen.getByRole('button', { name: 'Prepare and open terminal' })).toBeDisabled();
+  expect(launch).toHaveBeenCalledTimes(2);
 });
 
 it('keeps an inconclusive terminal result distinct from a confirmed quota response', async () => {
