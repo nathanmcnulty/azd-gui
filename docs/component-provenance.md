@@ -82,9 +82,29 @@ remain manual-only under [the Actions usage policy](actions-policy.md); ordinary
 pushes and draft PRs should not schedule a workflow.
 
 This remains a reviewable draft until independent review and applicable checks
-complete. Synthetic packaged Windows acceptance covers reopen, drift, missing files, declared report reveal and context reset, hard links, report-directory junctions, oversized and binary reports. Clean-VM release qualification remains separate. No live
-Azure validation, authentication, permissions, signing, release, or deployment
-is needed for this slice.
+complete. Historical Windows acceptance used an unbundled debug executable with
+an embedded production frontend and real native IPC. It covered reopen, drift,
+missing files, declared report reveal and context reset, hard links,
+report-directory junctions, oversized and binary reports.
+
+The 2026-11-21 follow-up fixes Unix test-helper availability and withholds content,
+hash and modification time from every rejected report. Fresh Windows validation
+passed 10 report-reader tests, 277 native tests (42 intentionally ignored),
+all-targets Clippy with warnings denied, formatting, and the frontend build.
+A fresh unsigned debug NSIS bundle was installed under an isolated test identity.
+All eight installed catalog/manifest/schema resources matched source bytes. Its
+synthetic native WebView journey and full process close/reopen passed, including
+sensitive reveal reset and IPC assertions that rejected reports omit payload
+metadata. These results do not establish signed release or clean-VM acceptance.
+No local Unix runtime was available for a fresh Unix test run.
+
+The unchanged Cargo lockfile still fails the dependency audit. Quinn and rustix
+are absent from the active Windows graph; SQLite is bundled for the app's private
+database, not for report files. SQLite remediation and the new chrono maintenance
+warning belong in separate dependency work; the audit remains a release gate.
+Clean-VM standard-user, signed installed-payload and applicable release checks
+remain outstanding. No live Azure validation, authentication, permissions,
+signing, release, or deployment is needed for this slice.
 
 Remote update availability is [#158](https://github.com/nathanmcnulty/azd-gui/issues/158).
 Explicitly trusted sync is [#159](https://github.com/nathanmcnulty/azd-gui/issues/159).

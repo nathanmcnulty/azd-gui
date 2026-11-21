@@ -155,7 +155,7 @@ pub fn read(
                     return result;
                 }
             };
-            result.modified_at = file
+            let modified_at = file
                 .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
@@ -186,6 +186,7 @@ pub fn read(
                 result.state = ArtifactState::Invalid;
                 return result;
             }
+            result.modified_at = modified_at;
             result.sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
             result.content = Some(text.to_owned());
             result.state = ArtifactState::Available;
@@ -325,22 +326,16 @@ mod tests {
             b"\"\0\"".to_vec(),
         ] {
             std::fs::write(&p, bytes).unwrap();
-            assert_eq!(
-                read(d.path(), &c, context(), None).artifacts[0].state,
-                ArtifactState::Invalid
-            );
+            let result = read(d.path(), &c, context(), None);
+            assert_no_payload(&result.artifacts[0], ArtifactState::Invalid);
         }
         std::fs::write(&p, vec![b' '; MAX_BYTES as usize + 1]).unwrap();
-        assert_eq!(
-            read(d.path(), &c, context(), None).artifacts[0].state,
-            ArtifactState::TooLarge
-        );
+        let result = read(d.path(), &c, context(), None);
+        assert_no_payload(&result.artifacts[0], ArtifactState::TooLarge);
         std::fs::remove_file(&p).unwrap();
         std::fs::create_dir(&p).unwrap();
-        assert_eq!(
-            read(d.path(), &c, context(), None).artifacts[0].state,
-            ArtifactState::UnsafePath
-        );
+        let result = read(d.path(), &c, context(), None);
+        assert_no_payload(&result.artifacts[0], ArtifactState::UnsafePath);
     }
     #[cfg(unix)]
     #[test]
@@ -396,7 +391,6 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    #[cfg(windows)]
     fn assert_no_payload(result: &ArtifactResult, expected: ArtifactState) {
         assert_eq!(result.state, expected);
         assert!(result.content.is_none());
