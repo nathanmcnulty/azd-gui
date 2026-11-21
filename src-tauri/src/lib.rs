@@ -3,6 +3,7 @@ mod azd;
 mod azure;
 mod catalog;
 mod command_runner;
+mod component_provenance;
 mod connection_profiles;
 mod connections;
 mod deployment;
@@ -22,6 +23,7 @@ mod pim_plan;
 mod pim_roles;
 mod project_verification;
 mod redaction;
+mod report_artifacts;
 mod requirements;
 mod security_groups;
 mod terminal;
@@ -2159,6 +2161,109 @@ fn get_project_validation_report(
     ))
 }
 
+fn registered_component_root(database: &Database, project_path: &str) -> AppResult<PathBuf> {
+    // Match the stored path before any filesystem access. Canonicalizing an
+    // unregistered UNC path could otherwise trigger a network filesystem lookup.
+    database
+        .projects()?
+        .into_iter()
+        .find(|project| project.path == project_path)
+        .map(|project| PathBuf::from(project.path))
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))
+}
+
+#[tauri::command]
+async fn get_project_component_provenance(
+    state: State<'_, AppState>,
+    project_path: String,
+) -> AppResult<component_provenance::ComponentProvenanceRead> {
+    let root = registered_component_root(&state.database, &project_path)?;
+    // Hashing is optional workspace metadata, never a deployment prerequisite.
+    tauri::async_runtime::spawn_blocking(move || component_provenance::read(&root))
+        .await
+        .map_err(|_| AppError::Invalid("Component provenance is unavailable.".into()))
+}
+
+struct PreparedArtifactRead {
+    root: PathBuf,
+    contract: report_artifacts::ArtifactContract,
+    context: report_artifacts::ReadContext,
+}
+
+fn prepare_artifact_read(
+    database: &Database,
+    project_path: &str,
+    reveal_id: Option<&str>,
+    snapshot_digest: Option<&str>,
+) -> AppResult<Option<PreparedArtifactRead>> {
+    let root = registered_component_root(database, project_path)?;
+    let project = database
+        .projects()?
+        .into_iter()
+        .find(|project| project.path == project_path)
+        .ok_or_else(|| AppError::Invalid("The project is not registered.".into()))?;
+    let Some(snapshot) = database.project_template_exact(project_path)? else {
+        return Ok(None);
+    };
+    let Some(contract) = snapshot
+        .entry
+        .manifest
+        .as_ref()
+        .and_then(|m| m.post_deployment.clone())
+    else {
+        return Ok(None);
+    };
+    report_artifacts::validate(&contract)?;
+    // Reveals are explicit and tied to the currently reviewed manifest, never a path from JS.
+    if let Some(id) = reveal_id {
+        if snapshot_digest != Some(snapshot.digest.as_str())
+            || !contract.artifacts.iter().any(|a| a.id == id)
+        {
+            return Err(AppError::Invalid(
+                "Review the current report list before revealing content.".into(),
+            ));
+        }
+    }
+    let context = report_artifacts::ReadContext {
+        snapshot_digest: snapshot.digest,
+        environment: project.environment,
+        revision: project.revision,
+    };
+    Ok(Some(PreparedArtifactRead {
+        root,
+        contract,
+        context,
+    }))
+}
+
+#[tauri::command]
+async fn get_project_report_artifacts(
+    state: State<'_, AppState>,
+    project_path: String,
+    reveal_id: Option<String>,
+    snapshot_digest: Option<String>,
+) -> AppResult<report_artifacts::ArtifactRead> {
+    let Some(prepared) = prepare_artifact_read(
+        &state.database,
+        &project_path,
+        reveal_id.as_deref(),
+        snapshot_digest.as_deref(),
+    )?
+    else {
+        return Ok(report_artifacts::ArtifactRead::absent());
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        report_artifacts::read(
+            &prepared.root,
+            &prepared.contract,
+            prepared.context,
+            reveal_id.as_deref(),
+        )
+    })
+    .await
+    .map_err(|_| AppError::Invalid("Report artifacts are unavailable.".into()))
+}
+
 #[tauri::command]
 fn get_project_deployment_receipt(
     state: State<'_, AppState>,
@@ -2739,6 +2844,8 @@ pub fn run() {
             get_project_state,
             get_project_validation_report,
             get_project_deployment_receipt,
+            get_project_component_provenance,
+            get_project_report_artifacts,
             list_project_environments,
             create_project_environment,
             select_project_environment,
@@ -2752,6 +2859,37 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Azure Deployment Studio");
+}
+
+#[cfg(test)]
+mod component_project_tests {
+    use super::{registered_component_root, Database, ProjectSummary};
+
+    #[test]
+    fn matches_only_a_registered_path_without_resolving_the_filesystem() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let path = directory.path().join("not-created").display().to_string();
+        database
+            .upsert_project(&ProjectSummary {
+                id: "component-project".into(),
+                name: "Component project".into(),
+                path: path.clone(),
+                environment: None,
+                template_id: None,
+                revision: None,
+                last_operation: None,
+                state: "ready".into(),
+            })
+            .unwrap();
+        assert_eq!(
+            registered_component_root(&database, &path).unwrap(),
+            std::path::PathBuf::from(&path)
+        );
+        assert!(registered_component_root(&database, &format!("{path}/../not-created")).is_err());
+        assert!(registered_component_root(&database, r"\\example.invalid\share\project").is_err());
+        assert!(!std::path::Path::new(&path).exists());
+    }
 }
 
 #[cfg(test)]
@@ -3656,5 +3794,67 @@ mod acknowledgement_caller_tests {
             "{error}"
         );
         assert_eq!(launches.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod report_artifact_command_tests {
+    use super::*;
+
+    #[test]
+    fn command_preparation_rejects_unregistered_paths_before_reading_them() {
+        let d = tempfile::tempdir().unwrap();
+        let database = Database::open(&d.path().join("state.sqlite")).unwrap();
+        assert!(
+            prepare_artifact_read(&database, r"\\example.invalid\share\reports", None, None)
+                .is_err()
+        );
+        assert!(prepare_artifact_read(&database, "/not/a/registered/project", None, None).is_err());
+    }
+
+    #[test]
+    fn command_preparation_requires_exact_current_snapshot_and_declared_reveal_id() {
+        let d = tempfile::tempdir().unwrap();
+        let database = Database::open(&d.path().join("state.sqlite")).unwrap();
+        let mut entry = catalog::entry_by_id("myworkid").unwrap();
+        entry.manifest.as_mut().unwrap().post_deployment = Some(serde_json::from_value(serde_json::json!({
+            "schemaVersion": "1.0", "artifacts": [{ "id": "plan", "label": "Plan", "path": "reports/plan.json", "format": "json", "stage": "plan", "required": true, "sensitive": true }]
+        })).unwrap());
+        let project = ProjectSummary {
+            id: "reports-test".into(),
+            name: "Reports".into(),
+            path: d.path().display().to_string(),
+            environment: Some("dev".into()),
+            template_id: Some(entry.id.clone()),
+            revision: Some(entry.commit.clone()),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        let snapshot = ProjectTemplateSnapshot::new(entry).unwrap();
+        database.save_project_template(&project, &snapshot).unwrap();
+        assert!(prepare_artifact_read(&database, &project.path, Some("plan"), None).is_err());
+        assert!(
+            prepare_artifact_read(&database, &project.path, Some("plan"), Some("stale")).is_err()
+        );
+        assert!(prepare_artifact_read(
+            &database,
+            &project.path,
+            Some("undeclared"),
+            Some(&snapshot.digest)
+        )
+        .is_err());
+        let prepared = prepare_artifact_read(
+            &database,
+            &project.path,
+            Some("plan"),
+            Some(&snapshot.digest),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(prepared.context.environment.as_deref(), Some("dev"));
+        assert_eq!(prepared.contract.artifacts[0].path, "reports/plan.json");
+        // Preparation does not open any report or require it to exist.
+        assert!(!d.path().join("reports").exists());
     }
 }

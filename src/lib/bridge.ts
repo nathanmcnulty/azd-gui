@@ -1,3 +1,4 @@
+import type { ComponentProvenanceRead } from "./component-provenance";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -535,6 +536,11 @@ export async function getProjectValidationReport(projectPath: string): Promise<V
   return invoke<ValidationReportRead>("get_project_validation_report", { projectPath });
 }
 
+export async function getProjectComponentProvenance(projectPath: string): Promise<ComponentProvenanceRead> {
+  if (!isTauri()) return { state: "notFound", unknownMetadata: false, components: [] };
+  return invoke<ComponentProvenanceRead>("get_project_component_provenance", { projectPath });
+}
+
 export async function getProjectDeploymentReceipt(projectPath: string): Promise<DeploymentReceiptRead> {
   if (!isTauri()) return { state: "notFound" };
   return invoke<DeploymentReceiptRead>("get_project_deployment_receipt", { projectPath });
@@ -670,4 +676,9 @@ export async function cancelOperation(operationId: string): Promise<void> {
 export async function onOperationEvent(handler: (event: OperationEvent) => void): Promise<UnlistenFn> {
   if (!isTauri()) return () => undefined;
   return listen<OperationEvent>("operation-event", ({ payload }) => handler(payload));
+}
+
+export async function getProjectReportArtifacts(projectPath: string, revealId: string | null = null, snapshotDigest: string | null = null): Promise<import("./report-artifacts").ArtifactRead> {
+  if (!isTauri()) return { context: null, observedAt: "", artifacts: [] };
+  return invoke("get_project_report_artifacts", { projectPath, revealId, snapshotDigest });
 }

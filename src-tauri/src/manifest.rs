@@ -29,6 +29,9 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
         ));
     }
     permissions::validate(&manifest.permission_checks)?;
+    if let Some(contract) = &manifest.post_deployment {
+        crate::report_artifacts::validate(contract)?;
+    }
     let mut groups = HashSet::new();
     let mut fields = HashMap::new();
     let mut variables = HashSet::new();
