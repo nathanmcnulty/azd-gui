@@ -187,7 +187,7 @@ pub fn read(
                 return result;
             }
             result.modified_at = modified_at;
-            result.sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+            result.sha256 = Some(hex::encode(Sha256::digest(&bytes)));
             result.content = Some(text.to_owned());
             result.state = ArtifactState::Available;
             result

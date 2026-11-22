@@ -269,7 +269,7 @@ fn external_manifest_digest(
 }
 
 fn require_manifest_digest(bytes: &[u8], expected_digest: &str) -> AppResult<()> {
-    let actual_digest = format!("{:x}", Sha256::digest(bytes));
+    let actual_digest = hex::encode(Sha256::digest(bytes));
     if actual_digest == expected_digest {
         Ok(())
     } else {
@@ -1134,7 +1134,7 @@ mod tests {
         assert!(external_manifest_digest(None, Some("0".repeat(64).as_str())).is_err());
 
         let bytes = br#"{"schemaVersion":"1.0"}"#;
-        let digest = format!("{:x}", Sha256::digest(bytes));
+        let digest = hex::encode(Sha256::digest(bytes));
         let digest = external_manifest_digest(Some("manifest.json"), Some(&digest))
             .unwrap()
             .unwrap();
@@ -1151,7 +1151,7 @@ mod tests {
         let mut entry = bundled_catalog().unwrap().entries.remove(0);
         entry.manifest = Some(serde_json::from_str(r#"{"schemaVersion":"1.0"}"#).unwrap());
         let bytes = serde_json::to_vec(entry.manifest.as_ref().unwrap()).unwrap();
-        entry.manifest_sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+        entry.manifest_sha256 = Some(hex::encode(Sha256::digest(&bytes)));
         // A manifest at the repository root cannot satisfy a subdirectory template.
         std::fs::write(root.path().join("azd-gui.json"), &bytes).unwrap();
         assert!(super::validate_external_checkout(&entry, &source).is_err());

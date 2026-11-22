@@ -1466,7 +1466,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         let planner = include_str!("../pim-template/AzdPim.Graph.psm1");
         let worker = include_str!("graph_worker.ps1");
-        assert!(worker.contains(&format!("{:x}", Sha256::digest(planner.as_bytes()))));
+        assert!(worker.contains(&hex::encode(Sha256::digest(planner.as_bytes()))));
         for (line, text) in [
             (322, "$policy.rules"),
             (323, "$rule.isEnabled"),

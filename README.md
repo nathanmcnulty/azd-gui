@@ -31,8 +31,8 @@ The planned beta supports Windows 11 on x64. Windows 10, macOS, and Linux are ou
 
 Prerequisites:
 
-- Node.js 22 or newer
-- Rust stable (1.89 or newer)
+- Node.js 22.22.2+ on the 22.x line, 24.15.0+ on the 24.x line, or 26.0.0+
+- Rust stable (1.90 or newer)
 - .NET SDK 8.0.4xx for native builds, tests and linting (the Graph adapter's `global.json` selects the latest installed patch in that feature band)
 - Windows: Visual Studio Build Tools with the C++ workload
 - macOS: Xcode command-line tools

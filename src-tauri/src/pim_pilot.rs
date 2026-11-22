@@ -52,18 +52,15 @@ impl Input {
             .project_by_path(&self.project_path)?
             .ok_or_else(|| AppError::Invalid("Register a pilot workspace first.".into()))?;
         let snapshot = state.database.project_template_exact(&project.path)?;
-        binding.requirements_digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&(
-                pim_plan::SOURCE,
-                &binding,
-                self,
-                &project.id,
-                &project.template_id,
-                &project.revision,
-                snapshot.map(|s| s.digest)
-            ))?)
-        );
+        binding.requirements_digest = hex::encode(Sha256::digest(serde_json::to_vec(&(
+            pim_plan::SOURCE,
+            &binding,
+            self,
+            &project.id,
+            &project.template_id,
+            &project.revision,
+            snapshot.map(|s| s.digest),
+        ))?));
         binding.validate()?;
         Ok(binding)
     }

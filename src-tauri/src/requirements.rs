@@ -193,7 +193,7 @@ pub fn resolve(
             "Effective Graph scope union exceeds the supported 64-scope limit.".into(),
         ));
     }
-    let digest = format!("{:x}", Sha256::digest(serde_json::to_vec(&data)?));
+    let digest = hex::encode(Sha256::digest(serde_json::to_vec(&data)?));
     Ok(RequirementSnapshot {
         digest,
         requirements: data,
