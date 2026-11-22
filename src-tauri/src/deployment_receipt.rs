@@ -1,3 +1,4 @@
+use crate::timestamp::Timestamp;
 use crate::{
     evidence::{
         correlate, parse_evidence, EvidenceBindingState, EvidenceNextAction, EvidenceParseError,
@@ -5,7 +6,6 @@ use crate::{
     },
     validation_report::{read_fixed_report_bytes, ValidationReportState},
 };
-use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
 use std::path::Path;
@@ -133,8 +133,8 @@ fn read_inner(
     }
     let raw: RawDeploymentReceipt =
         serde_json::from_value(value).map_err(|_| DeploymentReceiptState::Invalid)?;
-    let generated_at = DateTime::parse_from_rfc3339(&raw.generated_at)
-        .map_err(|_| DeploymentReceiptState::Invalid)?;
+    let generated_at =
+        Timestamp::parse(&raw.generated_at).ok_or(DeploymentReceiptState::Invalid)?;
 
     if !matches!(raw.schema_version.as_str(), "1.0" | "1.1")
         || raw.template.is_empty()
@@ -171,7 +171,7 @@ fn read_inner(
         (binding_state, evidence.next_actions)
     };
     Ok(DeploymentReceipt {
-        generated_at: generated_at.to_rfc3339(),
+        generated_at: generated_at.format(),
         mode: raw.mode,
         summary: raw.summary,
         artifact_count: raw.artifacts.len(),

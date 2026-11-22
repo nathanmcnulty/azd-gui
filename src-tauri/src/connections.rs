@@ -1,3 +1,4 @@
+use crate::timestamp::Timestamp;
 use crate::{
     azd,
     command_runner::{capture, CommandSpec, Executable},
@@ -5,7 +6,6 @@ use crate::{
     error::{AppError, AppResult},
     models::{ConnectionStatus, ConnectionTarget},
 };
-use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -72,18 +72,18 @@ fn status(
     }
 }
 
-fn apply_expiration(status: &mut ConnectionStatus, value: Option<&Value>, now: DateTime<Utc>) {
+fn apply_expiration(status: &mut ConnectionStatus, value: Option<&Value>, now: Timestamp) {
     let Some(raw) = value
         .and_then(|value| value.pointer("/expiresOn"))
         .and_then(Value::as_str)
     else {
         return;
     };
-    let Ok(expires_at) = DateTime::parse_from_rfc3339(raw) else {
+    let Some(expires_at) = Timestamp::parse(raw) else {
         return;
     };
     status.expires_on = Some(raw.into());
-    if expires_at.with_timezone(&Utc) <= now {
+    if expires_at.instant() <= now.instant() {
         status.state = "expired".into();
         status.detail =
             Some("The cached credential has expired. Reconnect before deployment.".into());
@@ -170,7 +170,7 @@ fn azd_connection_status(
     value: Option<&Value>,
     target: Option<&ConnectionTarget>,
     probe: Option<&Value>,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> ConnectionStatus {
     // auth status deliberately reports no tenant. check-status verifies the requested
     // tenant internally without returning a token or changing the default context.
@@ -203,13 +203,13 @@ fn azd_connection_status(
             .filter(|probe| {
                 probe["expiresOn"]
                     .as_str()
-                    .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
-                    .is_some_and(|expires| expires.with_timezone(&Utc) > now)
+                    .and_then(Timestamp::parse)
+                    .is_some_and(|expires| expires.instant() > now.instant())
             });
         let current_expiration = authenticated
             .and_then(|value| value["expiresOn"].as_str())
-            .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
-            .is_some_and(|expires| expires.with_timezone(&Utc) > now);
+            .and_then(Timestamp::parse)
+            .is_some_and(|expires| expires.instant() > now.instant());
         if result.state == "connected"
             && current_expiration
             && authenticated.is_some_and(|value| value["type"] == "user")
@@ -254,7 +254,7 @@ pub async fn check_all(target: Option<&ConnectionTarget>) -> Vec<ConnectionStatu
         azd_status_value.as_ref(),
         target,
         azd_probe.as_ref(),
-        Utc::now(),
+        Timestamp::now_utc(),
     );
     let mut graph_status = status(
         "graphPowerShell",
@@ -554,9 +554,7 @@ mod tests {
 
     #[test]
     fn azd_target_requires_successful_fresh_user_evidence() {
-        let now = DateTime::parse_from_rfc3339("2026-09-20T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = Timestamp::parse("2026-09-20T12:00:00Z").unwrap();
         let target = ConnectionTarget {
             tenant_id: "11111111-1111-1111-1111-111111111111".into(),
             subscription_id: "22222222-2222-2222-2222-222222222222".into(),
@@ -762,9 +760,7 @@ mod tests {
 
     #[test]
     fn azd_expiration_marks_only_stale_credentials_as_expired() {
-        let now = DateTime::parse_from_rfc3339("2026-08-06T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let now = Timestamp::parse("2026-08-06T12:00:00Z").unwrap();
         let expired_value = serde_json::json!({"expiresOn": "2026-08-06T11:59:59Z"});
         let active_value = serde_json::json!({"expiresOn": "2026-08-06T12:00:01Z"});
         let mut expired = connected("azd", "tenant-a");

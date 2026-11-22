@@ -9,7 +9,6 @@ use crate::{
     },
     persistence::Database,
 };
-use chrono::Utc;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
@@ -582,7 +581,7 @@ pub async fn prepare(
             .filter(|entry| entry.commit != "local")
             .map(|entry| entry.commit.clone())
             .or_else(|| request.source_revision.clone()),
-        last_operation: Some(Utc::now().to_rfc3339()),
+        last_operation: Some(crate::timestamp::now()),
         state: "attention".into(),
     };
 
@@ -764,7 +763,7 @@ pub async fn prepare(
         "ready"
     }
     .into();
-    project.last_operation = Some(Utc::now().to_rfc3339());
+    project.last_operation = Some(crate::timestamp::now());
     database.upsert_project(&project)?;
     Ok(project)
 }

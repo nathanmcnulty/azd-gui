@@ -60,7 +60,7 @@ impl ArtifactRead {
     pub fn absent() -> Self {
         Self {
             context: None,
-            observed_at: chrono::Utc::now().to_rfc3339(),
+            observed_at: crate::timestamp::now(),
             artifacts: vec![],
         }
     }
@@ -159,7 +159,7 @@ pub fn read(
                 .metadata()
                 .ok()
                 .and_then(|m| m.modified().ok())
-                .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+                .and_then(crate::timestamp::from_system_time);
             let bytes = match bounded_bytes(file, MAX_BYTES) {
                 Ok(bytes) => bytes,
                 Err(error) => {
@@ -195,7 +195,7 @@ pub fn read(
         .collect();
     ArtifactRead {
         context: Some(context),
-        observed_at: chrono::Utc::now().to_rfc3339(),
+        observed_at: crate::timestamp::now(),
         artifacts,
     }
 }

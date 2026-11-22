@@ -601,10 +601,16 @@ fn inspect_saved(directory: &Path, reveal: bool) -> AppResult<serde_json::Value>
         }
     }
     attempts.sort();
+    let last_started_at = receipt
+        .as_ref()
+        .and_then(|value| value.get("startedAt"))
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::timestamp::Timestamp::parse)
+        .map(crate::timestamp::Timestamp::format);
     Ok(serde_json::json!({
         "historical": true, "approvalRestorable": false, "hasDraft": draft.is_some(),
         "hasState": state.is_some(), "pendingWrites": state.as_ref().map_or(0, pending_count),
-        "attemptCount": attempts.len(), "lastStartedAt": receipt.as_ref().and_then(|v|v.get("startedAt")).and_then(|v|v.as_str()).and_then(|v|chrono::DateTime::parse_from_rfc3339(v).ok()).map(|v|v.to_rfc3339()), "lastStatus": receipt.as_ref().and_then(|v| v.get("status")).and_then(|v| v.as_str()),
+        "attemptCount": attempts.len(), "lastStartedAt": last_started_at, "lastStatus": receipt.as_ref().and_then(|v| v.get("status")).and_then(|v| v.as_str()),
         "details": if reveal { Some(serde_json::json!({"state":state,"receipt":receipt,"attempts":attempts})) } else { None }
     }))
 }

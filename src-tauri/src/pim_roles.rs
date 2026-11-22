@@ -39,7 +39,7 @@ impl Catalog {
         if self.tenant_id != tenant_id(tenant)?
             || self.roles.len() > 5000
             || !matches!(self.source.as_str(), "live" | "cached")
-            || chrono::DateTime::parse_from_rfc3339(&self.retrieved_at).is_err()
+            || crate::timestamp::Timestamp::parse(&self.retrieved_at).is_none()
         {
             return Err(invalid("Role catalog identity or metadata is invalid."));
         }
@@ -58,7 +58,7 @@ impl Catalog {
     pub fn live(tenant: &str, roles: serde_json::Value) -> AppResult<Self> {
         let catalog = Self {
             tenant_id: tenant_id(tenant)?,
-            retrieved_at: chrono::Utc::now().to_rfc3339(),
+            retrieved_at: crate::timestamp::now(),
             source: "live".into(),
             roles: serde_json::from_value(roles)
                 .map_err(|_| invalid("Role refresh returned an incomplete or invalid catalog."))?,

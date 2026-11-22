@@ -2,7 +2,7 @@ use crate::evidence::{
     correlate, parse_evidence, EvidenceBindingState, EvidenceNextAction, EvidenceParseError,
     ExpectedEvidenceContext,
 };
-use chrono::{DateTime, FixedOffset};
+use crate::timestamp::Timestamp;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -367,12 +367,12 @@ fn project_report(
     {
         return Err(ValidationReportState::Invalid);
     }
-    let started_at = DateTime::<FixedOffset>::parse_from_rfc3339(&raw.started_at)
-        .map_err(|_| ValidationReportState::Invalid)?
-        .to_rfc3339();
-    let completed_at = DateTime::<FixedOffset>::parse_from_rfc3339(&raw.completed_at)
-        .map_err(|_| ValidationReportState::Invalid)?
-        .to_rfc3339();
+    let started_at = Timestamp::parse(&raw.started_at)
+        .ok_or(ValidationReportState::Invalid)?
+        .format();
+    let completed_at = Timestamp::parse(&raw.completed_at)
+        .ok_or(ValidationReportState::Invalid)?
+        .format();
 
     let mut summary = ValidationSummary::default();
     let checks = raw

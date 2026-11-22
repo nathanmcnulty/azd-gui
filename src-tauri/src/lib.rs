@@ -27,6 +27,7 @@ mod report_artifacts;
 mod requirements;
 mod security_groups;
 mod terminal;
+mod timestamp;
 mod tools;
 mod validation_report;
 #[cfg(windows)]
