@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import AppSidebar from "./components/AppSidebar.svelte";
+  import { checkComponentUpdates } from "./lib/component-updates";
   import PimPlan from "./components/PimPlan.svelte";
   import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
@@ -196,6 +197,7 @@
   }
   let requirementReview: Awaited<ReturnType<typeof reviewWizardRequirements>> | null = null;
   let selectedInspection: TemplateInspection | null = null;
+  let selectedInspectionPath = "";
   let wizardPlan: WizardPlan | null = null;
   let wizardValues: WizardValues = {};
   let wizardAcknowledgements: AcknowledgementProof[] = [];
@@ -571,7 +573,9 @@
     activeStepReady = stepBlockingReason === "";
   }
 
+
   onMount(() => {
+    void checkComponentUpdates();
     document.addEventListener("keydown", handleGlobalKeydown);
     window.addEventListener("resize", constrainOutputHeight);
     let unlisten: () => void = () => {};
@@ -909,6 +913,7 @@
         wizardValues = withoutAcknowledgements(inspection.entry.manifest, wizardValues);
         selectedEntry = inspection.entry;
         selectedInspection = inspection;
+        selectedInspectionPath = sourcePath;
         sourceTrustAccepted = false;
         for (const group of selectedEntry.manifest?.configuration.groups ?? []) {
           for (const field of group.fields) {
@@ -1055,6 +1060,7 @@
       startWizard(inspection.entry);
       wizardEditGeneration += 1;
       selectedInspection = inspection;
+      selectedInspectionPath = path;
       wizardValues = {
         ...wizardValues,
         sourceMode: copyAsTemplate ? "localTemplate" : "existingProject",
@@ -2729,6 +2735,11 @@
         </div>
 
         <div class="wizard-content">
+          {#if selectedInspection?.sourceBinding &&
+            ((wizardValues.sourceMode === "existingProject" && wizardValues.projectPath === selectedInspectionPath) ||
+              (wizardValues.sourceMode === "localTemplate" && wizardValues.sourcePath === selectedInspectionPath))}
+            <ProjectComponentProvenance template={selectedInspection.sourceBinding} />
+          {/if}
           {#if draftNotice}
             <div class="callout draft-notice" class:warning={draftNotice.kind !== "restored"} class:info={draftNotice.kind === "restored"} role="status" aria-label="Saved wizard choices">
               <div><strong>Saved choices</strong><p>{draftNotice.message}</p></div>
@@ -3360,6 +3371,7 @@
         {#if selectedProject && isPimProject(selectedProject)}
           <button class="text-button back-link" on:click={closeProjectWorkspace}>‹ All projects</button>
           <section class="workspace-panel"><h2>Source</h2><p>Supported native PIM engine · https://github.com/nathanmcnulty/azd-pim</p><code>{selectedProject.revision}</code><p>Local project: {selectedProject.path}. Reports and checkpoints remain private in this workspace.</p></section>
+          <ProjectComponentProvenance project={selectedProject} />
           {#key selectedProject.path}<PimPlan projects={data.projects} {selectedProject} sourceContext={selectedProjectTemplate?.digest} on:registered={registeredPilot} on:environment={pilotEnvironment} />{/key}
         {:else if selectedProject}
           <div class="project-workspace-header">
@@ -3377,6 +3389,7 @@
               </div>
             </div>
           </div>
+          <ProjectComponentProvenance project={selectedProject} />
           <nav class="project-tabs" aria-label="Project sections">
             {#each ["overview", "environments", "operations", "resources"] as tab}
               <button class:active={projectTab === tab} on:click={() => (projectTab = tab as typeof projectTab)}>{tab}</button>
@@ -3402,7 +3415,6 @@
               {/if}
               <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />
               <ProjectDeploymentReceipt project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest]} />
-              <ProjectComponentProvenance project={selectedProject} />
               <ProjectReportArtifacts project={selectedProject} reportContext={{ snapshot: selectedProjectTemplate?.digest, connections: data.connections, configuration: environmentConfigurationValues, savedConfiguration: projectEnvironmentValues, outputs: projectState, configurationBusy: environmentConfigurationBusy, environmentBusy }} />
               {#if activeOperationKind === "up" || projectDeploymentResult}
                 <section class="workspace-panel full project-deployment-result" aria-label="Latest deployment">

@@ -1,11 +1,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ProjectComponentProvenance from "./ProjectComponentProvenance.svelte";
+import type { ComponentUpdates } from "../lib/component-updates";
 import type { ComponentProvenanceRead, ComponentStatus } from "../lib/component-provenance";
 
 const readComponents = vi.hoisted(() => vi.fn());
 vi.mock("../lib/bridge", () => ({ getProjectComponentProvenance: readComponents }));
-afterEach(() => { cleanup(); readComponents.mockReset(); });
+const readUpdates = vi.hoisted(() => vi.fn().mockResolvedValue({ state: "unavailable", checkedAt: null, updates: [] }));
+vi.mock("../lib/component-updates", () => ({ checkComponentUpdates: readUpdates }));
+afterEach(() => { cleanup(); readComponents.mockReset(); readUpdates.mockClear(); });
 
 const project = { id: "sample", name: "Sample", path: "C:\\Projects\\sample", environment: "dev", state: "ready" } as const;
 const absent: ComponentProvenanceRead = { state: "notFound", unknownMetadata: false, components: [] };
@@ -36,7 +39,7 @@ describe("local component provenance", () => {
     expect(screen.getByText(/Solution-owned extensions are outside/)).toBeInTheDocument();
     expect(screen.getByText(/does not authenticate its source/)).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /sync|update|deploy/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /sync|deploy/i })).not.toBeInTheDocument();
   });
 
   it.each(["modified", "missing", "unsupported"] as const)("distinguishes %s managed files", async (status) => {
@@ -45,6 +48,32 @@ describe("local component provenance", () => {
     const component = await screen.findByRole("article", { name: "Component deployment-validation" });
     expect(within(component).getAllByText(status[0].toUpperCase() + status.slice(1))).toHaveLength(2);
     expect(screen.queryByText("Verified")).not.toBeInTheDocument();
+  });
+
+  it("keeps local provenance visible while checking, then shows stale breaking information and allows manual refresh", async () => {
+    let finish!: (result: ComponentUpdates) => void;
+    readUpdates.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    readComponents.mockResolvedValue(result());
+    render(ProjectComponentProvenance, { project });
+
+    const button = await screen.findByRole("button", { name: "Check for updates" });
+    expect(screen.getByRole("article", { name: "Component deployment-validation" })).toBeInTheDocument();
+    expect(button).toBeDisabled();
+    await fireEvent.click(button);
+    expect(readUpdates).toHaveBeenCalledTimes(1);
+    await act(() => finish({
+      state: "stale", checkedAt: "2026-11-23T10:00:00Z",
+      updates: [{ id: "deployment-validation", state: "updateAvailable", version: "2.0.1",
+        compatibility: "breaking", complete: false, historyIncomplete: true, breakingVersions: ["2.0.0"],
+        migrationNotes: ["Upgrade to PowerShell 7.6."] }]
+    }));
+    expect(screen.getByText(/Update information is stale/)).toBeInTheDocument();
+    expect(screen.getByText("Breaking changes declared in 2.0.0.").querySelector("svg")).toBeInTheDocument();
+    expect(screen.getByText("Upgrade to PowerShell 7.6.")).toBeInTheDocument();
+    expect(screen.getByText(/Compatibility information is incomplete/)).toBeInTheDocument();
+    await fireEvent.click(button);
+    expect(readUpdates).toHaveBeenLastCalledWith(result().components, true);
+    expect(await screen.findByText("Update information is unavailable for this component.")).toBeInTheDocument();
   });
 
   it("labels future and unknown metadata without inventing update availability", async () => {
@@ -81,6 +110,20 @@ describe("local component provenance", () => {
     expect(screen.queryByText("Shared components")).not.toBeInTheDocument();
     await act(() => resolveOld(result("modified")));
     expect(screen.queryByText("Shared components")).not.toBeInTheDocument();
+  });
+
+  it("ignores update information for the previous project", async () => {
+    let finish!: (result: ComponentUpdates) => void;
+    readUpdates.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    readComponents.mockResolvedValueOnce(result());
+    const view = render(ProjectComponentProvenance, { project });
+    await screen.findByText(/Checking shared component updates/);
+
+    readComponents.mockResolvedValueOnce(result("modified"));
+    await view.rerender({ project: { ...project, path: "C:\\Projects\\other" } });
+    expect(await screen.findByText("Update information is unavailable for this component.")).toBeInTheDocument();
+    await act(() => finish({ state: "stale", checkedAt: "2026-11-23T10:00:00Z", updates: [] }));
+    expect(screen.queryByText(/Update information is stale/)).not.toBeInTheDocument();
   });
 
   it("ignores completion after unmount and hides raw read errors", async () => {
