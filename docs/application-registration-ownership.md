@@ -50,7 +50,7 @@ An unavailable host keeps verification unavailable, including when the
 Graph body contains a plausible URI. Confirmation checks the same host
 again before consuming the pending verification. The mock provides its
 reviewed host independently of the mock application response.
-See [the pinned azd-pim producer](https://github.com/nathanmcnulty/azd-pim/blob/97054a7c8bb67c4a4de52caccb68442c1e1ce769/scripts/AzdPim.Optional.psm1#L195-L231).
+See [the pinned azd-pim producer](https://github.com/nathanmcnulty/azd-pim/blob/97054a7c8bb67c4a4de52caccb68442c1e1ce769/scripts/AzdPim.Optional.psm1#L562-L587).
 
 An explicit null requestedAccessTokenVersion has effective version 1,
 which mismatches this provider's required version 2. An omitted version
@@ -69,6 +69,45 @@ no eligible application credential without acquisition or refresh. The saved
 project also lacks an independently verified workflow hostname. A synthetic
 MSAL/HTTP fixture exercises the Windows worker and the explicit local review
 while those prerequisites remain open.
+
+## Workflow hostname producer contract
+
+The pinned azd-pim ARM deployment outputs
+`AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID`. Its post-provision hook obtains
+the callback for that exact workflow and uses its hostname to build the
+application ID URI. The deployment report, applied report, state, and AZD
+environment values are mutable project files. Even a generic deployment
+receipt with a `current` correlation state establishes context only. The GUI
+operation history does not capture any of these output bytes.
+
+The provisional [observation schema](../schemas/internal/azd-pim-workflow-host-observation.schema.json)
+specifies the two values the producer would emit. Take the lowercase ARM
+resource ID from the exact workflow output and the hostname from the ARM
+callback the hook already obtained for that resource. Emit the pair after
+the optional workflow step succeeds. The hostname uses lowercase ASCII DNS
+labels of 1–63 characters and a final label of 2–63 ASCII letters, with at
+most 253 characters in total. Keep the callback URL, path, port, query,
+signature and Graph ID URI out of the payload. The
+[fixture](../src-tauri/tests/fixtures/azd-pim-workflow-host-observation.json)
+uses synthetic values in the shape of the Bicep output and callback hostname.
+
+The GUI must capture the pair through a native-owned operation that runs
+verified producer bytes from the reviewed source. Match the full workflow ID
+against the deployment output captured independently for that same operation.
+The native record must bind the pair to the registered project, environment
+generation, cloud, tenant, subscription, resource group, reviewed source
+revision and contract digest, producer digest, and successful operation ID.
+Project files, producer-echoed bindings, hostname suffixes, and process exit
+status alone cannot establish this provenance. The current GUI has no such
+capture boundary for the azd-pim hook.
+
+Verify and Confirm must require the same current project, environment and
+source generation and exact workflow ID. Invalidate on mismatch, incomplete
+capture, or any later operation that may have changed the resource, including
+failure or cleanup. Returning to previous values after invalidation requires
+fresh evidence. Verification uses the captured hostname locally and has no
+workflow lookup fallback. Graph application properties provide no hostname
+evidence. The schema is internal and does not enable a producer or consumer.
 
 ## Ownership receipt
 

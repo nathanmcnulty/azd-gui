@@ -307,8 +307,12 @@ impl ApplicationRead {
 fn valid_endpoint_host(host: &str) -> bool {
     // The pinned producer uses the canonical DNS host of the workflow. It
     // never uses a path, query, port or the identifier URI from Graph as input.
+    let Some((_, suffix)) = host.rsplit_once('.') else {
+        return false;
+    };
     host.len() <= 253
-        && host.contains('.')
+        && suffix.len() >= 2
+        && suffix.bytes().all(|byte| byte.is_ascii_lowercase())
         && host.split('.').all(|label| {
             !label.is_empty()
                 && label.len() <= 63
@@ -318,7 +322,6 @@ fn valid_endpoint_host(host: &str) -> bool {
                     .bytes()
                     .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         })
-        && host.parse::<std::net::IpAddr>().is_err()
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -728,12 +731,7 @@ pub(crate) async fn verify_project_application_ownership(
     request: ReviewRequest,
 ) -> AppResult<Verification> {
     let _lock = state.environment_writes.lock().await;
-    verify_saved_project(
-        &state.application_reviews,
-        &state.database,
-        &request,
-        &OfflineTransport,
-    )
+    verify_saved_project(&state.application_reviews, &state.database, &request)
 }
 
 #[tauri::command]
@@ -756,9 +754,11 @@ fn verify_saved_project(
     reviews: &Reviews,
     database: &Database,
     request: &ReviewRequest,
-    transport: &impl Transport,
 ) -> AppResult<Verification> {
-    reviews.verify(|revision| request.resolve(database, revision), transport)
+    reviews.verify(
+        |revision| request.resolve(database, revision),
+        &OfflineTransport,
+    )
 }
 
 fn confirm_saved_project(
@@ -1023,10 +1023,8 @@ pub(crate) mod tests {
             request: &ReviewRequest,
             transport: &impl Transport,
         ) -> AppResult<Verification> {
-            verify_saved_project(
-                &self.state.application_reviews,
-                &self.state.database,
-                request,
+            self.state.application_reviews.verify(
+                |revision| request.resolve(&self.state.database, revision),
                 transport,
             )
         }
@@ -1599,6 +1597,96 @@ pub(crate) mod tests {
             .confirm_saved(&request, &transport, &digest)
             .is_err());
         assert_eq!(transport.read_count.get(), 3);
+    }
+
+    #[test]
+    fn workflow_observation_uses_a_canonical_dns_hostname() {
+        let observation: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/azd-pim-workflow-host-observation.json"
+        ))
+        .unwrap();
+        let host = observation["hostname"].as_str().unwrap();
+        assert_eq!(host, WORKFLOW_HOST);
+        assert!(valid_endpoint_host(host));
+        for invalid in [
+            "https://example.logic.azure.com",
+            "example.logic.azure.com.",
+            "example.logic.azure.com:443",
+            "example.logic.azure.com\n",
+            "127.0.0.1",
+            "0x7f.0.0.1",
+            "example.logic.0x1",
+        ] {
+            assert!(!valid_endpoint_host(invalid), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn a_current_deployment_receipt_cannot_supply_workflow_hostname_provenance() {
+        let fixture = Fixture::new();
+        let database = &fixture.state.database;
+        let project = database.project_by_path(&fixture.project).unwrap().unwrap();
+        let context = crate::expected_evidence_context(database, &project)
+            .unwrap()
+            .current;
+        let event = crate::models::OperationEvent {
+            operation_id: OTHER.into(),
+            kind: "up".into(),
+            state: "succeeded".into(),
+            timestamp: "2026-09-20T12:00:00Z".into(),
+            stream: "system".into(),
+            level: "success".into(),
+            message: "complete".into(),
+            progress: Some(100),
+            outcome: None,
+            environment_binding: None,
+            exit_code: Some(0),
+        };
+        database
+            .record_operation_with_context(&event, &fixture.project, Some(&context))
+            .unwrap();
+        let expected = crate::expected_evidence_context(database, &project).unwrap();
+        let observation: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/azd-pim-workflow-host-observation.json"
+        ))
+        .unwrap();
+        let mut receipt: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/deployment-receipt-bound-v1.1.json"
+        ))
+        .unwrap();
+        receipt["details"]["workflowHostObservation"] = observation;
+        receipt["details"]["azdManagementEvidence"]["binding"] = json!({
+            "project": {"id": context.project_id, "environment": context.environment},
+            "target": {"azureCloud": context.azure_cloud, "tenantId": context.tenant_id,
+                "subscriptionId": context.subscription_id, "resourceGroup": context.resource_group},
+            "source": {"templateId": context.template_id, "revision": context.revision,
+                "contractDigest": context.contract_digest},
+            "operation": {"id": event.operation_id, "kind": event.kind}
+        });
+        let root = Path::new(&fixture.project);
+        fs::create_dir(root.join("reports")).unwrap();
+        fs::write(
+            root.join("reports/deployment-receipt.json"),
+            serde_json::to_vec(&receipt).unwrap(),
+        )
+        .unwrap();
+        let report = crate::deployment_receipt::read_with_context(root, Some(&expected));
+        assert_eq!(
+            report.receipt.unwrap().binding_state,
+            crate::evidence::EvidenceBindingState::Current
+        );
+        let result = verify_saved_project(
+            &fixture.state.application_reviews,
+            database,
+            &fixture.request(),
+        )
+        .unwrap();
+        assert!(matches!(
+            result,
+            Verification::Unknown {
+                reason: Unknown::ProviderUnavailable
+            }
+        ));
     }
 
     #[test]
