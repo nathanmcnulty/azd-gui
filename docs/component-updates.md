@@ -38,6 +38,16 @@ shows how the 2.0.0 PowerShell 7.6 requirement would be declared. The declaratio
 is an example for an unpublished tag. Consumers keep their installed pin
 until they intentionally adopt a reviewed release.
 
+The wizard can show declared component versions before preparation when the app
+bundles a lock for that exact reviewed catalog entry. The
+[deployment-check snapshot](../catalog/component-locks/deployment-check.json)
+is byte-for-byte from `examples/deployment-check/azd-components.lock.json`
+in Reference at catalog commit `abc6e896620990e68360a63dd14efda66a3f75cd`.
+The snapshot applies to that repository, revision and template path. When
+refreshing the pin, review the lock at the new revision before updating the
+snapshot binding. Local file integrity and update comparisons still use the lock
+in the prepared project.
+
 The app currently queries only the reviewed first-party Reference repository.
 It reads GitHub-verified annotated tags for availability. Startup caches the
 release references. Opening a template or saved project checks the tag

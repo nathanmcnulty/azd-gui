@@ -109,8 +109,25 @@ afterEach(() => {
 
 
 describe("prepared wizard component discovery", () => {
+  it("shows the declaration only while the reviewed catalog source is selected", async () => {
+    const entry = mockBootstrap.catalog.entries.find(({ id }) => id === "deployment-check")!;
+    setup(entry);
+
+    render(App);
+    await fireEvent.click(await screen.findByRole("button", { name: /browse catalog/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: /configure deployment/i }));
+    const region = { name: "Declared template components" };
+    expect(screen.getByRole("region", region)).toBeInTheDocument();
+
+    await fireEvent.click(screen.getByRole("button", { name: /copy local template/i }));
+    expect(screen.queryByRole("region", region)).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /reviewed catalog/i }));
+    expect(screen.getByRole("region", region)).toBeInTheDocument();
+  });
+
   it("checks the registered destination after preparation without blocking preview", async () => {
-    const { entry, starts } = setup();
+    const reviewedEntry = mockBootstrap.catalog.entries.find(({ id }) => id === "deployment-check")!;
+    const { entry, starts } = setup({ ...reviewedEntry, manifest: acknowledgementEntry().manifest });
     const canonicalPath = "C:\\Deployments\\registered-canonical-destination";
     let completePrepare!: (project: Awaited<ReturnType<typeof bridge.prepareDeployment>>) => void;
     const prepare = vi.spyOn(bridge, "prepareDeployment").mockImplementation(() => new Promise(resolve => {
@@ -137,6 +154,9 @@ describe("prepared wizard component discovery", () => {
 
     render(App);
     await openWizard();
+    const declarations = screen.getByRole("region", { name: "Declared template components" });
+    expect(declarations).toHaveTextContent("0.3.2");
+    expect(declarations).toHaveTextContent("Local file integrity is checked separately");
     await continueWizard();
     await fireEvent.click(acknowledgementCheckbox());
     await continueWizard();
@@ -154,6 +174,7 @@ describe("prepared wizard component discovery", () => {
     }));
     await waitFor(() => expect(starts).toHaveBeenCalledWith("preview", canonicalPath, "dev", expect.any(String)));
     await waitFor(() => expect(provenance).toHaveBeenCalledExactlyOnceWith(canonicalPath));
+    expect(declarations).not.toBeInTheDocument();
     expect(updates).toHaveBeenCalledExactlyOnceWith();
 
     await act(() => finishProvenance({

@@ -17,6 +17,7 @@
   import ProjectDeploymentReceipt from "./components/ProjectDeploymentReceipt.svelte";
   import ProjectReportArtifacts from "./components/ProjectReportArtifacts.svelte";
   import ProjectComponentProvenance from "./components/ProjectComponentProvenance.svelte";
+  import CatalogComponentPins from "./components/CatalogComponentPins.svelte";
   import StatusPill from "./components/StatusPill.svelte";
   import VisibleProfiles from "./components/VisibleProfiles.svelte";
   import WizardConfigurationReview from "./components/WizardConfigurationReview.svelte";
@@ -2819,6 +2820,8 @@
             ((wizardValues.sourceMode === "existingProject" && wizardValues.projectPath === selectedInspectionPath) ||
               (wizardValues.sourceMode === "localTemplate" && wizardValues.sourcePath === selectedInspectionPath))}
             <ProjectComponentProvenance template={selectedInspection.sourceBinding} />
+          {:else if !projectPrepared && wizardValues.sourceMode === "catalog"}
+            <CatalogComponentPins entry={selectedEntry} />
           {/if}
           {#if draftNotice}
             <div class="callout draft-notice" class:warning={draftNotice.kind !== "restored"} class:info={draftNotice.kind === "restored"} role="status" aria-label="Saved wizard choices">
