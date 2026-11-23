@@ -1,4 +1,5 @@
-import type { AcknowledgementProof, ConfigurationField, ConfigurationGroup, TemplateManifest, WizardValues } from "./types";
+import { providerKey } from "./acknowledgement-providers";
+import type { AcknowledgementProof, AcknowledgementProviderViews, ConfigurationField, ConfigurationGroup, TemplateManifest, WizardValues } from "./types";
 import { conditionMatches } from "./wizard";
 
 export function acknowledgementFields(manifest: TemplateManifest | undefined) {
@@ -24,7 +25,7 @@ export function acknowledgementMessage(field: ConfigurationField): string {
   return field.validationMessage ?? `Accept ${field.label} for the current scope and tenant before continuing.`;
 }
 
-export function acknowledgementSnapshot(field: ConfigurationField, group: ConfigurationGroup, values: WizardValues): AcknowledgementProof | null {
+export function acknowledgementSnapshot(field: ConfigurationField, group: ConfigurationGroup, values: WizardValues, views: AcknowledgementProviderViews = {}): AcknowledgementProof | null {
   if (!field.condition || !conditionMatches(group.condition, values) || !conditionMatches(field.condition, values)) return null;
   const tenantId = String(values.tenantId ?? "").trim().toLowerCase();
   if (!tenantId) return null;
@@ -34,45 +35,64 @@ export function acknowledgementSnapshot(field: ConfigurationField, group: Config
     if (value === undefined || value === null) return null;
     controllingValues[id] = Array.isArray(value) ? [...value] : value;
   }
-  return { fieldId: field.id, tenantId, controllingValues };
+  const acknowledgement: AcknowledgementProof = { fieldId: field.id, tenantId, controllingValues };
+  const declaration = field.acknowledgementProvider;
+  if (!declaration) return acknowledgement;
+  const view = views[providerKey(declaration)];
+  if (!view || view.tenantId !== tenantId || !view.ids.length) return null;
+  let selectedIds: string[] = [];
+  if (declaration.selectedIdsField) {
+    const selection = values[declaration.selectedIdsField];
+    const input = Array.isArray(selection) ? selection : typeof selection === "string" ? selection.split(/[,;]/) : [];
+    selectedIds = input.map((id) => id.trim().toLowerCase()).sort();
+    const available = new Set(view.ids);
+    if (!selectedIds.length || selectedIds.length > 200 || new Set(selectedIds).size !== selectedIds.length ||
+        selectedIds.some((id) => !available.has(id))) return null;
+  }
+  acknowledgement.provider = {
+    id: declaration.id, classification: declaration.classification,
+    digest: view.digest, revision: view.revision, selectedIds
+  };
+  return acknowledgement;
 }
 
-export function canAcknowledge(manifest: TemplateManifest | undefined, fieldId: string, values: WizardValues): boolean {
+export function canAcknowledge(manifest: TemplateManifest | undefined, fieldId: string, values: WizardValues, views: AcknowledgementProviderViews = {}): boolean {
   const declaration = acknowledgementFields(manifest).find(({ field }) => field.id === fieldId);
-  return declaration !== undefined && acknowledgementSnapshot(declaration.field, declaration.group, values) !== null;
+  return declaration !== undefined && acknowledgementSnapshot(declaration.field, declaration.group, values, views) !== null;
 }
 
-export function acknowledgementMatches(field: ConfigurationField, group: ConfigurationGroup, values: WizardValues, proofs: AcknowledgementProof[]): boolean {
-  const current = acknowledgementSnapshot(field, group, values);
+export function acknowledgementMatches(field: ConfigurationField, group: ConfigurationGroup, values: WizardValues, proofs: AcknowledgementProof[], views: AcknowledgementProviderViews = {}): boolean {
+  const current = acknowledgementSnapshot(field, group, values, views);
   const proof = proofs.find((proof) => proof.fieldId === field.id);
   return values[field.id] === true && current !== null && proof !== undefined &&
     current.tenantId === proof.tenantId &&
+    JSON.stringify(current.provider) === JSON.stringify(proof.provider) &&
     Object.keys(current.controllingValues).length === Object.keys(proof.controllingValues).length &&
     Object.entries(current.controllingValues).every(([id, value]) => JSON.stringify(value) === JSON.stringify(proof.controllingValues[id]));
 }
 
-export function acknowledgementIssues(manifest: TemplateManifest | undefined, values: WizardValues, proofs: AcknowledgementProof[] = []): string[] {
+export function acknowledgementIssues(manifest: TemplateManifest | undefined, values: WizardValues, proofs: AcknowledgementProof[] = [], views: AcknowledgementProviderViews = {}): string[] {
   return acknowledgementFields(manifest)
     .filter(({ field, group }) => conditionMatches(group.condition, values) && conditionMatches(field.condition, values))
-    .filter(({ field, group }) => !acknowledgementMatches(field, group, values, proofs))
+    .filter(({ field, group }) => !acknowledgementMatches(field, group, values, proofs, views))
     .map(({ field }) => acknowledgementMessage(field));
 }
 
-export function assertAcknowledgements(manifest: TemplateManifest | undefined, values: WizardValues, proofs: AcknowledgementProof[] = []) {
-  const issues = acknowledgementIssues(manifest, values, proofs);
+export function assertAcknowledgements(manifest: TemplateManifest | undefined, values: WizardValues, proofs: AcknowledgementProof[] = [], views: AcknowledgementProviderViews = {}) {
+  const issues = acknowledgementIssues(manifest, values, proofs, views);
   if (issues.length) throw new Error(issues.join(" "));
 }
 
 /** Called only from an explicit field interaction. Removing stale proofs prevents A→B→A resurrection. */
-export function changeAcknowledgementValues(manifest: TemplateManifest | undefined, previous: WizardValues, proofs: AcknowledgementProof[], id: string, value: WizardValues[string]) {
+export function changeAcknowledgementValues(manifest: TemplateManifest | undefined, previous: WizardValues, proofs: AcknowledgementProof[], id: string, value: WizardValues[string], views: AcknowledgementProviderViews = {}) {
   const values = { ...previous, [id]: value };
   const retained: AcknowledgementProof[] = [];
   for (const { field, group } of acknowledgementFields(manifest)) {
     if (id === field.id) {
-      const snapshot = value === true ? acknowledgementSnapshot(field, group, values) : null;
+      const snapshot = value === true ? acknowledgementSnapshot(field, group, values, views) : null;
       values[field.id] = snapshot !== null;
       if (snapshot) retained.push(snapshot);
-    } else if (acknowledgementMatches(field, group, values, proofs)) {
+    } else if (acknowledgementMatches(field, group, values, proofs, views)) {
       retained.push(proofs.find((proof) => proof.fieldId === field.id)!);
     } else {
       values[field.id] = false;
@@ -88,7 +108,7 @@ export function withoutAcknowledgements(manifest: TemplateManifest | undefined, 
 
 export function acknowledgementEnvironmentValues(manifest: TemplateManifest | undefined, values: WizardValues) {
   values = withAcknowledgementControllerValues(manifest, values);
-  const ids = new Set(acknowledgementFields(manifest).flatMap(({ field, group }) => [field.id, field.condition?.field, group.condition?.field]));
+  const ids = new Set(acknowledgementFields(manifest).flatMap(({ field, group }) => [field.id, field.condition?.field, group.condition?.field, field.acknowledgementProvider?.selectedIdsField]));
   return Object.fromEntries((manifest?.configuration.groups ?? []).flatMap((group) => group.fields)
     .filter((field) => ids.has(field.id) && values[field.id] !== undefined)
     .map((field) => [field.environmentVariable, values[field.id]]));

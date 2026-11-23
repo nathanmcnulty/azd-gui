@@ -1,3 +1,4 @@
+import type { AcknowledgementProviderViews } from "./types";
 import type {
   AcknowledgementProof,
   CatalogEntry,
@@ -77,7 +78,8 @@ export function calculateWizardPlan(
   entry: CatalogEntry,
   values: WizardValues,
   previous?: WizardPlan,
-  acknowledgementProofs: AcknowledgementProof[] = []
+  acknowledgementProofs: AcknowledgementProof[] = [],
+  providerViews: AcknowledgementProviderViews = {}
 ): WizardPlan {
   const manifest = entry.manifest;
   const pages: WizardPage[] = [
@@ -91,7 +93,7 @@ export function calculateWizardPlan(
     const fields = visibleFields(group.fields, values);
     if (fields.length === 0) continue;
     const blockingIssues = fields.map((field) => field.type === "acknowledgement"
-      ? acknowledgementMatches(field, group, values, acknowledgementProofs) ? null : acknowledgementMessage(field)
+      ? acknowledgementMatches(field, group, values, acknowledgementProofs, providerViews) ? null : acknowledgementMessage(field)
       : validateField(field, values[field.id]))
       .filter((issue): issue is string => issue !== null);
     configurationPages.push({
@@ -113,7 +115,7 @@ export function calculateWizardPlan(
     const choices = page.group!.fields.filter((field) => field.type !== "acknowledgement");
     const choiceIssues = choices.map((field) => validateField(field, values[field.id])).filter((issue): issue is string => issue !== null);
     featurePages.push({ ...page, group: { ...page.group!, fields: choices }, blockingIssues: choiceIssues, complete: !choiceIssues.length });
-    const issues = acknowledgements.filter((field) => !acknowledgementMatches(field, page.group!, values, acknowledgementProofs)).map(acknowledgementMessage);
+    const issues = acknowledgements.filter((field) => !acknowledgementMatches(field, page.group!, values, acknowledgementProofs, providerViews)).map(acknowledgementMessage);
     targetPages.push({ ...page, id: `${page.id}:acknowledgements`, title: `${page.title}: acknowledgements`,
       group: { ...page.group!, fields: acknowledgements }, blockingIssues: issues, complete: !issues.length });
   }

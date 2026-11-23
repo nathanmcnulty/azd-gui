@@ -1,5 +1,6 @@
+import pimFixture from "./fixtures/pim-provider-acknowledgement.json";
 import { describe, expect, it } from "vitest";
-import type { CatalogEntry, WizardValues } from "./types";
+import type { AcknowledgementProviderViews, CatalogEntry, TemplateManifest, WizardValues } from "./types";
 import { acknowledgementEnvironmentValues, acknowledgementFields, acknowledgementIssues, changeAcknowledgementValues, withoutAcknowledgements } from "./acknowledgements";
 import { calculateWizardPlan, environmentValuesForPlan, validateField } from "./wizard";
 
@@ -82,5 +83,51 @@ describe("fresh acknowledgement proofs", () => {
     const index = plan.pages.findIndex((page) => page.id === "configuration:choices:acknowledgements");
     expect(index).toBeGreaterThan(plan.pages.findIndex((page) => page.kind === "environment"));
     expect(plan.pages[index].complete).toBe(false);
+  });
+});
+
+describe("provider-backed PIM acknowledgements", () => {
+  const manifest = pimFixture as TemplateManifest;
+  const key = "entra-pim-role-definitions:privileged";
+  const fieldId = "confirmAllPrivilegedRoles";
+  const lessFieldId = "confirmAllLessPrivilegedRoles";
+  const first = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+  const second = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
+  const replacement = "cccccccc-cccc-4ccc-cccc-cccccccccccc";
+  const all = { tenantId, privilegedScope: "all", lessPrivilegedScope: "all" };
+  const makeView = (ids: string[], revision: string, tenant = tenantId): AcknowledgementProviderViews => ({
+    [key]: { tenantId: tenant, ids, digest: revision.repeat(64), revision }
+  });
+
+  it("requires a new acknowledgement for same-count A/B to A/C refresh and preserves the independent tier", () => {
+    const before = makeView([first, second], "a");
+    const after = makeView([first, replacement], "b");
+    const accepted = changeAcknowledgementValues(manifest, all, [], fieldId, true, before);
+    const both = changeAcknowledgementValues(manifest, accepted.values, accepted.proofs, lessFieldId, true, before);
+    expect(acknowledgementIssues(manifest, both.values, both.proofs, before)).toEqual([]);
+    expect(acknowledgementIssues(manifest, both.values, both.proofs, after)).toEqual(["Accept I acknowledge this targets every privileged role for the current scope and tenant before continuing."]);
+    const fresh = changeAcknowledgementValues(manifest, both.values, both.proofs, fieldId, true, after);
+    expect(acknowledgementIssues(manifest, fresh.values, fresh.proofs, after)).toEqual([]);
+    expect(fresh.proofs.find(proof => proof.fieldId === lessFieldId)?.provider).toBeUndefined();
+  });
+
+  it("rejects unknown, empty or foreign evidence and saved true without an explicit proof", () => {
+    for (const views of [{}, makeView([], "a"), makeView([first], "a", "22222222-2222-4222-8222-222222222222")]) {
+      expect(changeAcknowledgementValues(manifest, all, [], fieldId, true, views).proofs).toEqual([]);
+    }
+    const view = makeView([first], "a");
+    expect(acknowledgementIssues(manifest, { ...all, [fieldId]: true }, [], view)).toHaveLength(2);
+    const accepted = changeAcknowledgementValues(manifest, all, [], fieldId, true, view);
+    const changed = changeAcknowledgementValues(manifest, accepted.values, accepted.proofs, "tenantId", "22222222-2222-4222-8222-222222222222", view);
+    expect(changed.proofs).toEqual([]);
+  });
+
+  it("checks optional selected IDs against the complete result and binds canonical selections", () => {
+    const configured = structuredClone(manifest);
+    configured.configuration.groups[0].fields[2].acknowledgementProvider!.selectedIdsField = "roleIds";
+    const view = makeView([first, second], "a");
+    const accepted = changeAcknowledgementValues(configured, { ...all, roleIds: [second, first] }, [], fieldId, true, view);
+    expect(accepted.proofs[0].provider?.selectedIds).toEqual([first, second]);
+    expect(changeAcknowledgementValues(configured, accepted.values, accepted.proofs, "roleIds", [replacement], view).proofs).toEqual([]);
   });
 });

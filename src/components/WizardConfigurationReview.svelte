@@ -1,9 +1,11 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
-  import type { AcknowledgementProof, ConfigurationField, ConfigurationGroup, WizardPage, WizardValues } from "../lib/types";
+  import type { AcknowledgementProof, AcknowledgementProviderViews, ConfigurationField, ConfigurationGroup, WizardPage, WizardValues } from "../lib/types";
 
+  import { providerKey } from "../lib/acknowledgement-providers";
   import { acknowledgementMatches } from "../lib/acknowledgements";
 
+  export let providerViews: AcknowledgementProviderViews = {};
   export let acknowledgementProofs: AcknowledgementProof[] = [];
   export let pages: WizardPage[];
   export let values: WizardValues;
@@ -40,9 +42,13 @@
       {#each page.group?.fields ?? [] as field}
         <div><dt>{field.label}</dt><dd>
           {#if field.type === "acknowledgement" && page.group}
-            <strong>{acknowledgementMatches(field, page.group, values, acknowledgementProofs) ? "Acknowledged" : "Fresh acknowledgement required"}</strong>
+            <strong>{acknowledgementMatches(field, page.group, values, acknowledgementProofs, providerViews) ? "Acknowledged" : "Fresh acknowledgement required"}</strong>
             <small>{acknowledgementDetails(field, page.group)}</small>
             <small>Tenant: {String(values.tenantId ?? "Not selected")}</small>
+            {#if field.acknowledgementProvider}
+              {@const view = providerViews[providerKey(field.acknowledgementProvider)]}
+              <small>{view ? view.ids.length + " roles in the complete verified result" : "Complete provider result unavailable"}</small>
+            {/if}
             <small>Persisted variable: {field.environmentVariable} = {values[field.id] === true ? "true" : "false"}</small>
           {:else}{displayValue(field)}{/if}
         </dd></div>

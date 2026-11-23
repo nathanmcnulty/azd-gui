@@ -497,6 +497,7 @@ pub async fn prepare(
     request: PrepareDeploymentRequest,
     cache_root: &Path,
     database: &Database,
+    graph_sessions: Option<&crate::graph_session::GraphSessions>,
 ) -> AppResult<ProjectSummary> {
     validate_template_id(&request.template_id)?;
     validate_environment_name(&request.environment)?;
@@ -524,6 +525,9 @@ pub async fn prepare(
             &request.environment_values,
             request.tenant.as_deref(),
             &request.acknowledgement_proofs,
+            graph_sessions
+                .and_then(|sessions| sessions.acknowledgement_catalog())
+                .as_deref(),
         )?;
         let requirement_values =
             requirement_environment_values(manifest, &request.environment_values)?;
@@ -560,6 +564,17 @@ pub async fn prepare(
     let snapshot =
         ProjectTemplateSnapshot::new(entry.as_ref().expect("resolved template").clone())?;
     ensure_reviewed_contract_digest(&request, &snapshot)?;
+    if let Some(manifest) = snapshot.entry.manifest.as_ref() {
+        crate::acknowledgements::validate(
+            manifest,
+            &request.environment_values,
+            request.tenant.as_deref(),
+            &request.acknowledgement_proofs,
+            graph_sessions
+                .and_then(|sessions| sessions.acknowledgement_catalog())
+                .as_deref(),
+        )?;
+    }
     let environment_assignments = environment_assignments(&request, entry.as_ref())?;
     let destination = ensure_destination(&request.destination, existing_project)?;
     let name = destination
@@ -959,7 +974,7 @@ mod tests {
         request.resource_group = None;
         request.environment_values.clear();
         let database = crate::persistence::Database::open(&root.path().join("review.db")).unwrap();
-        let project = super::prepare(request, &root.path().join("cache"), &database)
+        let project = super::prepare(request, &root.path().join("cache"), &database, None)
             .await
             .unwrap();
         assert!(std::path::Path::new(&project.path)

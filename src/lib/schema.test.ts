@@ -266,3 +266,13 @@ describe("provisional component update declaration", () => {
     expect(validate({ ...publisher, executable: "setup.ps1" })).toBe(false);
   });
 });
+
+it("accepts only the registered provider for an acknowledgement fixture", () => {
+  const ajv = new Ajv2020({ allowUnionTypes: true });
+  addFormats(ajv);
+  const validate = ajv.compile(json("schemas/azd-gui.schema.json"));
+  const fixture = json("src/lib/fixtures/pim-provider-acknowledgement.json");
+  expect(validate(fixture)).toBe(true);
+  fixture.configuration.groups[0].fields[2].acknowledgementProvider.url = "https://example.invalid";
+  expect(validate(fixture)).toBe(false);
+});

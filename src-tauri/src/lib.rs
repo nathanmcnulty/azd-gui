@@ -1,3 +1,4 @@
+mod acknowledgement_provider;
 mod acknowledgements;
 mod azd;
 mod azure;
@@ -217,6 +218,7 @@ async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> App
         .lock()
         .map_err(|_| AppError::Invalid("Reviewed contract cache is unavailable.".into()))?
         .clear();
+    state.graph_sessions.clear_acknowledgement_catalog();
     state.execution_approvals.clear()?;
     state.tool_install_approvals.clear()?;
     Ok(true)
@@ -699,9 +701,12 @@ where
             acknowledgement_values,
             target: Some(lifecycle_execution_target(&canonical, environment)?),
         };
-        state
-            .execution_approvals
-            .consume_lifecycle(token, expected.clone(), manifest)?;
+        let proofs = state.execution_approvals.consume_lifecycle(
+            token,
+            expected.clone(),
+            manifest,
+            state.graph_sessions.acknowledgement_catalog().as_deref(),
+        )?;
         if let Some(requirements) = &requirements {
             probe(requirements.clone()).await?;
         } else if let Some(manifest) = manifest {
@@ -729,6 +734,20 @@ where
                 "The saved execution context changed before launch. Review and approve again."
                     .into(),
             ));
+        }
+        if action != "down" {
+            if let Some(manifest) = manifest {
+                acknowledgements::validate(
+                    manifest,
+                    &current_values,
+                    expected
+                        .target
+                        .as_ref()
+                        .and_then(|target| target.tenant_id.as_deref()),
+                    &proofs,
+                    state.graph_sessions.acknowledgement_catalog().as_deref(),
+                )?;
+            }
         }
         if let Some(requirements) = &requirements {
             let current = resolve_effective_requirements(
@@ -953,7 +972,13 @@ async fn prepare_deployment(
     // Preparation can also rewrite an existing environment. Revoke any other
     // pending grants before those writes, including an A -> B -> A sequence.
     state.execution_approvals.clear()?;
-    deployment::prepare(request, &state.template_cache, &state.database).await
+    deployment::prepare(
+        request,
+        &state.template_cache,
+        &state.database,
+        Some(&state.graph_sessions),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1399,6 +1424,20 @@ async fn refresh_pim_roles(
         )
         .await
 }
+#[tauri::command]
+fn acknowledgement_provider_view(
+    state: State<'_, AppState>,
+    tenant_id: String,
+    declaration: acknowledgement_provider::Declaration,
+) -> Option<acknowledgement_provider::View> {
+    let tenant = uuid::Uuid::parse_str(&tenant_id).ok()?;
+    state
+        .graph_sessions
+        .acknowledgement_catalog()?
+        .view(tenant, &declaration)
+        .cloned()
+}
+
 #[tauri::command]
 fn cached_pim_roles(app: AppHandle, tenant_id: String) -> AppResult<Option<pim_roles::Catalog>> {
     pim_roles::Catalog::load(
@@ -1942,6 +1981,7 @@ fn prepare_approval_acknowledgements(
                 .as_ref()
                 .and_then(|target| target.tenant_id.as_deref()),
             &request.acknowledgement_proofs,
+            state.graph_sessions.acknowledgement_catalog().as_deref(),
         )?;
         request.acknowledgement_values =
             acknowledgements::binding_values(manifest, &request.acknowledgement_values)?;
@@ -1957,7 +1997,7 @@ fn prepare_approval_acknowledgements(
 }
 
 fn lifecycle_approval_acknowledgements(
-    database: &Database,
+    state: &AppState,
     request: &mut ExecutionApprovalRequest,
 ) -> AppResult<()> {
     if request.action == "down" {
@@ -1965,6 +2005,7 @@ fn lifecycle_approval_acknowledgements(
         request.acknowledgement_proofs.clear();
         return Ok(());
     }
+    let database = &state.database;
     let manifest = database
         .project_by_path(&request.project_path)?
         .map(|project| resolve_project_template(database, &project))
@@ -1985,6 +2026,7 @@ fn lifecycle_approval_acknowledgements(
                 .as_ref()
                 .and_then(|target| target.tenant_id.as_deref()),
             &request.acknowledgement_proofs,
+            state.graph_sessions.acknowledgement_catalog().as_deref(),
         )?;
     } else if !request.acknowledgement_proofs.is_empty()
         || !request.acknowledgement_values.is_empty()
@@ -2019,7 +2061,7 @@ fn request_execution_approval(
     if request.action == "prepare" {
         prepare_approval_acknowledgements(state.inner(), &mut request)?;
     } else {
-        lifecycle_approval_acknowledgements(&state.database, &mut request)?;
+        lifecycle_approval_acknowledgements(&state, &mut request)?;
     }
     let destructive = request.action == "down";
     let action = if destructive {
@@ -2098,10 +2140,13 @@ fn request_execution_approval(
     if request.action != "prepare" {
         let mut fresh = request.clone();
         bind_approval_requirements(state.inner(), &mut fresh)?;
-        lifecycle_approval_acknowledgements(&state.database, &mut fresh)?;
+        lifecycle_approval_acknowledgements(&state, &mut fresh)?;
         if fresh != request {
             return Err(AppError::Invalid("The saved acknowledgement context changed during approval. Review and acknowledge again.".into()));
         }
+    }
+    if request.action == "prepare" {
+        prepare_approval_acknowledgements(state.inner(), &mut request)?;
     }
     state.execution_approvals.issue(request)
 }
@@ -2852,6 +2897,7 @@ pub fn run() {
             review_pim_plan,
             refresh_pim_roles,
             cached_pim_roles,
+            acknowledgement_provider_view,
             cancel_pim_plan,
             request_pim_plan_session,
             run_pim_plan,
@@ -3439,9 +3485,9 @@ mod acknowledgement_caller_tests {
         request
             .acknowledgement_values
             .insert("MODE".into(), json!("limited"));
-        assert!(lifecycle_approval_acknowledgements(&state.database, &mut request).is_err());
+        assert!(lifecycle_approval_acknowledgements(&state, &mut request).is_err());
         request.acknowledgement_proofs = vec![proof()];
-        lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+        lifecycle_approval_acknowledgements(&state, &mut request).unwrap();
         assert_eq!(request.acknowledgement_values, values());
         let grant = state.execution_approvals.issue(request.clone()).unwrap();
         write_environment(root.path(), "limited", "true");
@@ -3455,7 +3501,12 @@ mod acknowledgement_caller_tests {
         expected.acknowledgement_proofs.clear();
         assert!(state
             .execution_approvals
-            .consume_lifecycle(&grant.token, expected, snapshot.entry.manifest.as_ref())
+            .consume_lifecycle(
+                &grant.token,
+                expected,
+                snapshot.entry.manifest.as_ref(),
+                None
+            )
             .is_err());
     }
 
@@ -3473,7 +3524,7 @@ mod acknowledgement_caller_tests {
             assert!(
                 state
                     .execution_approvals
-                    .consume_lifecycle(&grant.token, forged, snapshot.entry.manifest.as_ref())
+                    .consume_lifecycle(&grant.token, forged, snapshot.entry.manifest.as_ref(), None)
                     .is_err(),
                 "{action}"
             );
@@ -3496,7 +3547,12 @@ mod acknowledgement_caller_tests {
             }
             assert!(state
                 .execution_approvals
-                .consume_lifecycle(&grant.token, changed, snapshot.entry.manifest.as_ref())
+                .consume_lifecycle(
+                    &grant.token,
+                    changed,
+                    snapshot.entry.manifest.as_ref(),
+                    None
+                )
                 .is_err());
         }
     }
@@ -3505,7 +3561,7 @@ mod acknowledgement_caller_tests {
     fn down_does_not_require_expansion_acknowledgement_and_gui_writes_invalidate_grants() {
         let (_root, state, snapshot, mut request) = fixture();
         request.action = "down".into();
-        lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+        lifecycle_approval_acknowledgements(&state, &mut request).unwrap();
         assert!(request.acknowledgement_proofs.is_empty());
         assert!(request.acknowledgement_values.is_empty());
         let grant = state.execution_approvals.issue(request.clone()).unwrap();
@@ -3515,13 +3571,19 @@ mod acknowledgement_caller_tests {
                 &grant.token,
                 request.clone(),
                 snapshot.entry.manifest.as_ref(),
+                None,
             )
             .unwrap();
         let grant = state.execution_approvals.issue(request.clone()).unwrap();
         state.execution_approvals.clear().unwrap(); // Same invalidation used before GUI environment writes.
         assert!(state
             .execution_approvals
-            .consume_lifecycle(&grant.token, request, snapshot.entry.manifest.as_ref())
+            .consume_lifecycle(
+                &grant.token,
+                request,
+                snapshot.entry.manifest.as_ref(),
+                None
+            )
             .is_err());
     }
 
@@ -3596,7 +3658,7 @@ mod acknowledgement_caller_tests {
             acknowledgement_proofs: Vec::new(),
         };
         let database = Database::open(&root.path().join("state.sqlite")).unwrap();
-        let error = deployment::prepare(request, &root.path().join("cache"), &database)
+        let error = deployment::prepare(request, &root.path().join("cache"), &database, None)
             .await
             .unwrap_err();
         assert!(
@@ -3664,7 +3726,7 @@ mod acknowledgement_caller_tests {
                 write_environment(root.path(), "limited", "true");
                 request.acknowledgement_proofs.clear();
             }
-            lifecycle_approval_acknowledgements(&state.database, &mut request).unwrap();
+            lifecycle_approval_acknowledgements(&state, &mut request).unwrap();
             bind_approval_requirements(&state, &mut request).unwrap();
             let grant = state.execution_approvals.issue(request.clone()).unwrap();
             let launches = AtomicUsize::new(0);
@@ -3745,9 +3807,10 @@ mod acknowledgement_caller_tests {
                     acknowledgement_proofs: Vec::new(),
                 };
                 let database = Database::open(&root.path().join("state.sqlite")).unwrap();
-                let error = deployment::prepare(request, &root.path().join("cache"), &database)
-                    .await
-                    .unwrap_err();
+                let error =
+                    deployment::prepare(request, &root.path().join("cache"), &database, None)
+                        .await
+                        .unwrap_err();
                 assert!(
                     error
                         .to_string()
@@ -3789,9 +3852,7 @@ mod acknowledgement_caller_tests {
             .unwrap()
             .replace("ENABLED=true\n", "");
         std::fs::write(file, content).unwrap();
-        assert!(
-            lifecycle_approval_acknowledgements(&state.database, &mut request.clone()).is_err()
-        );
+        assert!(lifecycle_approval_acknowledgements(&state, &mut request.clone()).is_err());
         let grant = state.execution_approvals.issue(request.clone()).unwrap();
         let launches = AtomicUsize::new(0);
         let error = start_azd_operation_checked(

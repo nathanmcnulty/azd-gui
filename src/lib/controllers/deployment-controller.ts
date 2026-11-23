@@ -1,3 +1,4 @@
+import type { AcknowledgementProviderViews } from "../types";
 import {
   getProjectTemplate,
   getReviewedContractDigest,
@@ -23,9 +24,10 @@ export async function materializeDeployment(
   values: WizardValues,
   sourceBinding?: LocalSourceBinding,
   acknowledgementProofs: AcknowledgementProof[] = [],
-  isCurrent: () => boolean = () => true
+  isCurrent: () => boolean = () => true,
+  providerViews: AcknowledgementProviderViews = {}
 ): Promise<{ project: ProjectSummary; values: WizardValues }> {
-  assertAcknowledgements(entry.manifest, values, acknowledgementProofs);
+  assertAcknowledgements(entry.manifest, values, acknowledgementProofs, providerViews);
   const acknowledgementValues = acknowledgementEnvironmentValues(entry.manifest, values);
   const projectPath = String(values.projectPath || "");
   const environment = String(values.environmentName || "dev");
@@ -88,7 +90,8 @@ export async function startApprovedDeploymentOperation(
   projectPath: string,
   environment: string,
   acknowledgementProofs: AcknowledgementProof[] = [],
-  isCurrent: () => boolean = () => true
+  isCurrent: () => boolean = () => true,
+  providerViews: AcknowledgementProviderViews = {}
 ): Promise<string> {
   const snapshot = await getProjectTemplate(projectPath);
   if (!snapshot) throw new Error("This project needs a saved reviewed template contract before lifecycle actions.");

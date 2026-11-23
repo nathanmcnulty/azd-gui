@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1.0",
+  "prerequisites": [],
+  "connections": [],
+  "configuration": {
+    "groups": [
+      {
+        "id": "role-scope",
+        "title": "Role scope",
+        "fields": [
+          {
+            "id": "privilegedScope",
+            "environmentVariable": "AZD_PIM_PRIVILEGED_ROLE_SCOPE",
+            "type": "select",
+            "label": "Privileged role scope",
+            "required": true,
+            "default": "selected",
+            "options": [{"label":"Selected roles","value":"selected"},{"label":"All privileged roles","value":"all"}]
+          },
+          {
+            "id": "lessPrivilegedScope",
+            "environmentVariable": "AZD_PIM_LESS_PRIVILEGED_ROLE_SCOPE",
+            "type": "select",
+            "label": "Less-privileged role scope",
+            "required": true,
+            "default": "selected",
+            "options": [{"label":"Selected roles","value":"selected"},{"label":"All less-privileged roles","value":"all"}]
+          },
+          {
+            "id": "confirmAllPrivilegedRoles",
+            "environmentVariable": "AZD_PIM_CONFIRM_ALL_PRIVILEGED_ROLES",
+            "type": "acknowledgement",
+            "label": "I acknowledge this targets every privileged role",
+            "required": true,
+            "condition": {"field":"privilegedScope","equals":"all"},
+            "acknowledgementProvider": {"id":"entra-pim-role-definitions","classification":"privileged"}
+          },
+          {
+            "id": "confirmAllLessPrivilegedRoles",
+            "environmentVariable": "AZD_PIM_CONFIRM_ALL_LESS_PRIVILEGED_ROLES",
+            "type": "acknowledgement",
+            "label": "I acknowledge this targets every less-privileged role",
+            "required": true,
+            "condition": {"field":"lessPrivilegedScope","equals":"all"}
+          }
+        ]
+      }
+    ]
+  }
+}

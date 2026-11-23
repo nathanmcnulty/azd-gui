@@ -8,9 +8,10 @@
   export let value: WizardValues[string] = "";
   export let configuredSensitive = false;
   export let acknowledgementAvailable = true;
+  export let providerCount: number | undefined = undefined;
   export let lookupTarget: ConnectionTarget | null = null;
 
-  const dispatch = createEventDispatcher<{ change: WizardValues[string] }>();
+  const dispatch = createEventDispatcher<{ change: WizardValues[string]; providerRefresh: void }>();
 
   $: selectedValues = Array.isArray(value)
     ? value
@@ -59,7 +60,11 @@
         {#if field.help}<small>{field.help}</small>{/if}
       </span>
     </label>
-    <small id={`acknowledgement-${field.id}-message`}>{!acknowledgementAvailable ? "Select an available tenant and controlling scope before acknowledging." : value === true ? "Accepted for the current scope and tenant." : acknowledgementMessage(field)}</small>
+    <small id={`acknowledgement-${field.id}-message`}>{!acknowledgementAvailable ? (field.acknowledgementProvider ? "A complete verified role result and valid selections are required. Refresh tenant roles in the PIM planner." : "Select an available tenant and controlling scope before acknowledging.") : value === true ? "Accepted for the current scope and tenant." : acknowledgementMessage(field)}</small>
+    {#if providerCount !== undefined}<small>{providerCount} roles in the complete verified result</small>{/if}
+    {#if field.acknowledgementProvider}
+      <button type="button" class="secondary compact" on:click={() => dispatch("providerRefresh")}>Recheck local role evidence</button>
+    {/if}
   {:else if field.type === "boolean"}
     <label class="toggle-line card">
       <input type="checkbox" checked={Boolean(value)} on:change={(event) => change(event.currentTarget.checked)} />

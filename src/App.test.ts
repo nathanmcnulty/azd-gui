@@ -1,3 +1,5 @@
+import pimProviderFixture from "./lib/fixtures/pim-provider-acknowledgement.json";
+import * as acknowledgementProviders from "./lib/acknowledgement-providers";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as bridge from "./lib/bridge";
@@ -144,6 +146,44 @@ describe("desktop experience", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Connections, 3 connected" })).toBeInTheDocument());
     await act(() => resolveOld(connections.map((connection) => ({ ...connection, state: "disconnected" }))));
     expect(screen.getByRole("button", { name: "Connections, 3 connected" })).toBeInTheDocument();
+  });
+
+  it("revokes a saved-project PIM acknowledgement after a same-count role refresh", async () => {
+    const snapshot = (await bridge.getProjectTemplate("C:\\Deployments\\maester-lab"))!;
+    snapshot.entry.manifest = structuredClone(pimProviderFixture) as typeof snapshot.entry.manifest;
+    vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
+    const tenantId = "11111111-1111-4111-8111-111111111111";
+    const saved = (name: string, value: string) => ({ name, value, sensitive: false, declared: true, isSet: true, required: false });
+    vi.spyOn(bridge, "getProjectEnvironmentValues").mockResolvedValue([
+      saved("AZURE_TENANT_ID", tenantId),
+      saved("AZD_PIM_PRIVILEGED_ROLE_SCOPE", "all"),
+      saved("AZD_PIM_CONFIRM_ALL_PRIVILEGED_ROLES", "true")
+    ]);
+    const evidence = (ids: string[], revision: string) => ({
+      "entra-pim-role-definitions:privileged": { tenantId, ids, revision, digest: revision.repeat(64) }
+    });
+    const first = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+    const read = vi.spyOn(acknowledgementProviders, "readAcknowledgementProviderViews")
+      .mockResolvedValue(evidence([first, "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb"], "a"));
+    const starts = vi.spyOn(bridge, "startAzdOperation");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    await fireEvent.click(await screen.findByRole("button", { name: "environments" }));
+    const checkbox = await screen.findByRole("checkbox", { name: /I acknowledge this targets every privileged role/i });
+    await waitFor(() => expect(checkbox).toBeEnabled());
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getAllByText("2 roles in the complete verified result").length).toBeGreaterThan(0);
+    await fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+    read.mockResolvedValue(evidence([first, "cccccccc-cccc-4ccc-cccc-cccccccccccc"], "b"));
+    await fireEvent.click(screen.getByRole("button", { name: "Recheck local role evidence" }));
+    await waitFor(() => expect(checkbox).not.toBeChecked());
+    expect(screen.getAllByText("2 roles in the complete verified result").length).toBeGreaterThan(0);
+    read.mockResolvedValue({});
+    await fireEvent.click(screen.getByRole("button", { name: "Recheck local role evidence" }));
+    await waitFor(() => expect(checkbox).toBeDisabled());
+    expect(starts).not.toHaveBeenCalled();
   });
 
   it("leaves native null defaults empty in reopened project configuration", async () => {

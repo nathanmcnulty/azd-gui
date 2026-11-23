@@ -255,6 +255,16 @@
         "lookup": { "enum": ["securityGroup"] },
         "help": { "type": "string" },
         "validationMessage": { "type": "string", "minLength": 1 },
+        "acknowledgementProvider": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "classification"],
+          "properties": {
+            "id": { "const": "entra-pim-role-definitions" },
+            "classification": { "enum": ["privileged", "lessPrivileged", "all"] },
+            "selectedIdsField": { "type": "string", "minLength": 1 }
+          }
+        },
         "placeholder": { "type": "string" },
         "default": { "type": ["string", "boolean", "array"], "items": { "type": "string" } },
         "options": { "type": "array", "items": { "$ref": "#/$defs/option" } },
@@ -282,7 +292,7 @@
               "placeholder": false
             }
           },
-          "else": { "properties": { "validationMessage": false } }
+          "else": { "properties": { "validationMessage": false, "acknowledgementProvider": false } }
         }
       ]
     },

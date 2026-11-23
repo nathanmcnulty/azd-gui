@@ -1,6 +1,7 @@
 //! Required-true acknowledgements are fresh, target-bound execution evidence.
 //! A persisted true value is configuration, never sufficient approval on its own.
 use crate::{
+    acknowledgement_provider::{self, Observation},
     error::{AppError, AppResult},
     models::{AcknowledgementProof, ConfigurationField, FieldCondition, TemplateManifest},
 };
@@ -81,9 +82,9 @@ pub(crate) fn validate_manifest(manifest: &TemplateManifest) -> AppResult<()> {
     for group in &manifest.configuration.groups {
         for field in &group.fields {
             if field.field_type != "acknowledgement" {
-                if field.validation_message.is_some() {
+                if field.validation_message.is_some() || field.acknowledgement_provider.is_some() {
                     return Err(invalid(
-                        "Only acknowledgement fields may declare validationMessage.",
+                        "Only acknowledgement fields may declare acknowledgement metadata.",
                     ));
                 }
                 continue;
@@ -112,6 +113,28 @@ pub(crate) fn validate_manifest(manifest: &TemplateManifest) -> AppResult<()> {
                 .condition
                 .as_ref()
                 .ok_or_else(|| invalid("Acknowledgement fields must declare a condition."))?;
+            if let Some(ids_field) = field
+                .acknowledgement_provider
+                .as_ref()
+                .and_then(|provider| provider.selected_ids_field.as_deref())
+            {
+                let selection = manifest.configuration.groups.iter().find_map(|group| {
+                    group.fields.iter().find(|field| field.id == ids_field).map(|field| (group, field))
+                }).ok_or_else(|| invalid("The acknowledgement provider references an undeclared selection field."))?;
+                let (selection_group, selection) = selection;
+                if selection_group.condition.is_some()
+                    || selection.condition.is_some()
+                    || selection.sensitive
+                    || !matches!(
+                        selection.field_type.as_str(),
+                        "text" | "multiselect" | "entraObject"
+                    )
+                {
+                    return Err(invalid(
+                        "The provider selection must use an unconditional, non-sensitive ID field.",
+                    ));
+                }
+            }
             for condition in std::iter::once(condition).chain(group.condition.iter()) {
                 let control = controller(manifest, condition)?;
                 if control.field_type == "multiselect"
@@ -172,6 +195,27 @@ pub(crate) fn binding_values(
                     .cloned()
                     .unwrap_or(Value::Null),
             );
+            if let Some(id) = field
+                .acknowledgement_provider
+                .as_ref()
+                .and_then(|provider| provider.selected_ids_field.as_deref())
+            {
+                let selection = manifest
+                    .configuration
+                    .groups
+                    .iter()
+                    .flat_map(|group| &group.fields)
+                    .find(|field| field.id == id)
+                    .ok_or_else(|| invalid("Provider selection field is missing."))?;
+                values.insert(
+                    selection.environment_variable.clone(),
+                    supplied
+                        .get(&selection.environment_variable)
+                        .cloned()
+                        .or_else(|| selection.default.clone())
+                        .unwrap_or(Value::Null),
+                );
+            }
             for condition in field.condition.iter().chain(group.condition.iter()) {
                 let control = controller(manifest, condition)?;
                 let value = supplied
@@ -295,6 +339,7 @@ pub(crate) fn validate_preparation(
     supplied: &HashMap<String, Value>,
     tenant_id: Option<&str>,
     proofs: &[AcknowledgementProof],
+    provider: Option<&Observation>,
 ) -> AppResult<()> {
     crate::manifest::validate(manifest)?;
     // Preparation may reuse an existing environment. Missing/null controllers
@@ -320,7 +365,7 @@ pub(crate) fn validate_preparation(
             }
         }
     }
-    validate(manifest, supplied, tenant_id, proofs)
+    validate(manifest, supplied, tenant_id, proofs, provider)
 }
 
 pub(crate) fn validate(
@@ -328,6 +373,7 @@ pub(crate) fn validate(
     values: &HashMap<String, Value>,
     tenant_id: Option<&str>,
     proofs: &[AcknowledgementProof],
+    provider: Option<&Observation>,
 ) -> AppResult<()> {
     let values = binding_values(manifest, values)?;
     // A missing saved controller with no declared default is unknown scope, not
@@ -415,6 +461,43 @@ pub(crate) fn validate(
                     ))
                 })
                 .collect::<AppResult<BTreeMap<_, _>>>()?;
+            if let Some(declaration) = &field.acknowledgement_provider {
+                let view = provider.and_then(|provider| provider.view(tenant, declaration)).ok_or_else(|| {
+                    invalid("A complete current provider result is required. Refresh the verified tenant roles and acknowledge again.")
+                })?;
+                let selected_ids = match &declaration.selected_ids_field {
+                    Some(id) => {
+                        let selection = manifest
+                            .configuration
+                            .groups
+                            .iter()
+                            .flat_map(|group| &group.fields)
+                            .find(|field| &field.id == id)
+                            .ok_or_else(error)?;
+                        acknowledgement_provider::selected_ids(
+                            values.get(&selection.environment_variable),
+                        )?
+                    }
+                    None => Vec::new(),
+                };
+                let expected_provider = acknowledgement_provider::Proof {
+                    id: declaration.id,
+                    classification: declaration.classification,
+                    digest: view.digest.clone(),
+                    revision: view.revision,
+                    selected_ids,
+                };
+                if proof.provider.as_ref() != Some(&expected_provider)
+                    || expected_provider
+                        .selected_ids
+                        .iter()
+                        .any(|id| view.ids.binary_search(id).is_err())
+                {
+                    return Err(error());
+                }
+            } else if proof.provider.is_some() {
+                return Err(error());
+            }
             if proof.controlling_values != expected {
                 return Err(error());
             }
@@ -427,6 +510,23 @@ pub(crate) fn validate(
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+
+    fn validate(
+        manifest: &TemplateManifest,
+        values: &HashMap<String, Value>,
+        tenant: Option<&str>,
+        proofs: &[AcknowledgementProof],
+    ) -> AppResult<()> {
+        super::validate(manifest, values, tenant, proofs, None)
+    }
+    fn validate_preparation(
+        manifest: &TemplateManifest,
+        values: &HashMap<String, Value>,
+        tenant: Option<&str>,
+        proofs: &[AcknowledgementProof],
+    ) -> AppResult<()> {
+        super::validate_preparation(manifest, values, tenant, proofs, None)
+    }
 
     pub(crate) const TENANT: &str = "11111111-1111-1111-1111-111111111111";
 
@@ -455,6 +555,7 @@ pub(crate) mod tests {
     pub(crate) fn proof() -> AcknowledgementProof {
         AcknowledgementProof {
             field_id: "confirm".into(),
+            provider: None,
             tenant_id: TENANT.into(),
             controlling_values: BTreeMap::from([
                 ("mode".into(), json!("all")),
@@ -732,5 +833,124 @@ pub(crate) mod tests {
         let saved = saved_binding_values(&manifest, root.path(), "dev").unwrap();
         assert_eq!(saved["ENABLED"], json!(true));
         assert!(validate(&manifest, &saved, None, &[]).is_ok());
+    }
+    #[test]
+    fn all_privileged_proof_requires_the_current_complete_role_set_even_at_the_same_count() {
+        let manifest: TemplateManifest = serde_json::from_str(include_str!(
+            "../../src/lib/fixtures/pim-provider-acknowledgement.json"
+        ))
+        .unwrap();
+        let declaration = manifest.configuration.groups[0].fields[2]
+            .acknowledgement_provider
+            .as_ref()
+            .unwrap();
+        let tenant: uuid::Uuid = TENANT.parse().unwrap();
+        let first_id = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
+        let second_id = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
+        let replacement = "cccccccc-cccc-4ccc-cccc-cccccccccccc";
+        let catalog = |ids: [&str; 2], classification: Option<bool>| {
+            crate::pim_roles::Catalog::live(TENANT, Value::Array(ids.into_iter().map(|id| json!({
+                "id":id,"displayName":id,"isBuiltIn":true,"isEnabled":true,"isPrivileged":classification
+            })).collect())).unwrap()
+        };
+        let first =
+            Observation::from_live_catalog(&catalog([first_id, second_id], Some(true))).unwrap();
+        let reordered =
+            Observation::from_live_catalog(&catalog([second_id, first_id], Some(true))).unwrap();
+        let changed =
+            Observation::from_live_catalog(&catalog([first_id, replacement], Some(true))).unwrap();
+        let initial = first.view(tenant, declaration).unwrap();
+        let current = changed.view(tenant, declaration).unwrap();
+        assert_eq!(initial.ids.len(), current.ids.len());
+        assert_eq!(
+            initial.digest,
+            reordered.view(tenant, declaration).unwrap().digest
+        );
+        assert_ne!(initial.digest, current.digest);
+        let proof = |view: &crate::acknowledgement_provider::View| AcknowledgementProof {
+            field_id: "confirmAllPrivilegedRoles".into(),
+            tenant_id: TENANT.into(),
+            controlling_values: BTreeMap::from([("privilegedScope".into(), json!("all"))]),
+            provider: Some(acknowledgement_provider::Proof {
+                id: declaration.id,
+                classification: declaration.classification,
+                digest: view.digest.clone(),
+                revision: view.revision,
+                selected_ids: Vec::new(),
+            }),
+        };
+        let values = HashMap::from([
+            ("AZD_PIM_PRIVILEGED_ROLE_SCOPE".into(), json!("all")),
+            ("AZD_PIM_CONFIRM_ALL_PRIVILEGED_ROLES".into(), json!(true)),
+            (
+                "AZD_PIM_LESS_PRIVILEGED_ROLE_SCOPE".into(),
+                json!("selected"),
+            ),
+        ]);
+        assert!(super::validate_preparation(
+            &manifest,
+            &values,
+            Some(TENANT),
+            &[proof(initial)],
+            Some(&first)
+        )
+        .is_ok());
+        assert!(super::validate(
+            &manifest,
+            &values,
+            Some(TENANT),
+            &[proof(initial)],
+            Some(&changed)
+        )
+        .is_err());
+        assert!(super::validate(
+            &manifest,
+            &values,
+            Some(TENANT),
+            &[proof(current)],
+            Some(&changed)
+        )
+        .is_ok());
+        assert!(
+            super::validate(&manifest, &values, Some(TENANT), &[proof(current)], None).is_err()
+        );
+        assert!(super::validate(
+            &manifest,
+            &values,
+            Some("22222222-2222-4222-8222-222222222222"),
+            &[proof(current)],
+            Some(&changed)
+        )
+        .is_err());
+
+        let unknown =
+            Observation::from_live_catalog(&catalog([first_id, second_id], None)).unwrap();
+        assert!(unknown.view(tenant, declaration).is_none());
+        let mut cached = catalog([first_id, second_id], Some(true));
+        cached.source = "cached".into();
+        assert!(Observation::from_live_catalog(&cached).is_none());
+
+        let independent = HashMap::from([
+            ("AZD_PIM_PRIVILEGED_ROLE_SCOPE".into(), json!("selected")),
+            ("AZD_PIM_LESS_PRIVILEGED_ROLE_SCOPE".into(), json!("all")),
+            (
+                "AZD_PIM_CONFIRM_ALL_LESS_PRIVILEGED_ROLES".into(),
+                json!(true),
+            ),
+        ]);
+        let independent_proof = AcknowledgementProof {
+            field_id: "confirmAllLessPrivilegedRoles".into(),
+            tenant_id: TENANT.into(),
+            controlling_values: BTreeMap::from([("lessPrivilegedScope".into(), json!("all"))]),
+            provider: None,
+        };
+        assert!(super::validate(
+            &manifest,
+            &independent,
+            Some(TENANT),
+            &[independent_proof],
+            None
+        )
+        .is_ok());
     }
 }

@@ -817,6 +817,8 @@ struct Registry {
     generation: Uuid,
     requirements_digest: Option<String>,
     worker: Option<Arc<GraphWorker>>,
+    acknowledgement_catalog: Option<Arc<crate::acknowledgement_provider::Observation>>,
+    role_refresh: Uuid,
 }
 
 impl Registry {
@@ -965,16 +967,31 @@ impl GraphSessions {
             *cache = Some((worker.binding.requirements_digest.clone(), evidence));
         }
     }
+    pub fn acknowledgement_catalog(
+        &self,
+    ) -> Option<Arc<crate::acknowledgement_provider::Observation>> {
+        self.current.lock().ok()?.acknowledgement_catalog.clone()
+    }
+
+    pub fn clear_acknowledgement_catalog(&self) {
+        if let Ok(mut registry) = self.current.lock() {
+            registry.acknowledgement_catalog = None;
+            registry.role_refresh = Uuid::new_v4();
+        }
+    }
+
     pub async fn refresh_pim_roles(
         &self,
         digest: &str,
         cache: &std::path::Path,
     ) -> AppResult<crate::pim_roles::Catalog> {
-        let (worker, ticket) = {
-            let registry = self
+        let (worker, ticket, refresh) = {
+            let mut registry = self
                 .current
                 .lock()
                 .map_err(|_| invalid("Graph sessions unavailable."))?;
+            registry.acknowledgement_catalog = None;
+            registry.role_refresh = Uuid::new_v4();
             let worker = registry
                 .worker
                 .clone()
@@ -985,7 +1002,7 @@ impl GraphSessions {
                 .ok_or_else(|| {
                     invalid("Connect the reviewed PIM identity before refreshing roles.")
                 })?;
-            (worker, registry.generation)
+            (worker, registry.generation, registry.role_refresh)
         };
         let result = worker.pim_roles().await;
         if result.is_err() {
@@ -994,11 +1011,12 @@ impl GraphSessions {
         }
         let catalog = crate::pim_roles::Catalog::live(&worker.binding.tenant_id, result?)?;
         // Publication and cancellation/tenant changes share the registry lock.
-        let registry = self
+        let mut registry = self
             .current
             .lock()
             .map_err(|_| invalid("Graph sessions unavailable."))?;
         if registry.generation != ticket
+            || registry.role_refresh != refresh
             || registry
                 .worker
                 .as_ref()
@@ -1010,6 +1028,8 @@ impl GraphSessions {
             ));
         }
         catalog.save(cache)?;
+        registry.acknowledgement_catalog =
+            crate::acknowledgement_provider::Observation::from_live_catalog(&catalog).map(Arc::new);
         Ok(catalog)
     }
 
@@ -1410,6 +1430,17 @@ mod tests {
         assert_eq!(catalog.roles.len(), 1);
         assert_eq!(catalog.roles[0].is_built_in, Some(false));
         assert_eq!(catalog.roles[0].is_privileged, Some(true));
+        let observed = sessions.acknowledgement_catalog().unwrap();
+        let declaration = crate::acknowledgement_provider::Declaration {
+            id: crate::acknowledgement_provider::Provider::EntraPimRoleDefinitions,
+            classification: crate::acknowledgement_provider::Classification::Privileged,
+            selected_ids_field: None,
+        };
+        let tenant = review.binding.tenant_id.parse().unwrap();
+        assert_eq!(
+            observed.view(tenant, &declaration).unwrap().ids,
+            [catalog.roles[0].id.clone()]
+        );
         let saved = crate::pim_roles::Catalog::load(&cache, &review.binding.tenant_id)
             .unwrap()
             .unwrap();
@@ -1426,6 +1457,7 @@ mod tests {
             .refresh_pim_roles(&review.binding.requirements_digest, &cache)
             .await
             .is_err());
+        assert!(sessions.acknowledgement_catalog().is_none());
         let retained = crate::pim_roles::Catalog::load(&cache, &review.binding.tenant_id)
             .unwrap()
             .unwrap();
@@ -1459,6 +1491,7 @@ mod tests {
         sessions.dispose().await;
         assert!(task.await.unwrap().is_err());
         assert!(!cache.exists());
+        assert!(sessions.acknowledgement_catalog().is_none());
     }
 
     #[test]
