@@ -34,6 +34,17 @@
       "items": { "$ref": "#/$defs/recommendationProfile" },
       "uniqueItems": true
     },
+    "applicationOwnership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "provider", "objectIdField"],
+      "properties": {
+        "kind": { "const": "verifier" },
+        "provider": { "const": "entra-application-registration" },
+        "objectIdField": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
+        "applicationIdField": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
+      }
+    },
     "postDeployment": {
       "type": "object",
       "additionalProperties": false,

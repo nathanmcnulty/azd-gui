@@ -1,5 +1,6 @@
 mod acknowledgement_provider;
 mod acknowledgements;
+mod application_ownership;
 mod azd;
 mod azure;
 mod catalog;
@@ -66,6 +67,7 @@ pub struct AppState {
     database: Arc<Database>,
     operations: OperationManager,
     environment_writes: AsyncMutex<()>,
+    application_reviews: application_ownership::Reviews,
     template_cache: PathBuf,
     inspected_manifests: Mutex<HashMap<String, TemplateManifest>>,
     reviewed_contracts: Mutex<HashMap<String, ProjectTemplateSnapshot>>,
@@ -73,6 +75,14 @@ pub struct AppState {
     execution_approvals: execution_approval::ExecutionApprovals,
     tool_install_approvals: tools::ToolInstallApprovals,
     graph_sessions: graph_session::GraphSessions,
+}
+
+impl AppState {
+    async fn lock_environment_for_write(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        let lock = self.environment_writes.lock().await;
+        self.application_reviews.invalidate();
+        lock
+    }
 }
 
 #[derive(Clone)]
@@ -193,7 +203,7 @@ async fn clear_local_app_data(app: AppHandle, state: State<'_, AppState>) -> App
     if !approved {
         return Ok(false);
     }
-    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_lock = state.lock_environment_for_write().await;
     let _clear_guard = state.operations.begin_clear()?;
 
     if state.template_cache.exists() {
@@ -905,7 +915,7 @@ async fn prepare_deployment(
     state: State<'_, AppState>,
     request: PrepareDeploymentRequest,
 ) -> AppResult<ProjectSummary> {
-    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_lock = state.lock_environment_for_write().await;
     let _preparation_guard = state.operations.begin_preparation()?;
     let requires_local_binding = matches!(
         request.source_mode.as_str(),
@@ -1467,6 +1477,7 @@ mod requirement_snapshot_caller_tests {
             database: Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap()),
             operations: OperationManager::default(),
             environment_writes: AsyncMutex::new(()),
+            application_reviews: Default::default(),
             template_cache: root.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             reviewed_contracts: Mutex::new(HashMap::new()),
@@ -2406,7 +2417,7 @@ async fn create_project_environment(
     subscription: Option<String>,
     location: Option<String>,
 ) -> AppResult<Vec<ProjectEnvironment>> {
-    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_lock = state.lock_environment_for_write().await;
     let _environment_change = state.operations.begin_environment_change()?;
     let canonical = std::fs::canonicalize(project_path)?;
     if !canonical.join("azure.yaml").is_file() {
@@ -2439,7 +2450,7 @@ async fn select_project_environment(
     project_path: String,
     environment: String,
 ) -> AppResult<Vec<ProjectEnvironment>> {
-    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_lock = state.lock_environment_for_write().await;
     let _environment_change = state.operations.begin_environment_change()?;
     state.graph_sessions.invalidate();
     state.execution_approvals.clear()?;
@@ -2511,6 +2522,7 @@ async fn refresh_project_template(
     state: State<'_, AppState>,
     project_path: String,
 ) -> AppResult<ProjectTemplateSnapshot> {
+    let _environment_lock = state.lock_environment_for_write().await;
     if !state.operations.is_idle().await {
         return Err(AppError::Invalid(
             "Wait for active operations before replacing a project contract.".into(),
@@ -2664,7 +2676,7 @@ async fn set_project_environment_values(
     environment: String,
     values: Vec<ProjectEnvironmentValueInput>,
 ) -> AppResult<()> {
-    let _environment_lock = state.environment_writes.lock().await;
+    let _environment_lock = state.lock_environment_for_write().await;
     let _environment_change = state.operations.begin_environment_change()?;
     let canonical = std::fs::canonicalize(project_path)?;
     if !canonical.join("azure.yaml").is_file() {
@@ -2845,6 +2857,7 @@ pub fn run() {
                 database: Arc::new(database),
                 operations: OperationManager::default(),
                 environment_writes: AsyncMutex::new(()),
+                application_reviews: Default::default(),
                 template_cache,
                 inspected_manifests: Mutex::new(HashMap::new()),
                 reviewed_contracts: Mutex::new(HashMap::new()),
@@ -2876,6 +2889,9 @@ pub fn run() {
             start_azd_operation,
             start_project_verification,
             get_project_verification_target,
+            application_ownership::get_project_application_review_context,
+            application_ownership::verify_project_application_ownership,
+            application_ownership::confirm_project_application_review,
             cancel_operation,
             open_external_terminal,
             get_external_terminal_handoff,
@@ -3345,6 +3361,7 @@ mod draft_tests {
             database: Arc::new(Database::open(&directory.path().join("state.sqlite")).unwrap()),
             operations: OperationManager::default(),
             environment_writes: tokio::sync::Mutex::new(()),
+            application_reviews: Default::default(),
             template_cache: directory.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             reviewed_contracts: Mutex::new(HashMap::new()),
@@ -3396,6 +3413,7 @@ mod acknowledgement_caller_tests {
             database: Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap()),
             operations: OperationManager::default(),
             environment_writes: AsyncMutex::new(()),
+            application_reviews: Default::default(),
             template_cache: root.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             reviewed_contracts: Mutex::new(HashMap::new()),

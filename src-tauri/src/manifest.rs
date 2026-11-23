@@ -142,6 +142,9 @@ pub(crate) fn validate(manifest: &TemplateManifest) -> AppResult<()> {
         }
     }
     crate::acknowledgements::validate_manifest(manifest)?;
+    if let Some(declaration) = &manifest.application_ownership {
+        declaration.validate(manifest)?;
+    }
     for prerequisite in &manifest.prerequisites {
         validate_requirement_condition(prerequisite.condition.as_ref(), manifest)?;
     }

@@ -109,6 +109,19 @@ pub(crate) fn read_environment_values(
     environment: &str,
     wanted: &[&str],
 ) -> Option<HashMap<String, String>> {
+    read_environment_snapshot(project_root, environment, wanted).map(|snapshot| snapshot.values)
+}
+
+pub(crate) struct EnvironmentSnapshot {
+    pub(crate) values: HashMap<String, String>,
+    pub(crate) modified: Option<std::time::SystemTime>,
+}
+
+pub(crate) fn read_environment_snapshot(
+    project_root: &Path,
+    environment: &str,
+    wanted: &[&str],
+) -> Option<EnvironmentSnapshot> {
     if crate::deployment::validate_environment_name(environment).is_err()
         || matches!(environment, "." | "..")
     {
@@ -144,12 +157,15 @@ pub(crate) fn read_environment_values(
         return None;
     }
     let mut bytes = Vec::new();
-    fs::File::open(dotenv)
-        .ok()?
+    let mut file = fs::File::open(&dotenv).ok()?;
+    let modified = file.metadata().ok()?.modified().ok();
+    (&mut file)
         .take(MAX_DOTENV_BYTES + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    if bytes.len() as u64 > MAX_DOTENV_BYTES {
+    if bytes.len() as u64 > MAX_DOTENV_BYTES
+        || fs::metadata(&dotenv).ok()?.modified().ok() != modified
+    {
         return None;
     }
     let content = String::from_utf8(bytes).ok()?;
@@ -173,7 +189,7 @@ pub(crate) fn read_environment_values(
         }
         values.insert(key.to_string(), value);
     }
-    Some(values)
+    Some(EnvironmentSnapshot { values, modified })
 }
 
 fn read_target_values_inner(

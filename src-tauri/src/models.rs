@@ -98,6 +98,8 @@ pub struct TemplateManifest {
     pub permission_checks: Vec<PermissionCheck>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub post_deployment: Option<crate::report_artifacts::ArtifactContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_ownership: Option<crate::application_ownership::Declaration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

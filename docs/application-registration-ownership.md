@@ -3,7 +3,7 @@
 This provisional internal contract is the first local slice of #59 and the
 input to #161. It defines one host-owned verifier for an existing Entra
 application registration. The ownership path must keep the template's CLI
-validation authoritative. This slice only defines and tests the contract.
+validation authoritative. The local review path uses the contract with an offline transport boundary.
 
 ## Verification
 
@@ -63,5 +63,48 @@ verificationDigest]`. Preserve the authoritative timestamps exactly.
 
 The [internal schema](../schemas/internal/application-registration-ownership.schema.json)
 and [synthetic fixture](../src/lib/fixtures/application-registration-ownership.json)
-exercise this contract offline. #161 still owns registered dispatch, native
-receipt provenance, UI wiring and the explicit adoption path.
+exercise this contract offline.
+
+## Local review
+
+A saved project can opt in with a reviewed applicationOwnership declaration.
+The declared fields stay ordinary typed configuration inputs. The project
+Overview and the registered PIM workspace share the review panel. A reviewed
+PIM contract must opt in. The bundled pilot's existing contract and behavior
+stay unchanged.
+
+The native context command reads the exact registered project and the same
+bounded environment file for the public Azure tenant, subscription, resource
+group and stable application IDs. It returns those typed values, the
+reviewed source and target digests, and an opaque context digest. The general
+environment view keeps its existing redaction rules. Neither context nor
+review returns raw environment content. The target resource digest binds the
+saved resource-group scope.
+
+Verify and Confirm reread the exact native target and require the displayed
+context digest. It also binds the environment's modification time and a
+native revision that advances on GUI environment writes, including selecting
+a saved PIM environment, and on source refresh. Failed verification,
+confirmation, or context retrieval discards the pending native review.
+A context read that observes a changed target also discards the review.
+When an Overview refresh finishes for the displayed project and environment,
+the ownership panel clears its evidence and reloads that saved target.
+The operator can inspect the current target before another verification.
+If the source changed, reopen the project to load its current contract.
+
+The verifier has an unavailable production transport in this slice. Synthetic
+tests exercise the native registered caller and the project review view.
+An unverified IPC response is only a status and fixed reason, since an
+unavailable or foreign identity cannot supply the verified evidence binding.
+The verified response uses the internal evidence format.
+A verified observation can enable the explicit review decision. Context edits
+clear the view. The native decision consumes the prior verification once
+and checks the current saved context and verified operator. The review receipt
+is session evidence. It has its own `ownershipReviewDecision` kind and carries
+no ownership source. It does not persist or authorize an adoption. Native
+receipt provenance and a separately qualified provider and adoption action
+remain follow-up work.
+
+The review receipt hash uses `["application-registration-review-receipt",
+bindingArray, applicationId, verifiedAt, reviewedAt, verificationDigest]`,
+with the same compact UTF-8 JSON encoding as the verification.

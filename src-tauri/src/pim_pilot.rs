@@ -532,12 +532,21 @@ fn pending_count(state: &serde_json::Value) -> usize {
 }
 
 #[tauri::command]
-pub fn select_pim_environment(
+pub async fn select_pim_environment(
     state: State<'_, AppState>,
     project_path: String,
     environment: String,
 ) -> AppResult<()> {
-    saved_directory(&state, &project_path, &environment)?;
+    select_saved_pim_environment(&state, project_path, environment).await
+}
+
+pub(crate) async fn select_saved_pim_environment(
+    state: &AppState,
+    project_path: String,
+    environment: String,
+) -> AppResult<()> {
+    let _environment_lock = state.lock_environment_for_write().await;
+    saved_directory(state, &project_path, &environment)?;
     let mut project = state
         .database
         .project_by_path(&project_path)?
@@ -717,6 +726,7 @@ mod tests {
             database: Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap()),
             operations: Default::default(),
             environment_writes: tokio::sync::Mutex::new(()),
+            application_reviews: Default::default(),
             template_cache: root.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             reviewed_contracts: Mutex::new(HashMap::new()),

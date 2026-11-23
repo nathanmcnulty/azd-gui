@@ -4,7 +4,8 @@
   "oneOf": [
     { "$ref": "#/$defs/verifier" },
     { "$ref": "#/$defs/verification" },
-    { "$ref": "#/$defs/receipt" }
+    { "$ref": "#/$defs/receipt" },
+    { "$ref": "#/$defs/reviewReceipt" }
   ],
   "$defs": {
     "id": {
@@ -87,6 +88,20 @@
           "then": { "properties": { "reason": { "enum": ["differentObject", "differentApplication", "unexpectedProperties"] } } }
         }
       ]
+    },
+    "reviewReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "binding", "applicationId", "verifiedAt", "reviewedAt", "verificationDigest", "receiptDigest"],
+      "properties": {
+        "kind": { "const": "ownershipReviewDecision" },
+        "binding": { "$ref": "#/$defs/binding" },
+        "applicationId": { "$ref": "#/$defs/id" },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "verificationDigest": { "$ref": "#/$defs/digest" },
+        "receiptDigest": { "$ref": "#/$defs/digest" }
+      }
     },
     "receipt": {
       "type": "object",

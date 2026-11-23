@@ -47,6 +47,7 @@ export interface ReportArtifactDeclaration {
 
 export interface TemplateManifest {
   schemaVersion: "1.0" | "1.1";
+  applicationOwnership?: { kind: "verifier"; provider: "entra-application-registration"; objectIdField: string; applicationIdField?: string };
   postDeployment?: { schemaVersion: "1.0"; artifacts: ReportArtifactDeclaration[] };
   minimumAzdVersion?: string;
   requiresInteractiveTerminal?: boolean;

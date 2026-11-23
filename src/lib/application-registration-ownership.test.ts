@@ -58,6 +58,18 @@ describe("provisional application registration ownership contract", () => {
     }
   });
 
+  it("keeps a reviewed decision distinct from a durable ownership receipt", () => {
+    const reviewed = {
+      kind: "ownershipReviewDecision", binding, applicationId: properties.applicationId,
+      verifiedAt: checkedAt, reviewedAt: recordedAt, verificationDigest: verification.verificationDigest,
+      receiptDigest: sha256("application-registration-review-receipt", bindingValues(binding),
+        properties.applicationId, checkedAt, recordedAt, verification.verificationDigest)
+    };
+    expect(validate(reviewed), JSON.stringify(validate.errors)).toBe(true);
+    expect(validate({ ...reviewed, ownershipSource: "explicitlyAdopted" })).toBe(false);
+    expect(validate({ ...reviewed, kind: "ownershipReceipt" })).toBe(false);
+  });
+
   it("requires a stable object identifier and refuses caller-selected endpoints and names", () => {
     for (const invalid of [
       { kind: "verifier", provider: "entra-application-registration", displayName: "Same name" },

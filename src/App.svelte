@@ -10,6 +10,7 @@
   import Icon from "./components/Icon.svelte";
   import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
   import OutputPanel from "./components/OutputPanel.svelte";
+  import ProjectApplicationOwnership from "./components/ProjectApplicationOwnership.svelte";
   import ProjectVerification from "./components/ProjectVerification.svelte";
   import TerminalHandoff from "./components/TerminalHandoff.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
@@ -50,6 +51,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
+    getProjectTemplate,
     refreshProjectTemplate,
     getProjectEnvironmentValues,
     listProjectEnvironments,
@@ -245,6 +247,7 @@
   let selectedProject: ProjectSummary | null = null;
   let selectedProjectTemplate: ProjectTemplateSnapshot | null = null;
   let verificationRefresh = 0;
+  let applicationOwnershipRefresh = 0;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
@@ -1755,6 +1758,13 @@
       const projectPath = operationProjectPaths.get(event.operationId);
       const operationEnvironment = operationEnvironments.get(event.operationId);
       if (
+        event.kind === "refresh" && projectPath && operationEnvironment &&
+        selectedProject?.path === projectPath && selectedProject.environment === operationEnvironment &&
+        selectedProjectTemplate?.entry.manifest?.applicationOwnership
+      ) {
+        applicationOwnershipRefresh += 1;
+      }
+      if (
         projectPath &&
         ["up", "provision", "preview", "deploy", "refresh", "show", "down"].includes(event.kind)
       ) {
@@ -2276,7 +2286,10 @@
     }
   }
 
-  function isPimProject(project: ProjectSummary) { return project.templateId === 'pim-pilot' || selectedProject?.path === project.path && selectedProjectTemplate?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim'; }
+  function isPimProject(project: ProjectSummary, template: ProjectTemplateSnapshot | null = null) {
+    return project.templateId === "pim-pilot" ||
+      template?.entry.repository.replace(/\.git$|\/$/g, "") === "https://github.com/nathanmcnulty/azd-pim";
+  }
   function verificationFinished(event: CustomEvent<OperationEvent>) {
     verificationRefresh += 1;
     if (!selectedProject) return;
@@ -2332,11 +2345,17 @@
       if (!isCurrent()) return;
     }
     projectWaitingForEnvironment = false;
-    if (isPimProject(project)) { projectLoading = false; return; }
+    if (isPimProject(project)) {
+      const template = await getProjectTemplate(project.path).catch(() => null);
+      if (!isCurrent()) return;
+      selectedProjectTemplate = template;
+      projectLoading = false;
+      return;
+    }
     const snapshot = await loadProjectWorkspace(project);
     if (!isCurrent()) return;
     selectedProjectTemplate = snapshot.template;
-    if (isPimProject(project)) { projectLoading = false; return; }
+    if (isPimProject(project, snapshot.template)) { projectLoading = false; return; }
     projectState = snapshot.state;
     projectEnvironments = snapshot.environments;
     applyProjectEnvironments(projectEnvironments);
@@ -3423,10 +3442,14 @@
       </section>
     {:else if activeNav === "projects"}
       <section class="page">
-        {#if selectedProject && isPimProject(selectedProject)}
+        {#if selectedProject && isPimProject(selectedProject, selectedProjectTemplate)}
           <button class="text-button back-link" on:click={closeProjectWorkspace}>‹ All projects</button>
           <section class="workspace-panel"><h2>Source</h2><p>Supported native PIM engine · https://github.com/nathanmcnulty/azd-pim</p><code>{selectedProject.revision}</code><p>Local project: {selectedProject.path}. Reports and checkpoints remain private in this workspace.</p></section>
           <ProjectComponentProvenance project={selectedProject} />
+          {#if selectedProjectTemplate?.entry.manifest?.applicationOwnership}
+            <ProjectApplicationOwnership projectPath={selectedProject.path} environment={selectedProject.environment ?? ""}
+              sourceContractDigest={selectedProjectTemplate.digest} context={data.connections} />
+          {/if}
           {#key selectedProject.path}<PimPlan projects={data.projects} {selectedProject} sourceContext={selectedProjectTemplate?.digest} on:registered={registeredPilot} on:environment={pilotEnvironment} />{/key}
         {:else if selectedProject}
           <div class="project-workspace-header">
@@ -3467,6 +3490,11 @@
               </section>
               {#if selectedProjectTemplate?.entry.repository === 'https://github.com/nathanmcnulty/azd-reference' && selectedProjectTemplate.entry.commit === 'abc6e896620990e68360a63dd14efda66a3f75cd' && selectedProjectTemplate.entry.subdirectory === 'examples/deployment-check'}
                 <ProjectVerification project={selectedProject} verificationContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate.digest]} on:finished={verificationFinished} />
+              {/if}
+              {#if selectedProjectTemplate?.entry.manifest?.applicationOwnership}
+                <ProjectApplicationOwnership projectPath={selectedProject.path} environment={selectedProject.environment ?? ""}
+                  sourceContractDigest={selectedProjectTemplate.digest} context={[data.connections, applicationOwnershipRefresh]}
+                  inputsSaved={!environmentConfigurationDirty.length && !environmentConfigurationBusy && !environmentBusy} />
               {/if}
               <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />
               <ProjectDeploymentReceipt project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest]} />
