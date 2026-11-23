@@ -39,7 +39,10 @@ is an example for an unpublished tag. Consumers keep their installed pin
 until they intentionally adopt a reviewed release.
 
 The app currently queries only the reviewed first-party Reference repository.
-It reads GitHub-verified annotated tags for availability. Declarations for
+It reads GitHub-verified annotated tags for availability. Startup caches the
+release references. Opening a template or saved project checks the tag
+details relevant to its installed pins from that cached list, within the
+shared request budget. Repeated checks reuse results until the feed refreshes. Declarations for
 skipped releases can contribute warnings. Missing or unsupported declarations
 leave coverage incomplete. Schema validation describes the JSON shape. Source
 review, catalog inclusion, release attestation, and execution approval each
