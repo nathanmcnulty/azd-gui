@@ -68,6 +68,25 @@ fresh review before another explicit sign-in. Existing template policy/context
 conflicts remain intentional rejections in the default mode. Preview is an explicit
 read-only review choice, not adoption or a way to authorize enforcement.
 
+## Tenant role choices
+
+The registered provider shipped in [PR #176](https://github.com/nathanmcnulty/azd-gui/pull/176).
+It reads role definitions within the owned tenant session and offers stable IDs.
+A complete bounded response can update the tenant-specific local cache.
+Incomplete or denied reads leave the previous list explicitly historical.
+Manual IDs remain available and require native revalidation before planning.
+Refresh rechecks selected role identity, classification and enabled state.
+Changed selections or metadata require a fresh review.
+
+The offline Windows worker tests exercise the actual PowerShell process and
+cache updates with fixture responses, including pagination, incomplete reads
+and cancellation. [Live provider qualification](https://github.com/nathanmcnulty/azd-gui/issues/162)
+covers a verified tenant and the account-change experience on an exact
+candidate. The dedicated PIM review and plan are separate from
+[provider-backed template acknowledgements](https://github.com/nathanmcnulty/azd-gui/issues/160).
+That next integration needs a reviewed first-party template field and action
+whose acknowledgement depends on a complete native provider result.
+
 ## Pinned planner and process boundary
 
 `src-tauri/pim-template/source.json` pins azd-pim commit
