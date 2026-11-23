@@ -3,7 +3,7 @@ use reqwest::Client;
 use semver::Version;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -18,6 +18,7 @@ const MAX_TAG_REQUESTS: usize = 20;
 const MAX_REQUESTS_PER_HOUR: usize = 40;
 const REQUEST_WINDOW: Duration = Duration::from_secs(60 * 60);
 const TAG_CONCURRENCY: usize = 4;
+const MAX_INSTALLED: usize = 128;
 const FRESH_FOR: Duration = Duration::from_secs(15 * 60);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 
@@ -108,10 +109,19 @@ pub struct Cache(Mutex<CacheEntry>);
 
 #[derive(Default)]
 struct CacheEntry {
-    last_attempt: Option<(Instant, bool)>,
-    snapshot: Option<(String, Releases)>,
+    last_ref_attempt: Option<(Instant, bool)>,
+    snapshot: Option<Snapshot>,
     tags: HashMap<String, Tag>,
     requests: VecDeque<Instant>,
+}
+
+struct Snapshot {
+    checked_at: String,
+    candidates: Vec<Candidate>,
+    // Entries missing at the start of this snapshot define a fixed lookup window.
+    missing: HashSet<String>,
+    attempted: HashSet<String>,
+    transient: HashMap<String, Tag>,
 }
 
 fn should_fetch(last: Option<(Instant, bool)>, requested: Instant, force: bool) -> bool {
@@ -208,7 +218,7 @@ impl Candidate {
         })
     }
 
-    fn release(self, tag: Option<&Tag>) -> Release {
+    fn release(&self, tag: Option<&Tag>) -> Release {
         let tag = tag.filter(|tag| {
             tag.sha == self.object.sha
                 && tag.tag == self.name
@@ -221,46 +231,82 @@ impl Candidate {
             unresolved: self.object.kind == "tag" && tag.is_none(),
             compatibility: verified
                 .and_then(|tag| declaration(&tag.message, &self.id, &self.version)),
-            version: self.version,
+            version: self.version.clone(),
         }
     }
 }
 
+fn installed_version(installed: &Installed) -> Option<Version> {
+    if !reviewed_source(&installed.source_repository) || !valid_id(&installed.id) {
+        return None;
+    }
+    Version::parse(&installed.version).ok()
+}
+
+fn eligible_for_update(current: &Version, candidate: &Version) -> bool {
+    !current.pre.is_empty() || candidate.pre.is_empty()
+}
+
 fn tag_requests<'a>(
     candidates: &'a [Candidate],
-    cached: &HashMap<String, Tag>,
+    missing: &HashSet<String>,
     installed: &[Installed],
     limit: usize,
 ) -> Vec<&'a str> {
-    let mut by_component: std::collections::BTreeMap<&str, Vec<&Candidate>> = Default::default();
-    for candidate in candidates {
-        if candidate.object.kind == "tag" && !cached.contains_key(&candidate.object.sha) {
-            by_component
-                .entry(&candidate.id)
-                .or_default()
-                .push(candidate);
+    let mut pins: HashMap<&str, Vec<Version>> = HashMap::new();
+    for pin in installed.iter().take(MAX_INSTALLED) {
+        if let Some(version) = installed_version(pin) {
+            pins.entry(&pin.id).or_default().push(version);
         }
     }
-    let mut groups: Vec<_> = by_component.into_iter().collect();
-    groups.sort_by_key(|(id, _)| {
-        !installed
-            .iter()
-            .any(|pin| pin.id == *id && reviewed_source(&pin.source_repository))
-    });
-    for (_, group) in &mut groups {
-        group.sort_by(|a, b| b.version.cmp_precedence(&a.version));
+    let mut groups: BTreeMap<&str, Vec<&Candidate>> = BTreeMap::new();
+    for candidate in candidates {
+        if pins.contains_key(candidate.id.as_str()) && missing.contains(&candidate.object.sha) {
+            groups.entry(&candidate.id).or_default().push(candidate);
+        }
     }
-    // Visit each component before spending another request on older history.
+    let mut preferred = Vec::new();
+    for (id, group) in &mut groups {
+        group.sort_by(|a, b| b.version.cmp_precedence(&a.version));
+        let mut ranks = HashMap::<&str, usize>::new();
+        for current in &pins[id] {
+            let anchor = group.iter().copied().find(|tag| tag.version == *current);
+            let later = group.iter().copied().filter(|tag| {
+                eligible_for_update(current, &tag.version)
+                    && tag.version.cmp_precedence(current).is_gt()
+            });
+            for (rank, tag) in anchor.into_iter().chain(later).take(limit).enumerate() {
+                ranks
+                    .entry(&tag.object.sha)
+                    .and_modify(|best| *best = (*best).min(rank))
+                    .or_insert(rank);
+            }
+        }
+        let mut ranked: Vec<_> = group
+            .iter()
+            .filter_map(|tag| ranks.get(tag.object.sha.as_str()).map(|rank| (*rank, *tag)))
+            .collect();
+        // A shared component can have both stable and prerelease consumers.
+        // Keep each pin's highest-ranked tags near the front of the union.
+        ranked.sort_by_key(|(rank, _)| *rank);
+        preferred.push(ranked.into_iter().map(|(_, tag)| tag).collect::<Vec<_>>());
+    }
+
+    let fallback: Vec<_> = groups.into_values().collect();
     let mut shas = Vec::new();
-    for round in 0..limit {
-        for (_, group) in &groups {
-            if let Some(candidate) = group.get(round) {
-                let sha = candidate.object.sha.as_str();
-                if !shas.contains(&sha) {
-                    shas.push(sha);
-                }
-                if shas.len() == limit {
-                    return shas;
+    // Give each selected component a turn. Use other history only after all
+    // prioritized work, so an older or ineligible tag cannot displace it.
+    for tier in [&preferred, &fallback] {
+        for round in 0..limit {
+            for group in tier {
+                if let Some(candidate) = group.get(round) {
+                    let sha = candidate.object.sha.as_str();
+                    if !shas.contains(&sha) {
+                        shas.push(sha);
+                    }
+                    if shas.len() == limit {
+                        return shas;
+                    }
                 }
             }
         }
@@ -273,41 +319,28 @@ fn remaining_requests(requests: &mut VecDeque<Instant>, now: Instant) -> usize {
     MAX_REQUESTS_PER_HOUR.saturating_sub(requests.len())
 }
 
-async fn fetch_releases(cache: &mut CacheEntry, installed: &[Installed]) -> Option<Releases> {
-    let budget = remaining_requests(&mut cache.requests, Instant::now());
-    if budget == 0 {
-        return None;
-    }
-    let client = Client::builder()
+fn source_client() -> Option<Client> {
+    Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(3))
         .user_agent("azd-gui-component-metadata")
         .build()
-        .ok()?;
-    cache.requests.push_back(Instant::now());
-    let refs: Vec<Reference> =
-        read_json(&client, "matching-refs/tags/component/", MAX_REF_BYTES).await?;
-    let candidates: Vec<_> = refs.into_iter().filter_map(Candidate::from_ref).collect();
-    let present: std::collections::HashSet<_> = candidates
-        .iter()
-        .map(|candidate| &candidate.object.sha)
-        .collect();
-    cache.tags.retain(|sha, _| present.contains(sha));
-    let checks = tag_requests(
-        &candidates,
-        &cache.tags,
-        installed,
-        (budget - 1).min(MAX_TAG_REQUESTS),
-    );
-    let mut transient_tags = HashMap::new();
+        .ok()
+}
+
+async fn fetch_tags(cache: &mut CacheEntry, client: &Client, checks: &[String]) {
+    let Some(snapshot) = cache.snapshot.as_mut() else {
+        return;
+    };
     for batch in checks.chunks(TAG_CONCURRENCY) {
         let mut jobs = tokio::task::JoinSet::new();
-        for &sha in batch {
-            let client = client.clone();
-            let sha = sha.to_owned();
+        for sha in batch {
+            snapshot.attempted.insert(sha.clone());
             cache.requests.push_back(Instant::now());
+            let client = client.clone();
+            let sha = sha.clone();
             jobs.spawn(async move {
                 let tag: Option<Tag> =
                     read_json(&client, &format!("tags/{sha}"), MAX_TAG_BYTES).await;
@@ -319,23 +352,11 @@ async fn fetch_releases(cache: &mut CacheEntry, installed: &[Installed]) -> Opti
                 if tag.verification.verified || tag.verification.reason == "unsigned" {
                     cache.tags.insert(sha, tag);
                 } else {
-                    transient_tags.insert(sha, tag);
+                    snapshot.transient.insert(sha, tag);
                 }
             }
         }
     }
-    let mut releases = Releases::new();
-    for candidate in candidates {
-        let tag = cache
-            .tags
-            .get(&candidate.object.sha)
-            .or_else(|| transient_tags.get(&candidate.object.sha));
-        releases
-            .entry(candidate.id.clone())
-            .or_default()
-            .push(candidate.release(tag));
-    }
-    Some(releases)
 }
 
 fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
@@ -349,17 +370,13 @@ fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
         breaking_versions: Vec::new(),
         migration_notes: Vec::new(),
     };
-    if !reviewed_source(&installed.source_repository) || !valid_id(&installed.id) {
+    let Some(current) = installed_version(installed) else {
         return result;
-    }
+    };
     let Some(history) = releases.and_then(|releases| releases.get(&installed.id)) else {
         return result;
     };
-
-    let Ok(current) = Version::parse(&installed.version) else {
-        return result;
-    };
-    let eligible = |release: &Release| !current.pre.is_empty() || release.version.pre.is_empty();
+    let eligible = |release: &Release| eligible_for_update(&current, &release.version);
     result.history_incomplete = history.iter().any(|release| {
         release.unresolved
             && (release.version == current
@@ -427,32 +444,121 @@ pub async fn check_component_updates(
 ) -> crate::AppResult<Results> {
     let requested = Instant::now();
     let mut cache = cache.0.lock().await;
-    if should_fetch(cache.last_attempt, requested, force) {
-        let success = if let Some(releases) = fetch_releases(&mut cache, &installed).await {
-            cache.snapshot = Some((crate::timestamp::now(), releases));
-            true
-        } else {
-            false
-        };
-        cache.last_attempt = Some((Instant::now(), success));
-    }
-    Ok(cache.results(&installed))
+    Ok(cache.check(&installed, force, requested).await)
 }
 
 impl CacheEntry {
+    async fn check(&mut self, installed: &[Installed], force: bool, requested: Instant) -> Results {
+        let mut client = None;
+        if should_fetch(self.last_ref_attempt, requested, force) {
+            let refs = if remaining_requests(&mut self.requests, Instant::now()) > 0 {
+                client = source_client();
+                if let Some(client) = client.as_ref() {
+                    self.requests.push_back(Instant::now());
+                    read_json(client, "matching-refs/tags/component/", MAX_REF_BYTES).await
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            self.finish_ref_check(refs, Instant::now());
+        }
+        let checks = self.pending_tags(installed, Instant::now());
+        if !checks.is_empty() {
+            if let Some(client) = client.or_else(source_client) {
+                fetch_tags(self, &client, &checks).await;
+            }
+        }
+        self.results(installed)
+    }
+
+    fn finish_ref_check(&mut self, refs: Option<Vec<Reference>>, finished: Instant) {
+        self.last_ref_attempt = Some((finished, refs.is_some()));
+        if let Some(refs) = refs {
+            let candidates: Vec<_> = refs.into_iter().filter_map(Candidate::from_ref).collect();
+            let present: HashSet<_> = candidates
+                .iter()
+                .map(|candidate| &candidate.object.sha)
+                .collect();
+            self.tags.retain(|sha, _| present.contains(sha));
+            let missing = candidates
+                .iter()
+                .filter(|candidate| {
+                    candidate.object.kind == "tag" && !self.tags.contains_key(&candidate.object.sha)
+                })
+                .map(|candidate| candidate.object.sha.clone())
+                .collect();
+            self.snapshot = Some(Snapshot {
+                checked_at: crate::timestamp::now(),
+                candidates,
+                missing,
+                attempted: HashSet::new(),
+                transient: HashMap::new(),
+            });
+        }
+    }
+
+    fn pending_tags(&mut self, installed: &[Installed], now: Instant) -> Vec<String> {
+        let budget = remaining_requests(&mut self.requests, now);
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            return Vec::new();
+        };
+        if budget == 0 || !self.last_ref_attempt.is_some_and(|(_, success)| success) {
+            return Vec::new();
+        }
+        tag_requests(
+            &snapshot.candidates,
+            &snapshot.missing,
+            installed,
+            MAX_TAG_REQUESTS,
+        )
+        .into_iter()
+        .filter(|sha| !snapshot.attempted.contains(*sha))
+        .take(budget)
+        .map(str::to_owned)
+        .collect()
+    }
+
     fn results(&self, installed: &[Installed]) -> Results {
-        let state = match (&self.snapshot, self.last_attempt) {
+        let state = match (&self.snapshot, self.last_ref_attempt) {
             (Some(_), Some((_, true))) => "fresh",
             (Some(_), _) => "stale",
             _ => "unavailable",
         };
+        let ids: HashSet<_> = installed
+            .iter()
+            .take(MAX_INSTALLED)
+            .map(|pin| pin.id.as_str())
+            .collect();
+        let releases = self.snapshot.as_ref().map(|snapshot| {
+            let mut releases = Releases::new();
+            for candidate in snapshot
+                .candidates
+                .iter()
+                .filter(|candidate| ids.contains(candidate.id.as_str()))
+            {
+                let tag = self
+                    .tags
+                    .get(&candidate.object.sha)
+                    .or_else(|| snapshot.transient.get(&candidate.object.sha));
+                releases
+                    .entry(candidate.id.clone())
+                    .or_default()
+                    .push(candidate.release(tag));
+            }
+            releases
+        });
         Results {
             state,
-            checked_at: self.snapshot.as_ref().map(|(time, _)| time.clone()),
+            checked_at: self
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.checked_at.clone()),
             updates: installed
                 .iter()
-                .take(128)
-                .map(|item| update(item, self.snapshot.as_ref().map(|(_, releases)| releases)))
+                .take(MAX_INSTALLED)
+                .map(|item| update(item, releases.as_ref()))
                 .collect(),
         }
     }
@@ -475,31 +581,40 @@ mod tests {
 
     #[test]
     fn a_failed_refresh_retains_the_last_successful_snapshot_as_stale() {
-        let mut cache = CacheEntry {
-            last_attempt: Some((Instant::now(), false)),
-            ..Default::default()
-        };
+        let mut cache = CacheEntry::default();
+        let now = Instant::now();
+        cache.finish_ref_check(None, now);
         assert_eq!(cache.results(&[]).state, "unavailable");
-        cache.snapshot = Some(("2026-11-23T10:00:00+00:00".into(), Releases::new()));
+        cache.finish_ref_check(Some(Vec::new()), now + RETRY_AFTER);
+        let checked_at = cache.results(&[]).checked_at.unwrap();
+        cache.finish_ref_check(None, now + FRESH_FOR);
         let result = cache.results(&[]);
         assert_eq!(result.state, "stale");
-        assert_eq!(
-            result.checked_at.as_deref(),
-            Some("2026-11-23T10:00:00+00:00")
-        );
+        assert_eq!(result.checked_at.as_deref(), Some(checked_at.as_str()));
+        assert!(cache
+            .pending_tags(&[installed(SOURCE)], now + FRESH_FOR)
+            .is_empty());
     }
 
     #[tokio::test]
     #[ignore = "requires anonymous network access to the reviewed Reference repository"]
     async fn reads_the_reviewed_reference_release_over_https() {
-        let releases = fetch_releases(&mut CacheEntry::default(), &[])
-            .await
-            .expect("the approved source was unavailable");
+        let mut cache = CacheEntry::default();
         let pin = installed(SOURCE);
-        assert!(releases[&pin.id]
+        let result = cache
+            .check(std::slice::from_ref(&pin), false, Instant::now())
+            .await;
+        assert_eq!(result.state, "fresh");
+        let snapshot = cache.snapshot.unwrap();
+        assert!(snapshot
+            .candidates
             .iter()
-            .any(|release| release.version.to_string() == pin.version
-                && release.revision.as_deref() == Some(pin.source_revision.as_str())));
+            .filter(|candidate| candidate.id == pin.id)
+            .any(|candidate| {
+                let release = candidate.release(cache.tags.get(&candidate.object.sha));
+                release.version.to_string() == pin.version
+                    && release.revision.as_deref() == Some(pin.source_revision.as_str())
+            }));
     }
 
     fn release(version: &str, json: Option<&str>) -> Release {
@@ -588,39 +703,201 @@ mod tests {
         assert!(release("1.1.3", Some(unchanged)).compatibility.is_none());
     }
 
-    fn candidate(id: &str, number: u32) -> Candidate {
-        Candidate::from_ref(Reference {
-            name: format!("refs/tags/component/{id}/v{number}.0.0"),
+    fn tag_ref(id: &str, version: &str, number: u32) -> Reference {
+        Reference {
+            name: format!("refs/tags/component/{id}/v{version}"),
             object: Object {
                 sha: format!("{number:040x}"),
                 kind: "tag".into(),
             },
-        })
-        .unwrap()
+        }
+    }
+
+    fn candidate(id: &str, number: u32) -> Candidate {
+        Candidate::from_ref(tag_ref(id, &format!("{number}.0.0"), number)).unwrap()
     }
 
     #[test]
-    fn large_tag_histories_share_budget_across_components_and_prioritize_installed_pins() {
-        let mut candidates: Vec<_> = (1..=60)
-            .map(|version| candidate("large-history", version))
-            .collect();
-        candidates.push(candidate("deployment-validation", 61));
-        candidates.push(candidate("small-history", 62));
-        let selected = tag_requests(&candidates, &HashMap::new(), &[installed(SOURCE)], 3);
-        assert_eq!(
-            selected,
-            [
-                format!("{:040x}", 61),
-                format!("{:040x}", 60),
-                format!("{:040x}", 62)
-            ]
-        );
-        assert!(tag_requests(&candidates, &HashMap::new(), &[], 0).is_empty());
+    fn warmup_leaves_tag_budget_for_the_first_and_later_template_pins() {
+        let mut cache = CacheEntry::default();
         let now = Instant::now();
-        let mut requests = VecDeque::from(vec![now; MAX_REQUESTS_PER_HOUR]);
-        assert_eq!(remaining_requests(&mut requests, now), 0);
+        let mut refs: Vec<_> = (1..=25)
+            .map(|number| tag_ref(&format!("aaa-{number}"), "1.0.0", number))
+            .collect();
+        let lower = tag_ref("deployment-validation", "1.1.1", 30);
+        let upper = tag_ref("deployment-validation", "2.0.0", 31);
+        let later = tag_ref("zulu-component", "2.1.0", 32);
+        let expected = [lower.object.sha.clone(), upper.object.sha.clone()];
+        let later_sha = later.object.sha.clone();
+        refs.extend([lower, upper, later]);
+
+        cache.requests.push_back(now);
+        cache.finish_ref_check(Some(refs), now);
+        assert!(cache.pending_tags(&[], now).is_empty());
+        assert_eq!(cache.requests.len(), 1);
+        let pin = installed(SOURCE);
+        assert!(!should_fetch(cache.last_ref_attempt, now, false));
         assert_eq!(
-            remaining_requests(&mut requests, now + REQUEST_WINDOW),
+            cache.pending_tags(std::slice::from_ref(&pin), now),
+            expected
+        );
+        let fixture = include_str!("../tests/fixtures/deployment-validation-component-update.json")
+            .replace('\n', "");
+        for (sha, version, message) in [
+            (&expected[1], "2.0.0", format!("{DECLARATION}{fixture}")),
+            (&expected[0], "1.1.1", String::new()),
+        ] {
+            cache.tags.insert(
+                sha.clone(),
+                Tag {
+                    tag: format!("component/deployment-validation/v{version}"),
+                    sha: sha.clone(),
+                    object: Object {
+                        sha: pin.source_revision.clone(),
+                        kind: "commit".into(),
+                    },
+                    message,
+                    verification: Verification {
+                        verified: true,
+                        reason: "valid".into(),
+                    },
+                },
+            );
+            cache
+                .snapshot
+                .as_mut()
+                .unwrap()
+                .attempted
+                .insert(sha.clone());
+        }
+        let result = cache.results(std::slice::from_ref(&pin));
+        assert_eq!(result.updates[0].version.as_deref(), Some("2.0.0"));
+        assert_eq!(result.updates[0].compatibility, "breaking");
+        assert!(result.updates[0].complete);
+        assert!(!result.updates[0].history_incomplete);
+        assert!(cache.pending_tags(&[pin], now).is_empty());
+
+        let mut other = installed(SOURCE);
+        other.id = "zulu-component".into();
+        assert_eq!(
+            cache.pending_tags(std::slice::from_ref(&other), now),
+            [later_sha]
+        );
+        other.source_repository = "https://github.com/private/example".into();
+        assert!(cache.pending_tags(&[other], now).is_empty());
+    }
+
+    #[test]
+    fn prerelease_flood_cannot_hide_a_stable_breaking_update() {
+        let now = Instant::now();
+        for with_prerelease_pin in [false, true] {
+            let mut cache = CacheEntry::default();
+            let stable = installed(SOURCE);
+            let mut pins = vec![stable];
+            if with_prerelease_pin {
+                pins.push(Installed {
+                    version: "3.0.0-rc.1".into(),
+                    ..installed(SOURCE)
+                });
+            }
+            let id = pins[0].id.as_str();
+            let anchor = tag_ref(id, "1.1.1", 100);
+            let breaking = tag_ref(id, "2.0.0", 101);
+            let anchor_sha = anchor.object.sha.clone();
+            let breaking_sha = breaking.object.sha.clone();
+            let mut refs = vec![anchor, breaking];
+            refs.extend((1..=25).map(|rc| tag_ref(id, &format!("3.0.0-rc.{rc}"), rc)));
+            cache.finish_ref_check(Some(refs), now);
+
+            let selected = cache.pending_tags(&pins, now);
+            assert_eq!(selected.len(), MAX_TAG_REQUESTS);
+            if with_prerelease_pin {
+                assert!(selected[..4].contains(&anchor_sha));
+                assert!(selected[..4].contains(&breaking_sha));
+                assert!(selected[..4].contains(&format!("{:040x}", 1)));
+                assert!(selected[..4].contains(&format!("{:040x}", 25)));
+            } else {
+                assert_eq!(selected[..2], [anchor_sha, breaking_sha.clone()]);
+            }
+
+            let fixture =
+                include_str!("../tests/fixtures/deployment-validation-component-update.json")
+                    .replace('\n', "");
+            let snapshot = cache.snapshot.as_mut().unwrap();
+            for candidate in &snapshot.candidates {
+                let sha = &candidate.object.sha;
+                if selected.contains(sha) {
+                    let message = if *sha == breaking_sha {
+                        format!("{DECLARATION}{fixture}")
+                    } else {
+                        String::new()
+                    };
+                    cache.tags.insert(
+                        sha.clone(),
+                        Tag {
+                            tag: candidate.name.clone(),
+                            sha: sha.clone(),
+                            object: Object {
+                                sha: pins[0].source_revision.clone(),
+                                kind: "commit".into(),
+                            },
+                            message,
+                            verification: Verification {
+                                verified: true,
+                                reason: "valid".into(),
+                            },
+                        },
+                    );
+                    snapshot.attempted.insert(sha.clone());
+                }
+            }
+            for _ in 0..2 {
+                assert!(cache.pending_tags(&pins, now).is_empty());
+                let result = cache.results(&pins);
+                let stable = &result.updates[0];
+                assert_eq!(stable.version.as_deref(), Some("2.0.0"));
+                assert_eq!(stable.compatibility, "breaking");
+                assert_eq!(stable.breaking_versions, ["2.0.0"]);
+                assert!(stable.migration_notes[0].contains("PowerShell 7.6"));
+                assert!(stable.complete);
+                assert!(!stable.history_incomplete);
+                if with_prerelease_pin {
+                    assert_eq!(result.updates[1].version.as_deref(), Some("3.0.0-rc.25"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn large_histories_remain_bounded_on_repeated_checks() {
+        let mut cache = CacheEntry::default();
+        let now = Instant::now();
+        let pins = [
+            installed(SOURCE),
+            Installed {
+                id: "large-history".into(),
+                ..installed(SOURCE)
+            },
+        ];
+        let refs: Vec<_> = (2..=61)
+            .map(|version| tag_ref("large-history", &format!("{version}.0.0"), version))
+            .chain([tag_ref("deployment-validation", "62.0.0", 62)])
+            .collect();
+        cache.finish_ref_check(Some(refs), now);
+        let selected = cache.pending_tags(&pins, now);
+        assert_eq!(selected.len(), MAX_TAG_REQUESTS);
+        assert_eq!(
+            selected[..2],
+            [format!("{:040x}", 62), format!("{:040x}", 61)]
+        );
+        cache.snapshot.as_mut().unwrap().attempted.extend(selected);
+        assert!(cache.pending_tags(&pins, now).is_empty());
+        assert!(cache.pending_tags(&pins[1..], now).len() <= 1);
+
+        cache.requests = VecDeque::from(vec![now; MAX_REQUESTS_PER_HOUR]);
+        assert!(cache.pending_tags(&pins, now).is_empty());
+        assert_eq!(
+            remaining_requests(&mut cache.requests, now + REQUEST_WINDOW),
             MAX_REQUESTS_PER_HOUR
         );
     }
