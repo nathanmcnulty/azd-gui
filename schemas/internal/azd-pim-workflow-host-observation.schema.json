@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Provisional azd-pim workflow hostname observation",
+  "description": "Payload from the registered deployment producer. Source, operation and target provenance must come from the native capture boundary.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workflowResourceId",
+    "hostname"
+  ],
+  "properties": {
+    "workflowResourceId": {
+      "type": "string",
+      "description": "Canonical lowercase ARM resource ID of the exact session-revocation Logic Apps workflow.",
+      "pattern": "^/subscriptions/(?!00000000-0000-0000-0000-000000000000/)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourcegroups/[a-z0-9_().-]{0,89}[a-z0-9_()-]/providers/microsoft\\.logic/workflows/[a-z0-9][a-z0-9_-]{0,79}(?![\\s\\S])"
+    },
+    "hostname": {
+      "type": "string",
+      "maxLength": 253,
+      "description": "Lowercase ASCII DNS hostname used by the producer for the application ID URI.",
+      "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}(?![\\s\\S])"
+    }
+  }
+}

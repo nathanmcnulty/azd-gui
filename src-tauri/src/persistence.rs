@@ -11,7 +11,7 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 fn column_exists(connection: &Connection, table: &str, column: &str) -> AppResult<bool> {
     let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -116,6 +116,31 @@ fn migrate(connection: &mut Connection) -> AppResult<()> {
             [],
         )?;
     }
+    if !column_exists(&transaction, "projects", "selection_revision")? {
+        transaction.execute(
+            "ALTER TABLE projects ADD COLUMN selection_revision INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    transaction.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS project_selection_changed
+           AFTER UPDATE OF environment, template_id, revision ON projects
+           WHEN OLD.environment IS NOT NEW.environment OR OLD.template_id IS NOT NEW.template_id
+             OR OLD.revision IS NOT NEW.revision
+           BEGIN
+             UPDATE projects SET selection_revision = selection_revision + 1 WHERE path = NEW.path;
+           END;
+         CREATE TRIGGER IF NOT EXISTS project_source_inserted
+           AFTER INSERT ON project_templates
+           BEGIN
+             UPDATE projects SET selection_revision = selection_revision + 1 WHERE path = NEW.project_path;
+           END;
+         CREATE TRIGGER IF NOT EXISTS project_source_changed
+           AFTER UPDATE OF snapshot_json ON project_templates WHEN OLD.snapshot_json IS NOT NEW.snapshot_json
+           BEGIN
+             UPDATE projects SET selection_revision = selection_revision + 1 WHERE path = NEW.project_path;
+           END;",
+    )?;
     transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     transaction.commit()?;
     Ok(())
@@ -254,6 +279,15 @@ impl Database {
         self.lock()?.execute(
             "UPDATE projects SET environment = ?1 WHERE path = ?2",
             params![environment, project_path],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn note_project_environment_edit(&self, project_path: &str) -> AppResult<()> {
+        let project_path = self.stored_project_path(project_path)?;
+        self.lock()?.execute(
+            "UPDATE projects SET selection_revision = selection_revision + 1 WHERE path = ?1",
+            [project_path],
         )?;
         Ok(())
     }
@@ -686,6 +720,39 @@ impl Database {
         Ok(())
     }
 
+    pub(crate) fn project_selection_revision(&self, project_path: &str) -> AppResult<Option<i64>> {
+        Ok(self
+            .lock()?
+            .query_row(
+                "SELECT selection_revision FROM projects WHERE path = ?1",
+                [project_path],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub(crate) fn is_current_workflow_operation(
+        &self,
+        project_path: &str,
+        operation_id: &str,
+    ) -> AppResult<bool> {
+        // Row order is native admission order. Completing a reserved operation
+        // updates its original row, and failed or pending successors also supersede it.
+        Ok(self
+            .lock()?
+            .query_row(
+                "SELECT id = ?2 AND state = 'succeeded' AND interrupted = 0
+                 FROM operation_history
+                 WHERE project_path = ?1
+                   AND kind IN ('up','provision','deploy','down','preview','refresh','terminalHandoff')
+                 ORDER BY rowid DESC LIMIT 1",
+                params![project_path, operation_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
     pub fn evidence_operations(
         &self,
         project_path: &str,
@@ -846,6 +913,69 @@ mod tests {
         assert!(column_exists(&connection, "catalog_sources", "accepted_catalog_json").unwrap());
         assert!(column_exists(&connection, "operation_history", "outcome_json").unwrap());
         assert!(column_exists(&connection, "operation_history", "context_json").unwrap());
+    }
+
+    #[test]
+    fn upgrades_v5_project_selection_without_rewriting_saved_data() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("state.sqlite");
+        let project_path = directory.path().display().to_string();
+        let database = Database::open(&path).unwrap();
+        let contract = crate::models::ProjectTemplateSnapshot::new(
+            crate::catalog::entry_by_id("myworkid").unwrap(),
+        )
+        .unwrap();
+        let project = ProjectSummary {
+            id: "fixture".into(),
+            name: "Fixture".into(),
+            path: project_path.clone(),
+            environment: Some("dev".into()),
+            template_id: Some(contract.entry.id.clone()),
+            revision: Some(contract.entry.commit.clone()),
+            last_operation: None,
+            state: "ready".into(),
+        };
+        database.upsert_project(&project).unwrap();
+        database.save_project_template(&project, &contract).unwrap();
+        database
+            .lock()
+            .unwrap()
+            .execute_batch(
+                "DROP TRIGGER project_selection_changed;
+             DROP TRIGGER project_source_inserted;
+             DROP TRIGGER project_source_changed;
+             ALTER TABLE projects DROP COLUMN selection_revision;
+             PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        drop(database);
+
+        let database = Database::open(&path).unwrap();
+        assert_eq!(
+            database.project_selection_revision(&project_path).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            database
+                .project_template_exact(&project_path)
+                .unwrap()
+                .unwrap()
+                .digest,
+            contract.digest
+        );
+        database
+            .set_project_environment(&project_path, "staging")
+            .unwrap();
+        database
+            .set_project_environment(&project_path, "dev")
+            .unwrap();
+        database
+            .note_project_environment_edit(&project_path)
+            .unwrap();
+        assert_eq!(
+            database.project_selection_revision(&project_path).unwrap(),
+            Some(3)
+        );
     }
 
     #[test]

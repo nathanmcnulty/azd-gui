@@ -1,0 +1,4 @@
+{
+  "workflowResourceId": "/subscriptions/22222222-2222-4222-8222-222222222222/resourcegroups/rg-fixture/providers/microsoft.logic/workflows/pim-revoke-sessions-example",
+  "hostname": "example.logic.azure.com"
+}

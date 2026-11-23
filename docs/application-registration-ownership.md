@@ -50,7 +50,7 @@ An unavailable host keeps verification unavailable, including when the
 Graph body contains a plausible URI. Confirmation checks the same host
 again before consuming the pending verification. The mock provides its
 reviewed host independently of the mock application response.
-See [the pinned azd-pim producer](https://github.com/nathanmcnulty/azd-pim/blob/97054a7c8bb67c4a4de52caccb68442c1e1ce769/scripts/AzdPim.Optional.psm1#L195-L231).
+See [the pinned azd-pim producer](https://github.com/nathanmcnulty/azd-pim/blob/97054a7c8bb67c4a4de52caccb68442c1e1ce769/scripts/AzdPim.Optional.psm1#L562-L587).
 
 An explicit null requestedAccessTokenVersion has effective version 1,
 which mismatches this provider's required version 2. An omitted version
@@ -69,6 +69,85 @@ no eligible application credential without acquisition or refresh. The saved
 project also lacks an independently verified workflow hostname. A synthetic
 MSAL/HTTP fixture exercises the Windows worker and the explicit local review
 while those prerequisites remain open.
+
+## Workflow hostname producer contract
+
+The pinned azd-pim ARM deployment outputs
+`AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID`. Its post-provision hook obtains
+the callback for that exact workflow and uses its hostname to build the
+application ID URI. The deployment report, applied report, state, and AZD
+environment values are mutable project files. Even a generic deployment
+receipt with a `current` correlation state establishes context only. The GUI
+operation history does not capture any of these output bytes.
+
+The provisional [observation schema](../schemas/internal/azd-pim-workflow-host-observation.schema.json)
+specifies the two values the producer would emit. Take the lowercase ARM
+resource ID from the exact workflow output and the hostname from the ARM
+callback the hook already obtained for that resource. Keep the candidate pair
+in memory until the optional session-revocation stage, role linking, and the
+complete deployment finish successfully. The current hook can write a partial
+report after observing the host and then fail. A partial report supplies no
+evidence, even when it contains matching fields. Emit the pair only on
+success. Reuse the existing callback observation without another ARM
+request or a substitution from `accessEndpoint`. The hostname uses lowercase ASCII DNS
+labels of 1–63 characters and a final label of 2–63 ASCII letters, with at
+most 253 characters in total. Keep the callback URL, path, port, query,
+signature and Graph ID URI out of the payload. The
+[fixture](../src-tauri/tests/fixtures/azd-pim-workflow-host-observation.json)
+uses synthetic values in the shape of the Bicep output and callback hostname.
+
+The native operation runner has a separate opt-in for a registered producer.
+It checks the reviewed revision and the digest of the producer bytes it
+executes. The native caller must supply the independently resolved workflow ID
+for that exact deployment. The child receives a private output pipe reserved
+for one UTF-8 JSON observation of at most 1 KiB. Ordinary azd stdout, deployment
+reports and environment output files never enter that pipe. The capture checks
+the full resource ID, public cloud, tenant, subscription, resource group,
+registered project, environment generation and reviewed source contract.
+It issues a process-local receipt only after the matching operation succeeds
+and that terminal result is persisted. The capture permits writes to the pinned
+producer's known deployment outputs. Every other saved value must match the
+admitted inputs. The application object and client IDs are also legacy selectors.
+Each nonempty admitted ID must remain the same. A missing ID may be filled by a
+successful producer, which must write a complete pair of valid IDs. The final
+saved workflow ID must match both the independent
+native ID and the child observation. The saved file corroborates that match
+without supplying hostname provenance. Failure, cancellation or incomplete
+output leaves the capture unavailable.
+
+The receipt binds the exact final environment snapshot and the native project's
+monotonic selection revision. The revision advances on saved environment or
+source changes and explicit GUI target edits. The PIM picker shares the native
+operation guard with generic selection. Returning to an earlier environment or
+source cannot restore a prior receipt. A later operation that could have
+affected resources, including a pending or failed operation, supersedes it.
+Graph application properties supply no hostname evidence.
+
+The offline registry pins the root of azd-pim revision
+`5d22767595740d5e3d1aafccecf3435bf0e9b9fc` for the synthetic ownership fixture
+with enforced session revocation and no notifications. It records the raw
+hashes of the hook declaration, entry point, post-provision modules, and
+vendored Graph authentication manifest and module. The polling package,
+externally resolved Microsoft.Graph.Authentication module (minimum 2.30), Azure
+CLI, and azd are outside this qualification.
+
+The Windows offline qualification verifies all pinned bytes before running
+the actual entry point with a synthetic nested hook. It uses the same executable
+resolver as the app, checks the selected executable against the independently
+measured local file, and launches with the native operation metadata, a private
+working directory, and isolated PowerShell module search. It exercises
+successful and partial outcomes, source drift, and independent workflow ID
+mismatch. It runs no production hook, Azure CLI, or Graph module.
+
+Production verification stays unavailable. Production launches use the
+existing azd lifecycle policy. The offline pin has no production dispatch
+role. The ordinary azd lifecycle can launch its own post-provision hook,
+which can authenticate interactively and uses ambient CLI and module
+resolution. The remaining adapter is the
+native-owned deployment handoff that executes the reviewed stage once under
+the admitted target and supplies the independently observed workflow ID from
+that same deployment. A second hook run or a saved output file cannot supply
+that handoff. The internal schema remains provisional.
 
 ## Ownership receipt
 
