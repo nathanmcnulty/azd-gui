@@ -1,6 +1,6 @@
 param([string] $AdapterModule = (Join-Path $PSScriptRoot 'GraphAdapter.psm1'))
 # One credential and its protected reads live in this PowerShell process.
-# Only whitelisted metadata crosses stdout. Tokens stay inside managed code.
+# Tokens stay inside managed code. Only registered RPC results cross stdout.
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -71,6 +71,7 @@ try {
     while ($null -ne ($line = [Console]::ReadLine())) {
         $request = $null
         $plan = $null
+        $applicationRead = $null
         try {
             if ($line.Length -gt 65536) { throw 'Oversized request.' }
             $request = $line | ConvertFrom-Json -Depth 16
@@ -93,6 +94,16 @@ try {
                 if (-not $connected) { throw 'No owned authenticated session.' }
                 if ($binding.PSObject.Properties['purpose'] -and $binding.purpose -cin @('pimPlan', 'pimPilot')) { $owned.BeginPimPlanAudit($session, [long]$sequence) }
                 $owned.Probe()
+            }
+            elseif ($request.action -ceq 'applicationRead') {
+                if (-not $connected -or $request.allowInteractive -ne $false) { throw 'Existing verified session required.' }
+                $parameters = $request.parameters
+                $names = @($parameters.PSObject.Properties.Name)
+                if ($names.Count -ne 3 -or 'tenantId' -cnotin $names -or 'operatorFingerprint' -cnotin $names -or 'objectId' -cnotin $names -or
+                    $parameters.tenantId -isnot [string] -or $parameters.operatorFingerprint -isnot [string] -or $parameters.objectId -isnot [string]) {
+                    throw 'Invalid application read parameters.'
+                }
+                $applicationRead = $owned.ReadApplicationJson($parameters.tenantId, $parameters.operatorFingerprint, $parameters.objectId) | ConvertFrom-Json -Depth 4
             }
             elseif ($request.action -eq 'pimRoles') {
                 if (-not $connected -or $binding.purpose -cne 'pimPlan') { throw 'No owned PIM session.' }
@@ -141,21 +152,22 @@ try {
             $evidence = if ($connected) { $owned.EvidenceJson() | ConvertFrom-Json -Depth 12 } else { $null }
             $reply = [ordered]@{ sequence=$sequence; sessionId=$session; requirementsDigest=$binding.requirementsDigest; processId=$PID; action=[string]$request.action; ok=$true; evidence=$evidence }
             if ($null -ne $plan) { $reply.pimPlan = $plan }
+            if ($null -ne $applicationRead) { $reply.applicationRead = $applicationRead }
             [Console]::Out.WriteLine('AZD_GRAPH_RPC:' + ($reply | ConvertTo-Json -Depth 100 -Compress))
             [Console]::Out.Flush()
         }
         catch {
-            # Never serialize raw SDK errors, AuthenticationResult or HTTP data.
-            $code = if ($request -and $request.action -eq 'authenticate') { 'GraphAuthenticationFailed' } elseif ($request -and $request.action -eq 'pimPlan') { 'PimPlannerRejectedConfiguration' } else { 'PimReadFailed' }
+            # Never serialize raw SDK errors, AuthenticationResult or HTTP error bodies.
+            $code = if ($request -and $request.action -eq 'authenticate') { 'GraphAuthenticationFailed' } elseif ($request -and $request.action -ceq 'applicationRead') { 'ApplicationReadRejected' } elseif ($request -and $request.action -eq 'pimPlan') { 'PimPlannerRejectedConfiguration' } else { 'PimReadFailed' }
             if ($request -and $request.action -in @('pimPlan', 'pimPilotReview', 'pimPilotApply')) { $code = Get-PimPlannerFailureCode -Record $_ }
             $exception = $_.Exception
             for ($depth = 0; $null -ne $exception -and $depth -lt 8; $depth++) {
                 if ($exception -is [AzdGui.GraphAdapter.GraphBoundaryException]) {
-                    if ($exception.Code -in @('GraphReadDenied', 'GraphReadBadRequest', 'GraphReadNotFound', 'GraphReadThrottled', 'GraphDelegatedScopeMissing', 'GraphIdentityMismatch', 'GraphIdentityOrGrantsChanged', 'PimVerificationBudgetExceeded', 'PimReadBudgetOrSessionRejected', 'PimResponseLimitExceeded', 'GraphRedirectRejected', 'GraphReadFailed')) { $code = $exception.Code }
-                    else { $code = 'PimReadFailed' }
+                    if ($exception.Code -in @('GraphReadDenied', 'GraphReadBadRequest', 'GraphReadNotFound', 'GraphReadThrottled', 'GraphDelegatedScopeMissing', 'GraphIdentityMismatch', 'GraphIdentityOrGrantsChanged', 'ApplicationReadUnavailable', 'PimVerificationBudgetExceeded', 'PimReadBudgetOrSessionRejected', 'PimResponseLimitExceeded', 'GraphRedirectRejected', 'GraphReadFailed')) { $code = $exception.Code }
+                    elseif ($request.action -cne 'applicationRead') { $code = 'PimReadFailed' }
                     break
                 }
-                if ($exception -is [System.Text.Json.JsonException] -or $exception -is [System.OperationCanceledException]) { $code = 'PimReadFailed'; break }
+                if ($exception -is [System.Text.Json.JsonException] -or $exception -is [System.OperationCanceledException]) { if ($request.action -cne 'applicationRead') { $code = 'PimReadFailed' }; break }
                 if ($exception -is [Microsoft.Identity.Client.MsalUiRequiredException]) { $code = 'GraphInteractionRequired'; break }
                 if ($exception -is [Microsoft.Identity.Client.MsalException]) { if ($request.action -ne 'authenticate') { $code = 'GraphTokenRefreshFailed' }; break }
                 if ($exception -is [System.Net.Http.HttpRequestException]) { $code = 'GraphReadFailed'; break }

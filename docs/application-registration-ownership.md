@@ -57,11 +57,18 @@ which mismatches this provider's required version 2. An omitted version
 or api projection leaves verification incomplete.
 See [the Microsoft Graph apiApplication contract](https://learn.microsoft.com/en-us/graph/api/resources/apiapplication?view=graph-rest-1.0).
 
-The verifier consumes a bounded response and produces only the documented
-safe evidence. Denial, unavailability, or an incomplete response ends
-the attempt without review proof. The app still uses its offline transport.
-The real owned read and independent workflow-host evidence need separate
-qualification.
+The owned Windows worker implements this read as a fixed application action.
+It requires a completed session probe, the same tenant and operator, an
+existing credential for that identity, and Application.Read.All in both the
+configured and observed delegated scopes. It sends one GET with a ten-second
+deadline and accepts at most 8 KiB of a successful response. The native verifier
+consumes that response and exposes only the documented safe evidence.
+
+Production verification remains unavailable. The existing MSAL worker offers
+no eligible application credential without acquisition or refresh. The saved
+project also lacks an independently verified workflow hostname. A synthetic
+MSAL/HTTP fixture exercises the Windows worker and the explicit local review
+while those prerequisites remain open.
 
 ## Ownership receipt
 

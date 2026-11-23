@@ -24,12 +24,14 @@ internal sealed record Account(string Username, string Identifier, string Enviro
     public AccountId HomeAccountId => new(Identifier);
 }
 
-internal sealed class FakeMsalSession(SessionOptions options, string controlFile) : IMsalSession
+internal sealed class FakeMsalSession(SessionOptions options, string controlFile) : IMsalSession, IExistingGraphCredential
 {
     private readonly string owner = Guid.NewGuid().ToString();
     private IAccount? selected;
     private string? lastToken;
     private int tokenGeneration;
+    private AuthenticationResult? current;
+    public AuthenticationResult? Current => Control.Mode == "applicationNoCredential" ? null : current;
     internal Control Control => JsonSerializer.Deserialize<Control>(File.ReadAllText(controlFile), Bootstrap.JsonOptions)!;
     public string ClientId => Control.Mode == "client" ? "44444444-4444-4444-8444-444444444444" : options.ClientId;
     internal void Log(object value) => File.AppendAllText(Path.Combine(Path.GetDirectoryName(controlFile)!, "calls.jsonl"), JsonSerializer.Serialize(value) + "\n");
@@ -73,19 +75,33 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
         if (control.ExtraGrants) grants.Add("User.Read");
         if (control.Mode is "extraScopes" or "initialExtra") grants.Add(options.Scopes.Contains("Policy.Read.All") ? "User.Read" : "Policy.Read.All");
         if (control.Mode == "scopes") grants.Clear();
+        if (control.Mode == "unrequestedApplicationGrant") grants.Add("Application.Read.All");
         if (control.Mode == "resource") grants = ["https://graph.microsoft.us/Directory.Read.All"];
         lastToken = "offline-only-token-" + owner + "-" + (++tokenGeneration);
-        return new AuthenticationResult(lastToken, false, control.Mode == "object" ? "different-user-object" : "synthetic-user", DateTimeOffset.UtcNow.AddMinutes(control.Mode == "cached" ? -1 : 10),
+        return current = new AuthenticationResult(lastToken, false, control.Mode == "object" ? "different-user-object" : "synthetic-user", DateTimeOffset.UtcNow.AddMinutes(control.Mode == "cached" ? -1 : 10),
             DateTimeOffset.UtcNow.AddMinutes(10), control.Mode == "tenant" ? "33333333-3333-4333-8333-333333333333" : options.TenantId,
             control.Mode == "appOnly" ? null! : actual, "", grants, Guid.NewGuid(), null!, "Bearer");
     }
 
     internal async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellation)
     {
+        var control = Control;
+        if (request.RequestUri?.AbsolutePath.StartsWith("/v1.0/applications/", StringComparison.Ordinal) == true)
+        {
+            if (request.Method != HttpMethod.Get || request.Content is not null || request.Headers.Authorization?.Scheme != "Bearer" ||
+                request.Headers.Authorization.Parameter != lastToken || tokenGeneration != 2)
+                throw new InvalidOperationException("Expected the already verified credential and one bodyless GET.");
+            Log(new { kind = "application-read", pid = Environment.ProcessId, uri = request.RequestUri.AbsoluteUri, method = request.Method.Method });
+            var responseBody = Path.Combine(Path.GetDirectoryName(controlFile)!, "application.json");
+            return new HttpResponseMessage((HttpStatusCode)control.ResponseStatus) {
+                Content = control.Mode == "applicationOversizedStream"
+                    ? new StreamContent(new NonSeekableBody(new byte[8193]))
+                    : new StringContent(File.ReadAllText(responseBody))
+            };
+        }
         if (request.RequestUri is null || (Control.Mode != "pilot" && request.Method != HttpMethod.Get) || (Control.Mode is not ("pim" or "pilot") && request.RequestUri.AbsoluteUri != options.ProbeUri) ||
             request.Headers.Authorization?.Scheme != "Bearer" || request.Headers.Authorization.Parameter != lastToken)
             throw new InvalidOperationException("Protected HTTP request used another credential or resource.");
-        var control = Control;
         if (control.Mode == "pilot" && request.Method != HttpMethod.Get) return await SendPilotWriteAsync(request, control, cancellation);
         Log(new { kind = "protected-read-start", pid = Environment.ProcessId, uri = request.RequestUri.AbsoluteUri, owner });
         if (control.DelayMs > 0) await Task.Delay(control.DelayMs, cancellation);
@@ -107,6 +123,11 @@ internal sealed class FakeMsalSession(SessionOptions options, string controlFile
             response.Content = new StringContent(request.RequestUri!.AbsoluteUri == options.ProbeUri ? "{\"value\":[]}" : fixtures[request.RequestUri.OriginalString].GetRawText());
         }
         return response;
+    }
+
+    private sealed class NonSeekableBody(byte[] bytes) : MemoryStream(bytes)
+    {
+        public override bool CanSeek => false;
     }
 
     // Mutable synthetic tenant, persisted independently of worker lifetime. The

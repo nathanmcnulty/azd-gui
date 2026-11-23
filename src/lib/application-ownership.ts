@@ -23,7 +23,7 @@ export interface ApplicationReviewRequest {
 }
 
 export type ApplicationVerification =
-  | { state: "unknown"; reason: "unavailable" | "accessDenied" | "incomplete" | "cancelled" }
+  | { state: "unknown"; reason: "unavailable" | "providerUnavailable" | "accessDenied" | "incomplete" | "cancelled" }
   | { state: "foreign"; reason: "differentTenant" | "differentOperator" }
   | { state: "mismatch"; reason: "differentObject" | "differentApplication" | "unexpectedProperties" }
   | {

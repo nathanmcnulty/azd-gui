@@ -221,8 +221,21 @@ struct Reply {
     evidence: Option<ContextEvidence>,
     #[serde(default)]
     pim_plan: Option<serde_json::Value>,
+    // The production host has no eligible no-refresh credential or reviewed
+    // workflow hostname. Only the offline harness calls this worker action.
+    #[cfg(test)]
+    #[serde(default)]
+    application_read: Option<ApplicationReadReply>,
     #[serde(default)]
     error_code: Option<String>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplicationReadReply {
+    status: u16,
+    body: Option<String>,
 }
 
 struct Transport {
@@ -588,6 +601,8 @@ impl GraphWorker {
         }
         if !reply.ok {
             let message = match reply.error_code.as_deref() {
+                Some("ApplicationReadRejected") => "The owned application lookup was rejected or did not complete.",
+                Some("ApplicationReadUnavailable") => "The owned session cannot provide an existing application-read credential without refresh.",
                 Some("GraphReadDenied") => "Graph read denied; stop and review the existing account's access. No permissions were changed.",
                 Some("GraphDelegatedScopeMissing") => "The returned delegated grant does not include the required read permission. Do not grant consent automatically.",
                 Some("GraphIdentityMismatch" | "GraphIdentityOrGrantsChanged") => "Graph identity or delegated grants did not match the approved session.",
@@ -749,6 +764,8 @@ impl GraphWorker {
                 ok: true,
                 evidence: Some(progress.evidence),
                 pim_plan: None,
+                #[cfg(test)]
+                application_read: None,
                 error_code: None,
             },
             action,
@@ -1370,6 +1387,153 @@ mod tests {
             })
             .await
             .expect("fake protected operation did not start");
+        }
+    }
+
+    const APPLICATION_TENANT: &str = "11111111-1111-4111-8111-111111111111";
+    const APPLICATION_OBJECT: &str = "33333333-3333-4333-8333-333333333333";
+    const APPLICATION_URI: &str = "https://graph.microsoft.com/v1.0/applications/33333333-3333-4333-8333-333333333333?$select=id,appId,signInAudience,identifierUris,api";
+
+    impl Fixture {
+        async fn application_worker(&self, grant_scope: bool) -> Arc<GraphWorker> {
+            let mut binding = binding();
+            if grant_scope {
+                binding.scopes.push("Application.Read.All".into());
+            }
+            GraphWorker::spawn_with_module(binding, Some(&self.root.path().join("Fake.Graph.psm1")))
+                .await
+                .unwrap()
+        }
+    }
+
+    async fn request_application(worker: &GraphWorker, parameters: Value) -> AppResult<Reply> {
+        worker
+            .request_parameters("applicationRead", false, TIMEOUT, Some(parameters))
+            .await
+    }
+
+    fn application_parameters(tenant: &str, operator: &str, object: &str) -> Value {
+        json!({"tenantId":tenant, "operatorFingerprint":operator, "objectId":object})
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell application worker; substitutes MSAL and HTTP"]
+    async fn application_worker_reads_exact_object_once_and_reuses_only_verified_credential() {
+        use crate::application_ownership::{tests as ownership, Unknown};
+
+        for (status, mode, expected) in [
+            (200, "good", None),
+            (403, "good", Some(Unknown::AccessDenied)),
+            (302, "good", Some(Unknown::Incomplete)),
+            (200, "applicationOversizedStream", Some(Unknown::Incomplete)),
+        ] {
+            let fixture = Fixture::new();
+            let worker = fixture.application_worker(true).await;
+            worker.authenticate().await.unwrap();
+            let verified = worker.probe().await.unwrap();
+            let operator = verified.principal_fingerprint.unwrap();
+            std::fs::write(
+                fixture.root.path().join("application.json"),
+                ownership::application_body().to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                fixture.root.path().join("control.json"),
+                json!({"account":"operator@example.test","mode":mode,"delayMs":0,"responseStatus":status}).to_string(),
+            )
+            .unwrap();
+
+            let reply = request_application(
+                &worker,
+                application_parameters(APPLICATION_TENANT, &operator, APPLICATION_OBJECT),
+            )
+            .await
+            .unwrap();
+            let context = reply.evidence.unwrap();
+            assert_eq!(context.tenant_id, APPLICATION_TENANT);
+            assert_eq!(
+                context.principal_fingerprint.as_deref(),
+                Some(operator.as_str())
+            );
+            assert_eq!(context.verification_reads, 1);
+            let response = reply.application_read.unwrap();
+            assert_eq!(response.status, status);
+            assert_eq!(response.body.is_some(), status == 200 && mode == "good");
+            ownership::verify_worker_response(
+                Uuid::parse_str(&context.tenant_id).unwrap(),
+                operator,
+                response.status,
+                response.body,
+                expected,
+            );
+            let calls = fixture.calls();
+            let [authenticate, probe_start, probe_end, read] = calls.as_slice() else {
+                panic!("Expected existing authentication, a probe and one application GET");
+            };
+            assert_eq!(authenticate["kind"], "connect");
+            assert_eq!(
+                authenticate["scopes"],
+                json!(["Directory.Read.All", "Application.Read.All"])
+            );
+            assert_eq!(probe_start["kind"], "protected-read-start");
+            assert_eq!(probe_end["kind"], "protected-read-end");
+            assert_eq!(read["kind"], "application-read");
+            assert_eq!(read["method"], "GET");
+            assert_eq!(read["uri"], APPLICATION_URI);
+            assert!(calls.iter().all(|call| call["pid"] == reply.process_id));
+            worker.close().await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "offline real PowerShell application worker; substitutes MSAL and HTTP"]
+    async fn application_worker_rejects_unverified_scope_identity_and_arbitrary_request() {
+        for case in [
+            "unverified",
+            "tenant",
+            "operator",
+            "missingScope",
+            "extraGrant",
+            "missingCredential",
+            "object",
+            "endpoint",
+        ] {
+            let fixture = Fixture::new();
+            if case == "extraGrant" {
+                fixture.control("unrequestedApplicationGrant", 0);
+            }
+            let worker = fixture
+                .application_worker(!matches!(case, "missingScope" | "extraGrant"))
+                .await;
+            worker.authenticate().await.unwrap();
+            let evidence = if case == "unverified" {
+                worker.process_evidence().unwrap().context
+            } else {
+                worker.probe().await.unwrap()
+            };
+            let operator = evidence.principal_fingerprint.unwrap();
+            let mut parameters =
+                application_parameters(APPLICATION_TENANT, &operator, APPLICATION_OBJECT);
+            match case {
+                "tenant" => parameters["tenantId"] = json!(Uuid::new_v4()),
+                "operator" => parameters["operatorFingerprint"] = json!("f".repeat(64)),
+                "object" => parameters["objectId"] = json!("00000000-0000-0000-0000-000000000000"),
+                "endpoint" => parameters["uri"] = json!("https://example.invalid/"),
+                "missingCredential" => fixture.control("applicationNoCredential", 0),
+                _ => {}
+            }
+            assert!(
+                request_application(&worker, parameters).await.is_err(),
+                "{case}"
+            );
+            assert!(
+                !fixture
+                    .calls()
+                    .iter()
+                    .any(|call| call["kind"] == "application-read"),
+                "{case}"
+            );
+            worker.close().await;
         }
     }
 

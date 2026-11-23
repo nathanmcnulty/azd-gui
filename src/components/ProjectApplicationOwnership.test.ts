@@ -68,6 +68,7 @@ it("shows the scoped saved target and calls a single review decision after expli
 
 it.each([
   [{ state: "unknown", reason: "unavailable" }, /read is unavailable/],
+  [{ state: "unknown", reason: "providerUnavailable" }, /read without refreshing credentials and an independently verified workflow hostname/],
   [{ state: "unknown", reason: "accessDenied" }, /read was denied/],
   [{ state: "foreign", reason: "differentTenant" }, /different tenant/],
   [{ state: "unknown", reason: "cancelled" }, /read was cancelled/]
