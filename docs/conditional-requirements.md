@@ -50,7 +50,17 @@ The wizard plan retains the snapshot. Preparation recomputes it from actual subm
 
 Readiness checks inspect tools, required provider context and registered permissions using existing authentication. Requested scopes and retained UI hints are not provider proof. Missing fresh scope evidence fails closed; this feature does not add authentication, grant consent or change providers. Acknowledgement proofs remain a separate requirement. Removing resources with `down` retains its separate deletion approval without expansion acknowledgements; `refresh` remains outside execution approval.
 
-**Provider limitation:** the existing Graph PowerShell probe starts a separate process. Its cached-authentication-record fallback has no granted scopes, and a completed login process does not establish a context in a later probe process. Such a connection cannot pass the fresh native scope gate; reconnect alone may not fix it. Supporting fresh native Graph evidence across processes needs separate provider qualification. Offline snapshot tests do not establish live Graph readiness or release acceptance.
+Graph readiness uses the [owned Graph session](graph-session-boundary.md) for
+its registered reads. A saved account hint cannot establish current grants.
+Generic Graph template hooks, initialization, lifecycle and terminal handoffs
+still require a reviewed execution adapter. The registered readiness result
+applies to the read performed in the owned process.
+
+The requirements snapshot was wired in [PR #172](https://github.com/nathanmcnulty/azd-gui/pull/172).
+The same native snapshot supplies prerequisites, connections, scopes and
+registered checks. The renderer preserves its digest, while preparation and
+saved-project execution recompute and compare the effective requirements at
+their native approval boundaries.
 
 The wizard clears permission results on requirement-context edits and discards late replies. Successful native checks are discarded if a saved requirement context changes while probes run. Files remain mutable: reads cannot detect an unobserved external A → B → A sequence or prevent edits after launch.
 
