@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Provisional application registration ownership evidence",
+  "oneOf": [
+    { "$ref": "#/$defs/verifier" },
+    { "$ref": "#/$defs/verification" },
+    { "$ref": "#/$defs/receipt" }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "not": { "const": "00000000-0000-0000-0000-000000000000" }
+    },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "field": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
+    "verifier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "provider", "objectIdField"],
+      "properties": {
+        "kind": { "const": "verifier" },
+        "provider": { "const": "entra-application-registration" },
+        "objectIdField": { "$ref": "#/$defs/field" },
+        "applicationIdField": { "$ref": "#/$defs/field" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "cloud", "tenantId", "subscriptionId", "environment", "operatorDigest", "targetResourceDigest", "sourceContractDigest", "inputsDigest", "objectId"],
+      "properties": {
+        "provider": { "const": "entra-application-registration" },
+        "cloud": { "const": "AzureCloud" },
+        "tenantId": { "$ref": "#/$defs/id" },
+        "subscriptionId": { "$ref": "#/$defs/id" },
+        "environment": { "type": "string", "pattern": "^[A-Za-z0-9_().-]{1,64}$" },
+        "operatorDigest": { "$ref": "#/$defs/digest" },
+        "targetResourceDigest": { "$ref": "#/$defs/digest" },
+        "sourceContractDigest": { "$ref": "#/$defs/digest" },
+        "inputsDigest": { "$ref": "#/$defs/digest" },
+        "objectId": { "$ref": "#/$defs/id" },
+        "expectedApplicationId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "verifiedProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objectId", "applicationId", "singleTenant", "identifierUriMatches", "accessTokenVersion"],
+      "properties": {
+        "objectId": { "$ref": "#/$defs/id" },
+        "applicationId": { "$ref": "#/$defs/id" },
+        "singleTenant": { "const": true },
+        "identifierUriMatches": { "const": true },
+        "accessTokenVersion": { "const": 2 }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "binding", "checkedAt", "state"],
+      "properties": {
+        "kind": { "const": "verification" },
+        "binding": { "$ref": "#/$defs/binding" },
+        "checkedAt": { "type": "string", "format": "date-time" },
+        "state": { "enum": ["verified", "unknown", "foreign", "mismatch"] },
+        "properties": { "$ref": "#/$defs/verifiedProperties" },
+        "verificationDigest": { "$ref": "#/$defs/digest" },
+        "reason": { "enum": ["unavailable", "cancelled", "incomplete", "accessDenied", "differentTenant", "differentOperator", "differentObject", "differentApplication", "unexpectedProperties"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "verified" } }, "required": ["state"] },
+          "then": { "required": ["properties", "verificationDigest"], "properties": { "reason": false } },
+          "else": { "required": ["reason"], "properties": { "properties": false, "verificationDigest": false } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "unknown" } }, "required": ["state"] },
+          "then": { "properties": { "reason": { "enum": ["unavailable", "cancelled", "incomplete", "accessDenied"] } } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "foreign" } }, "required": ["state"] },
+          "then": { "properties": { "reason": { "enum": ["differentTenant", "differentOperator"] } } }
+        },
+        {
+          "if": { "properties": { "state": { "const": "mismatch" } }, "required": ["state"] },
+          "then": { "properties": { "reason": { "enum": ["differentObject", "differentApplication", "unexpectedProperties"] } } }
+        }
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "binding", "applicationId", "ownershipSource", "verifiedAt", "recordedAt", "verificationDigest", "receiptDigest"],
+      "properties": {
+        "kind": { "const": "ownershipReceipt" },
+        "binding": { "$ref": "#/$defs/binding" },
+        "applicationId": { "$ref": "#/$defs/id" },
+        "ownershipSource": { "enum": ["created", "verifiedLegacyMigration", "explicitlyAdopted"] },
+        "verifiedAt": { "type": "string", "format": "date-time" },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "verificationDigest": { "$ref": "#/$defs/digest" },
+        "receiptDigest": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}
