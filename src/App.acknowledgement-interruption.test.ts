@@ -156,7 +156,7 @@ describe("prepared wizard component discovery", () => {
     await openWizard();
     const declarations = screen.getByRole("region", { name: "Declared template components" });
     expect(declarations).toHaveTextContent("0.3.2");
-    expect(declarations).toHaveTextContent("Local file integrity is checked separately");
+    expect(declarations).toHaveTextContent("Local file integrity requires checking a registered project");
     await continueWizard();
     await fireEvent.click(acknowledgementCheckbox());
     await continueWizard();

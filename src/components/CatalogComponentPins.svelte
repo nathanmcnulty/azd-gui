@@ -12,7 +12,7 @@
     <div class="section-toolbar">
       <div>
         <h2>Declared template components</h2>
-        <p>From the reviewed template lock. Local file integrity is checked separately after preparation.</p>
+        <p>From the reviewed template lock. Local file integrity requires checking a registered project.</p>
       </div>
     </div>
     {#each components as component (component.id)}

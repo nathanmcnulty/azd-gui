@@ -48,6 +48,10 @@ match their respective source locks byte for byte.
 - [Maester Automation Account](../catalog/component-locks/maester-automation.json)
   uses `automation-account/azd-components.lock.json` in azd-maester at
   `1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`.
+- [Selected-role PIM pilot](../catalog/component-locks/pim-pilot.json) uses
+  `azd-components.lock.json` in azd-pim at
+  `48bdbadb6a02c06fb4144e616ed9562b905b36ec`. Its standalone planner shows
+  these declarations when the catalog pin matches the bundled native source.
 
 Each snapshot applies only to its catalog entry, repository, revision and path.
 When refreshing a pin, review the new source lock before updating the snapshot

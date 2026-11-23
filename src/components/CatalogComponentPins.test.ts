@@ -14,7 +14,7 @@ it("shows the bundled lock declaration for the exact reviewed template", () => {
   expect(panel).toHaveTextContent("deployment-validation");
   expect(panel).toHaveTextContent("0.3.2");
   expect(panel).toHaveTextContent("eb8340a433cf1fe4ab75251ce369e3d58a9bd636");
-  expect(panel).toHaveTextContent("Local file integrity is checked separately");
+  expect(panel).toHaveTextContent("Local file integrity requires checking a registered project");
   expect(panel).not.toHaveTextContent("Verified");
 });
 

@@ -3427,7 +3427,10 @@
         </div>
       </section>
     {:else if activeNav === "pimPlan"}
-      <PimPlan projects={data.projects} on:registered={registeredPilot} on:environment={pilotEnvironment} />
+      <PimPlan
+        catalogEntry={data.catalog.entries.find((entry) => entry.id === "pim-pilot" && entry.source === "bundled")}
+        projects={data.projects} on:registered={registeredPilot} on:environment={pilotEnvironment}
+      />
     {:else if activeNav === "catalog"}
       <section class="page">
         <div class="page-header">
