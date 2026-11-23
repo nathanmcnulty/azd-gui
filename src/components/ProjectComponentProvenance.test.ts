@@ -5,10 +5,14 @@ import type { ComponentUpdates } from "../lib/component-updates";
 import type { ComponentProvenanceRead, ComponentStatus } from "../lib/component-provenance";
 
 const readComponents = vi.hoisted(() => vi.fn());
-vi.mock("../lib/bridge", () => ({ getProjectComponentProvenance: readComponents }));
+const readTemplateComponents = vi.hoisted(() => vi.fn());
+vi.mock("../lib/bridge", () => ({
+  getProjectComponentProvenance: readComponents,
+  getTemplateComponentProvenance: readTemplateComponents
+}));
 const readUpdates = vi.hoisted(() => vi.fn().mockResolvedValue({ state: "unavailable", checkedAt: null, updates: [] }));
 vi.mock("../lib/component-updates", () => ({ checkComponentUpdates: readUpdates }));
-afterEach(() => { cleanup(); readComponents.mockReset(); readUpdates.mockClear(); });
+afterEach(() => { cleanup(); readComponents.mockReset(); readTemplateComponents.mockReset(); readUpdates.mockClear(); });
 
 const project = { id: "sample", name: "Sample", path: "C:\\Projects\\sample", environment: "dev", state: "ready" } as const;
 const absent: ComponentProvenanceRead = { state: "notFound", unknownMetadata: false, components: [] };
@@ -60,6 +64,7 @@ describe("local component provenance", () => {
     expect(screen.getByRole("article", { name: "Component deployment-validation" })).toBeInTheDocument();
     expect(button).toBeDisabled();
     await fireEvent.click(button);
+    expect(readComponents).toHaveBeenCalledTimes(1);
     expect(readUpdates).toHaveBeenCalledTimes(1);
     await act(() => finish({
       state: "stale", checkedAt: "2026-11-23T10:00:00Z",
@@ -74,6 +79,70 @@ describe("local component provenance", () => {
     await fireEvent.click(button);
     expect(readUpdates).toHaveBeenLastCalledWith(result().components, true);
     expect(await screen.findByText("Update information is unavailable for this component.")).toBeInTheDocument();
+  });
+
+  it("rereads the installed pin before a manual update check", async () => {
+    let resolveLock!: (data: ComponentProvenanceRead) => void;
+    const installed = result();
+    const updated = result("modified");
+    updated.components[0].version = "2.0.1";
+    updated.components[0].sourceRevision = "b".repeat(40);
+    readComponents.mockResolvedValueOnce(installed);
+    readUpdates.mockResolvedValueOnce({
+      state: "fresh", checkedAt: new Date().toISOString(),
+      updates: [{
+        id: installed.components[0].id, state: "updateAvailable", version: "2.0.1",
+        compatibility: "breaking", complete: true, historyIncomplete: false,
+        breakingVersions: ["2.0.0"], migrationNotes: []
+      }]
+    });
+    render(ProjectComponentProvenance, { project });
+
+    await screen.findByText("Breaking changes declared in 2.0.0.");
+    readComponents.mockImplementationOnce(() => new Promise((resolve) => { resolveLock = resolve; }));
+    await fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+
+    expect(readComponents).toHaveBeenCalledTimes(2);
+    expect(readComponents).toHaveBeenLastCalledWith(project.path);
+    expect(readUpdates).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Breaking changes declared in 2.0.0.")).not.toBeInTheDocument();
+
+    await act(() => resolveLock(updated));
+    await waitFor(() => expect(readUpdates).toHaveBeenLastCalledWith(updated.components, true));
+    const component = screen.getByRole("article", { name: "Component deployment-validation" });
+    expect(within(component).getByText("2.0.1")).toBeInTheDocument();
+    expect(within(component).getAllByText("Modified")).toHaveLength(2);
+    expect(within(component).getByText("b".repeat(40))).toBeInTheDocument();
+  });
+
+  it("does not check a cached pin after the lock is removed", async () => {
+    readComponents.mockResolvedValueOnce(result());
+    render(ProjectComponentProvenance, { project });
+    const button = await screen.findByRole("button", { name: "Check for updates" });
+    await waitFor(() => expect(button).toBeEnabled());
+    readComponents.mockResolvedValueOnce(absent);
+    await fireEvent.click(button);
+
+    await waitFor(() => expect(screen.queryByText("Shared components")).not.toBeInTheDocument());
+    expect(readComponents).toHaveBeenCalledTimes(2);
+    expect(readUpdates).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks the inspected template binding before using its installed pins", async () => {
+    const template = { sourcePath: "C:\\Templates\\fixture", contentDigest: "d".repeat(64) };
+    readTemplateComponents.mockResolvedValueOnce(result());
+    render(ProjectComponentProvenance, { template });
+    const button = await screen.findByRole("button", { name: "Check for updates" });
+    await waitFor(() => expect(button).toBeEnabled());
+
+    readTemplateComponents.mockRejectedValueOnce(new Error("stale-source-marker"));
+    await fireEvent.click(button);
+
+    expect(await screen.findByText("Unsupported component metadata")).toBeInTheDocument();
+    expect(readTemplateComponents.mock.calls).toEqual([[template], [template]]);
+    expect(readComponents).not.toHaveBeenCalled();
+    expect(readUpdates).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/stale-source-marker/)).not.toBeInTheDocument();
   });
 
   it("labels future and unknown metadata without inventing update availability", async () => {
