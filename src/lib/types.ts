@@ -232,6 +232,7 @@ export interface FieldOption {
 export interface ConfigurationField {
   lookup?: "securityGroup";
   validationMessage?: string;
+  acknowledgementProvider?: AcknowledgementProvider;
   id: string;
   environmentVariable: string;
   label: string;
@@ -465,7 +466,29 @@ export interface BootstrapData {
   isNative: boolean;
 }
 
+export interface AcknowledgementProvider {
+  id: "entra-pim-role-definitions";
+  classification: "privileged" | "lessPrivileged" | "all";
+  selectedIdsField?: string;
+}
+
+export interface AcknowledgementProviderView {
+  tenantId: string;
+  digest: string;
+  revision: string;
+  ids: string[];
+}
+
+export type AcknowledgementProviderViews = Record<string, AcknowledgementProviderView>;
+
 export interface AcknowledgementProof {
+  provider?: {
+    id: AcknowledgementProvider["id"];
+    classification: AcknowledgementProvider["classification"];
+    digest: string;
+    revision: string;
+    selectedIds: string[];
+  };
   fieldId: string;
   tenantId: string;
   controllingValues: Record<string, string | boolean | string[]>;

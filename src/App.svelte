@@ -124,6 +124,8 @@
     visibleFields
   } from "./lib/wizard";
 
+  import type { AcknowledgementProviderViews } from "./lib/types";
+  import { providerKey, readAcknowledgementProviderViews } from "./lib/acknowledgement-providers";
   import { acknowledgementControllerFields, acknowledgementFields, acknowledgementIssues, acknowledgementMatches, assertAcknowledgements, canAcknowledge, changeAcknowledgementValues, withAcknowledgementControllerValues, withoutAcknowledgements } from "./lib/acknowledgements";
 
   type NavId = "home" | "catalog" | "projects" | "connections" | "tools" | "settings" | "pimPlan";
@@ -201,6 +203,11 @@
   let wizardPlan: WizardPlan | null = null;
   let wizardValues: WizardValues = {};
   let wizardAcknowledgements: AcknowledgementProof[] = [];
+  let providerViews: AcknowledgementProviderViews = {};
+  let providerContext = "";
+  let providerRequest = 0;
+  let readingProvider = false;
+  let providerPoll: ReturnType<typeof setInterval> | undefined;
   let projectAcknowledgements: AcknowledgementProof[] = [];
   let activeStep = 0;
   let removedValueWarning: string[] = [];
@@ -330,8 +337,15 @@
             : environmentConfigurationValues[field.id] ?? ""
       ])
   ) };
-  $: projectAcknowledgementIssues = acknowledgementIssues(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements);
-  $: wizardAcknowledgementIssues = acknowledgementIssues(selectedEntry?.manifest, wizardValues, wizardAcknowledgements);
+  $: providerManifest = selectedEntry ? selectedEntry.manifest : selectedProjectTemplate?.entry.manifest;
+  $: providerTenant = String((selectedEntry ? wizardValues : projectConfigurationWizardValues).tenantId ?? "").trim().toLowerCase();
+  $: providerDeclarations = acknowledgementFields(providerManifest).flatMap(({field}) =>
+    field.acknowledgementProvider ? [field.acknowledgementProvider] : []);
+  $: providerKeyForContext = providerDeclarations.length && providerTenant
+    ? JSON.stringify([selectedEntry?.id ?? selectedProject?.path, providerTenant, providerDeclarations]) : "";
+  $: if (providerContext !== providerKeyForContext) resetProviderContext(providerKeyForContext);
+  $: projectAcknowledgementIssues = acknowledgementIssues(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements, providerViews);
+  $: wizardAcknowledgementIssues = acknowledgementIssues(selectedEntry?.manifest, wizardValues, wizardAcknowledgements, providerViews);
   $: visibleProjectConfigurationFields =
     selectedProjectTemplate?.entry.manifest?.configuration.groups
       ?.filter((group) => conditionMatches(group.condition, projectConfigurationWizardValues))
@@ -574,6 +588,43 @@
   }
 
 
+  function updateProviderViews(next: AcknowledgementProviderViews) {
+    const retain = (manifest: typeof providerManifest, values: WizardValues, proofs: AcknowledgementProof[]) =>
+      proofs.filter((proof) => !proof.provider || acknowledgementFields(manifest).some(({field, group}) =>
+        field.id === proof.fieldId && acknowledgementMatches(field, group, values, [proof], next)));
+    providerViews = next;
+    wizardAcknowledgements = retain(selectedEntry?.manifest, wizardValues, wizardAcknowledgements);
+    projectAcknowledgements = retain(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements);
+    if (selectedEntry && wizardPlan) {
+      wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements, providerViews);
+    }
+  }
+
+  function resetProviderContext(key: string) {
+    providerContext = key;
+    providerRequest += 1;
+    readingProvider = false;
+    updateProviderViews({});
+    clearInterval(providerPoll);
+    if (key) {
+      providerPoll = setInterval(() => void refreshProviderViews(), 2_000);
+      void refreshProviderViews();
+    }
+  }
+
+  async function refreshProviderViews() {
+    if (!providerContext || readingProvider) return;
+    const current = ++providerRequest;
+    readingProvider = true;
+    const next = await readAcknowledgementProviderViews(providerTenant, providerDeclarations);
+    if (current !== providerRequest) return;
+    readingProvider = false;
+    const keys = Object.keys(next);
+    if (keys.length !== Object.keys(providerViews).length || keys.some((key) => next[key].revision !== providerViews[key]?.revision)) {
+      updateProviderViews(next);
+    }
+  }
+
   onMount(() => {
     void checkComponentUpdates();
     document.addEventListener("keydown", handleGlobalKeydown);
@@ -593,6 +644,8 @@
       }
     })();
     return () => {
+      clearInterval(providerPoll);
+      providerRequest += 1;
       document.removeEventListener("keydown", handleGlobalKeydown);
       window.removeEventListener("resize", constrainOutputHeight);
       stopOutputResize?.();
@@ -826,13 +879,13 @@
       sourceTrustAccepted = false;
     }
     const changed = changeAcknowledgementValues(selectedEntry?.manifest, wizardValues,
-      ["sourceMode", "sourcePath", "projectPath", "environmentName", "subscriptionId"].includes(id) && wizardValues[id] !== value ? [] : wizardAcknowledgements, id, value);
+      ["sourceMode", "sourcePath", "projectPath", "environmentName", "subscriptionId"].includes(id) && wizardValues[id] !== value ? [] : wizardAcknowledgements, id, value, providerViews);
     wizardValues = changed.values;
     wizardAcknowledgements = changed.proofs;
     preflightRan = false;
     permissionCheckResults = [];
     if (!selectedEntry || !wizardPlan) return;
-    const nextPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements);
+    const nextPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements, providerViews);
     const removed = valuesRemovedByPlan(wizardPlan, nextPlan);
     removedValueWarning = removed.filter((field) => wizardValues[field] !== undefined && wizardValues[field] !== "");
     const pageId = activePage?.id;
@@ -923,7 +976,7 @@
           }
         }
         wizardValues = withAcknowledgementControllerValues(selectedEntry.manifest, wizardValues);
-        wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements);
+        wizardPlan = calculateWizardPlan(selectedEntry, wizardValues, wizardPlan, wizardAcknowledgements, providerViews);
         if (!inspectionAlreadyReported) {
           inspection.warnings.forEach((warning) => addSystemLog(warning, "warning"));
           if (inspection.warnings.length) outputOpen = true;
@@ -1353,7 +1406,7 @@
 
   async function materializeProject(): Promise<string> {
     if (!selectedEntry) throw new Error("No template is selected.");
-    assertAcknowledgements(selectedEntry.manifest, wizardValues, wizardAcknowledgements);
+    assertAcknowledgements(selectedEntry.manifest, wizardValues, wizardAcknowledgements, providerViews);
     const session = wizardSession;
     const generation = wizardEditGeneration;
     const isCurrent = () => session === wizardSession && generation === wizardEditGeneration;
@@ -1404,7 +1457,7 @@
       if (!wizardPlan) throw new Error("The deployment plan is not available.");
       let result: Awaited<ReturnType<typeof materializeDeploymentProject>>;
       try {
-        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues, selectedInspection?.sourceBinding, wizardAcknowledgements, isCurrent);
+        result = await materializeDeploymentProject(selectedEntry, wizardPlan, wizardValues, selectedInspection?.sourceBinding, wizardAcknowledgements, isCurrent, providerViews);
       } catch (error) {
         if (wizardValues.sourceMode !== "existingProject") {
           try {
@@ -1947,7 +2000,7 @@
       environmentConfigurationDirty = dirty;
       const freshValues = configurationValuesForProof(values);
       projectAcknowledgements = projectAcknowledgements.filter((proof) => acknowledgementFields(selectedProjectTemplate?.entry.manifest)
-        .some(({ field, group }) => field.id === proof.fieldId && acknowledgementMatches(field, group, freshValues, [proof])));
+        .some(({ field, group }) => field.id === proof.fieldId && acknowledgementMatches(field, group, freshValues, [proof], providerViews)));
     } catch {
       if (!isCurrent()) return;
       projectEnvironmentValues = [];
@@ -1974,7 +2027,7 @@
   }
 
   function setProjectConfigurationValue(field: ConfigurationField, value: WizardValues[string]) {
-    const changed = changeAcknowledgementValues(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements, field.id, value);
+    const changed = changeAcknowledgementValues(selectedProjectTemplate?.entry.manifest, projectConfigurationWizardValues, projectAcknowledgements, field.id, value, providerViews);
     projectAcknowledgements = changed.proofs;
     for (const candidate of selectedProjectConfigurationFields) {
       const next = changed.values[candidate.id];
@@ -3129,8 +3182,10 @@
                 {#each activePage.group.fields as field}
                   <ConfigurationFieldControl
                     {field}
-                    value={wizardValues[field.id]}
-                    acknowledgementAvailable={field.type !== "acknowledgement" || canAcknowledge(selectedEntry.manifest, field.id, wizardValues)}
+                    value={field.acknowledgementProvider ? wizardAcknowledgements.some((proof) => proof.fieldId === field.id) && wizardValues[field.id] === true : wizardValues[field.id]}
+                    acknowledgementAvailable={field.type !== "acknowledgement" || canAcknowledge(selectedEntry.manifest, field.id, wizardValues, providerViews)}
+                    providerCount={field.acknowledgementProvider ? providerViews[providerKey(field.acknowledgementProvider)]?.ids.length : undefined}
+                    on:providerRefresh={refreshProviderViews}
                     lookupTarget={connectionTarget}
                     on:change={(event) => setWizardValue(field.id, event.detail ?? "")}
                   />
@@ -3206,7 +3261,7 @@
                 </dl>
                 <p>Reducing requested scopes does not revoke existing consent. Current access is checked separately.</p>
               </section>
-              <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} acknowledgementProofs={wizardAcknowledgements} on:edit={(event) => editReviewSection(event.detail)} />
+              <WizardConfigurationReview pages={wizardPlan.pages} values={wizardValues} acknowledgementProofs={wizardAcknowledgements} {providerViews} on:edit={(event) => editReviewSection(event.detail)} />
             </div>
             {#if terminalLaunch?.opened && !terminalLaunch.historical && requiresInteractiveTerminal}
               <section class="regional-attempt" aria-label="Record deployment outcome">
@@ -3623,7 +3678,9 @@
                         <ConfigurationFieldControl
                           {field}
                           value={field.type === "acknowledgement" ? projectAcknowledgements.some((proof) => proof.fieldId === field.id) && projectConfigurationWizardValues[field.id] === true : projectConfigurationWizardValues[field.id]}
-                          acknowledgementAvailable={field.type !== "acknowledgement" || canAcknowledge(selectedProjectTemplate?.entry.manifest, field.id, projectConfigurationWizardValues)}
+                          acknowledgementAvailable={field.type !== "acknowledgement" || canAcknowledge(selectedProjectTemplate?.entry.manifest, field.id, projectConfigurationWizardValues, providerViews)}
+                          providerCount={field.acknowledgementProvider ? providerViews[providerKey(field.acknowledgementProvider)]?.ids.length : undefined}
+                          on:providerRefresh={refreshProviderViews}
                           configuredSensitive={Boolean(projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.sensitive && projectEnvironmentValues.find((value) => value.name === field.environmentVariable)?.isSet)}
                           on:change={(event) => setProjectConfigurationValue(field, event.detail)}
                         />
@@ -3633,8 +3690,8 @@
                     <div class="empty-configuration"><strong>No visible manifest fields</strong><span>Add a raw environment variable below when the template documentation requires one.</span></div>
                   {/if}
                   {#if selectedProjectTemplate && acknowledgementFields(selectedProjectTemplate.entry.manifest).length > 0}
-                    <WizardConfigurationReview pages={calculateWizardPlan(selectedProjectTemplate.entry, projectConfigurationWizardValues, undefined, projectAcknowledgements).pages}
-                      values={projectConfigurationWizardValues} acknowledgementProofs={projectAcknowledgements} on:edit={() => (projectTab = "environments")} />
+                    <WizardConfigurationReview pages={calculateWizardPlan(selectedProjectTemplate.entry, projectConfigurationWizardValues, undefined, projectAcknowledgements, providerViews).pages}
+                      values={projectConfigurationWizardValues} acknowledgementProofs={projectAcknowledgements} {providerViews} on:edit={() => (projectTab = "environments")} />
                   {/if}
                   {#if visibleProjectConfigurationFields.length > 0 || environmentConfigurationDirty.length > 0}
                     <div class="environment-configuration-actions">

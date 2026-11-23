@@ -148,7 +148,8 @@ impl ExecutionApprovals {
         token: &str,
         mut expected: ExecutionApprovalRequest,
         manifest: Option<&TemplateManifest>,
-    ) -> AppResult<()> {
+        provider: Option<&crate::acknowledgement_provider::Observation>,
+    ) -> AppResult<Vec<crate::models::AcknowledgementProof>> {
         let approved = self.take(token)?;
         if expected.action != "down" {
             if let Some(manifest) = manifest {
@@ -160,12 +161,14 @@ impl ExecutionApprovals {
                         .as_ref()
                         .and_then(|target| target.tenant_id.as_deref()),
                     &approved.acknowledgement_proofs,
+                    provider,
                 )?;
             }
             expected.acknowledgement_proofs = approved.acknowledgement_proofs.clone();
         }
         let expected = Self::validate_request(expected)?;
-        Self::compare(&approved, &expected)
+        Self::compare(&approved, &expected)?;
+        Ok(approved.acknowledgement_proofs)
     }
 
     fn compare(

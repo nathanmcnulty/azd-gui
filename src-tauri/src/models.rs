@@ -394,6 +394,7 @@ pub struct ConfigurationField {
     pub condition: Option<FieldCondition>,
     pub lookup: Option<String>,
     pub validation_message: Option<String>,
+    pub acknowledgement_provider: Option<crate::acknowledgement_provider::Declaration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -424,6 +425,8 @@ struct ConfigurationFieldWire {
     pub lookup: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub validation_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acknowledgement_provider: Option<crate::acknowledgement_provider::Declaration>,
 }
 
 impl<'de> Deserialize<'de> for ConfigurationField {
@@ -442,6 +445,7 @@ impl<'de> Deserialize<'de> for ConfigurationField {
                             | "help"
                             | "condition"
                             | "validationMessage"
+                            | "acknowledgementProvider"
                     )
                 })
             }) {
@@ -471,6 +475,15 @@ impl<'de> Deserialize<'de> for ConfigurationField {
                 ));
             }
         }
+        if let Some(provider) = value.get("acknowledgementProvider") {
+            if value.get("type").and_then(serde_json::Value::as_str) != Some("acknowledgement")
+                || !provider.is_object()
+            {
+                return Err(serde::de::Error::custom(
+                    "Only acknowledgement fields may declare an acknowledgement provider.",
+                ));
+            }
+        }
         let field: ConfigurationFieldWire =
             serde_json::from_value(value).map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -488,6 +501,7 @@ impl<'de> Deserialize<'de> for ConfigurationField {
             condition: field.condition,
             lookup: field.lookup,
             validation_message: field.validation_message,
+            acknowledgement_provider: field.acknowledgement_provider,
         })
     }
 }
@@ -525,6 +539,9 @@ impl Serialize for ConfigurationField {
         }
         if let Some(value) = &self.validation_message {
             map.serialize_entry("validationMessage", value)?;
+        }
+        if let Some(provider) = &self.acknowledgement_provider {
+            map.serialize_entry("acknowledgementProvider", provider)?;
         }
         map.end()
     }
@@ -755,6 +772,8 @@ pub struct AcknowledgementProof {
     pub field_id: String,
     pub tenant_id: String,
     pub controlling_values: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<crate::acknowledgement_provider::Proof>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
