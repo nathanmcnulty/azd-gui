@@ -25,6 +25,9 @@ use tokio::{
 use uuid::Uuid;
 
 mod workflow_capture;
+mod workflow_producer;
+
+pub(crate) use workflow_producer::reject_unadapted_workflow_producer;
 
 const MAX_CAPTURE_BYTES_PER_STREAM: usize = 4 * 1024 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 64 * 1024;
@@ -247,6 +250,8 @@ pub struct CommandSpec {
     pub environment: Vec<(String, String)>,
     pub assets: Option<Arc<tempfile::TempDir>>,
     pub directory_guards: Vec<Arc<crate::pim_pilot::Root>>,
+    #[cfg(all(test, windows))]
+    offline_workflow_powershell: Option<PathBuf>,
 }
 
 // Template transport never inherits repository, credential-helper, or proxy policy
@@ -309,6 +314,8 @@ impl CommandSpec {
             environment: Vec::new(),
             assets: None,
             directory_guards: Vec::new(),
+            #[cfg(all(test, windows))]
+            offline_workflow_powershell: None,
         }
     }
 
@@ -359,6 +366,21 @@ impl CommandSpec {
         self.validate()?;
         let executable = self.executable.resolve(&self.environment)?;
         let mut command = Command::new(&executable);
+        #[cfg(all(test, windows))]
+        if let Some(approved) = self.offline_workflow_powershell.as_ref() {
+            if &executable != approved {
+                return Err(AppError::Invalid(
+                    "The offline PowerShell executable changed.".into(),
+                ));
+            }
+            command.env_clear();
+            command.env(
+                "SystemRoot",
+                std::env::var_os("SystemRoot")
+                    .ok_or_else(|| AppError::Invalid("SystemRoot is unavailable.".into()))?,
+            );
+            command.env("PSModulePath", executable.with_file_name("Modules"));
+        }
         command
             .args(&self.args)
             .kill_on_drop(true)
@@ -900,7 +922,7 @@ fn inferred_progress(message: &str) -> Option<u8> {
 
 enum OperationLaunch {
     Command(CommandSpec),
-    // The upstream producer has no eligible structured-output route yet.
+    // The pinned producer still requires a native-owned deployment handoff.
     #[cfg_attr(not(all(test, windows)), allow(dead_code))]
     ReviewedWorkflow(workflow_capture::Capture),
 }

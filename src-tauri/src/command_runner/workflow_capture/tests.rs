@@ -37,6 +37,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_revision(REVISION)
+    }
+
+    fn with_revision(revision: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let database = Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap());
         let project_path = root.path().join("project");
@@ -58,13 +62,13 @@ impl Fixture {
             path,
             environment: Some("dev".into()),
             template_id: Some("pim-fixture".into()),
-            revision: Some(REVISION.into()),
+            revision: Some(revision.into()),
             last_operation: None,
             state: "ready".into(),
         };
         let entry: CatalogEntry = serde_json::from_value(json!({
             "id":"pim-fixture","title":"Fixture","description":"","summary":"","repository":REPOSITORY,
-            "commit":REVISION,"tags":[],"platforms":["windows"],"trusted":true,
+            "commit":revision,"tags":[],"platforms":["windows"],"trusted":true,
             "manifest":{
                 "schemaVersion":"1.0","prerequisites":[],"connections":[],
                 "applicationOwnership":{"kind":"verifier","provider":"entra-application-registration","objectIdField":"object"},
@@ -142,6 +146,7 @@ fn capture(script: impl Into<String>) -> (Capture, oneshot::Receiver<Receipt>) {
             script,
             workflow_resource_id: output.workflow_resource_id,
             completion,
+            offline_powershell: None,
         },
         receiver,
     )
@@ -465,5 +470,238 @@ async fn observation_requires_one_bounded_record_without_urls_or_bindings() {
         format!("{OUTPUT}{}", " ".repeat(LIMIT)),
     ] {
         assert!(read_observation(invalid.as_bytes()).await.is_none());
+    }
+}
+
+#[test]
+fn only_the_exact_opted_in_producer_pin_requires_the_owned_handoff() {
+    use crate::command_runner::{reject_unadapted_workflow_producer, workflow_producer};
+
+    let fixture = Fixture::with_revision(workflow_producer::REVISION);
+    let root = Path::new(&fixture.project.path);
+    let check = |action: &str, snapshot: &ProjectTemplateSnapshot| {
+        reject_unadapted_workflow_producer(action, snapshot, root, "dev")
+    };
+    assert!(check("up", &fixture.snapshot).is_ok());
+    let eligible =
+        format!("{SAVED_TARGET}AZD_PIM_MODE=enforced\nAZD_PIM_ENABLE_SESSION_REVOCATION=true\n");
+    fs::write(
+        fixture.saved(),
+        format!("{eligible}AZD_PIM_NOTIFICATION_MODE=polling\n"),
+    )
+    .unwrap();
+    assert!(check("up", &fixture.snapshot).is_ok());
+    fs::write(fixture.saved(), eligible).unwrap();
+    let snapshot = fixture.snapshot;
+    for action in ["up", "provision"] {
+        assert!(check(action, &snapshot).is_err());
+    }
+    assert!(check("down", &snapshot).is_ok());
+    let mut different_revision = snapshot.clone();
+    different_revision.entry.commit = REVISION.into();
+    let mut different_repository = snapshot.clone();
+    different_repository.entry.repository = "https://github.com/example/azd-pim".into();
+    let mut different_root = snapshot.clone();
+    different_root.entry.subdirectory = Some("samples".into());
+    let mut without_opt_in = snapshot;
+    without_opt_in
+        .entry
+        .manifest
+        .as_mut()
+        .unwrap()
+        .application_ownership = None;
+    for unrelated in [
+        different_revision,
+        different_repository,
+        different_root,
+        without_opt_in,
+    ] {
+        assert!(check("up", &unrelated).is_ok());
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires offline raw Git assets and a reviewed Windows PowerShell executable"]
+async fn exact_pinned_wrapper_uses_the_native_capture_with_only_a_synthetic_nested_hook() {
+    use crate::command_runner::{display_executable, resolve_system_executable, workflow_producer};
+
+    let source = PathBuf::from(std::env::var_os("AZD_GUI_WORKFLOW_PIN_FIXTURE").unwrap());
+    let entry = workflow_producer::verify_source(&source).unwrap();
+    let altered = tempfile::tempdir().unwrap();
+    for &(path, _, _) in workflow_producer::ASSETS {
+        let destination = altered.path().join(path);
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        fs::copy(source.join(path), destination).unwrap();
+    }
+    let vendored = altered
+        .path()
+        .join("scripts/vendor/Azd.GraphAuthentication/Azd.GraphAuthentication.psm1");
+    let mut bytes = fs::read(&vendored).unwrap();
+    bytes[0] ^= 1;
+    fs::write(&vendored, bytes).unwrap();
+    assert!(workflow_producer::verify_source(altered.path()).is_err());
+
+    // Measure the exact file returned by the same resolver used at launch.
+    let executable = resolve_system_executable("pwsh").unwrap();
+    let approved =
+        fs::canonicalize(std::env::var_os("AZD_GUI_WORKFLOW_TEST_PWSH").unwrap()).unwrap();
+    let expected_digest = std::env::var("AZD_GUI_WORKFLOW_TEST_PWSH_SHA256").unwrap();
+    assert_eq!(executable, approved);
+    assert_eq!(
+        executable
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase(),
+        "pwsh.exe"
+    );
+    assert_eq!(
+        hex::encode(Sha256::digest(fs::read(&executable).unwrap())),
+        expected_digest
+    );
+    let module_hashes = std::env::var("AZD_GUI_WORKFLOW_TEST_PWSH_MODULES_SHA256").unwrap();
+    let expected: Vec<_> = module_hashes.split(',').collect();
+    let assemblies = [
+        "System.Management.Automation.dll",
+        "Microsoft.PowerShell.Commands.Utility.dll",
+        "Microsoft.PowerShell.Commands.Management.dll",
+    ];
+    assert_eq!(expected.len(), assemblies.len());
+    for (name, expected) in assemblies.into_iter().zip(expected) {
+        let path = executable.with_file_name(name);
+        assert_eq!(
+            hex::encode(Sha256::digest(fs::read(path).unwrap())),
+            expected
+        );
+    }
+    let executable_path = display_executable(&executable);
+    let quote = |value: &str| value.replace('\'', "''");
+
+    for (scenario, expected_state, accepts) in [
+        ("success", "succeeded", true),
+        ("partial", "failed", false),
+        ("source-drift", "succeeded", false),
+        ("target-drift", "succeeded", false),
+        ("foreign-workflow", "succeeded", false),
+        ("callback-field", "succeeded", false),
+    ] {
+        let fixture = Fixture::with_revision(workflow_producer::REVISION);
+        let approved_env = format!(
+            "{SAVED_TARGET}{}AZD_PIM_MODE=enforced\nAZD_PIM_ENABLE_SESSION_REVOCATION=true\n",
+            saved_outputs()
+        );
+        fs::write(fixture.saved(), &approved_env).unwrap();
+        fs::write(
+            Path::new(&fixture.project.path).join("azure.yaml"),
+            "name: synthetic-target\n",
+        )
+        .unwrap();
+        let stage = tempfile::tempdir().unwrap();
+        let wrapper = stage.path().join(workflow_producer::ENTRYPOINT);
+        let scripts = wrapper.parent().unwrap();
+        fs::create_dir(scripts).unwrap();
+        // The only upstream script executed is the exact native entry point.
+        // None of its real deployment or authentication dependencies are staged.
+        fs::write(&wrapper, &entry).unwrap();
+        let tail = if scenario == "partial" {
+            "throw 'synthetic optional failure'"
+        } else {
+            ""
+        };
+        let mut output: Value = serde_json::from_str(OUTPUT).unwrap();
+        if scenario == "callback-field" {
+            output["callbackUrl"] = json!("https://example.invalid/fixture?sig=synthetic-only");
+        }
+        let output = output.to_string();
+        let revision = workflow_producer::REVISION;
+        let native_hook = format!(
+            r#"
+param([ref] $NativeWorkflowHostObservation)
+$ErrorActionPreference = 'Stop'
+if ([Environment]::ProcessPath -ine '{}' -or
+    -not [Environment]::Is64BitProcess -or $PSVersionTable.PSEdition -cne 'Core' -or
+    $PSVersionTable.PSVersion -lt [version]'7.6' -or
+    (Test-Path -LiteralPath 'azure.yaml') -or $env:PATH -or $env:AZURE_CONFIG_DIR -or
+    $env:AZURE_TENANT_ID -or $env:AZD_GUI_WORKFLOW_TEST_AMBIENT -or
+    (Get-Module Microsoft.Graph.Authentication) -or
+    $env:PSModulePath -ine [IO.Path]::Combine($PSHOME, 'Modules') -or
+    (Get-Command ConvertTo-Json).ImplementingType.Assembly.Location -ine [IO.Path]::Combine($PSHOME, 'Microsoft.PowerShell.Commands.Utility.dll') -or
+    (Get-Command Join-Path).ImplementingType.Assembly.Location -ine [IO.Path]::Combine($PSHOME, 'Microsoft.PowerShell.Commands.Management.dll') -or
+    [System.Management.Automation.PSObject].Assembly.Location -ine [IO.Path]::Combine($PSHOME, 'System.Management.Automation.dll') -or
+    $env:AZD_GUI_PROJECT_ID -cne 'project-fixture' -or $env:AZD_GUI_ENVIRONMENT -cne 'dev' -or
+    $env:AZD_GUI_OPERATION_KIND -cne 'up' -or $env:AZD_GUI_SOURCE_REVISION -cne '{revision}' -or
+    $env:AZD_GUI_OPERATION_ID -notmatch '^[0-9a-f-]{{36}}$' -or
+    $env:AZD_GUI_CONTRACT_DIGEST -cne '{}') {{ throw 'offline launch assumptions changed' }}
+$NativeWorkflowHostObservation.Value = ConvertFrom-Json -InputObject '{}'
+Write-Host 'synthetic ordinary output'
+{tail}
+"#,
+            quote(&executable_path),
+            fixture.snapshot.digest,
+            quote(&output)
+        );
+        fs::write(scripts.join("Post-Provision.ps1"), native_hook).unwrap();
+
+        // PowerShell can repopulate its default module path at startup. Reset
+        // it before calling any script and load only the verified built-ins.
+        let command = format!(
+            r#"
+$ErrorActionPreference = 'Stop'
+$env:PATH = $null
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module ([IO.Path]::Combine($PSHOME, 'Microsoft.PowerShell.Commands.Utility.dll')) -ErrorAction Stop
+Import-Module ([IO.Path]::Combine($PSHOME, 'Microsoft.PowerShell.Commands.Management.dll')) -ErrorAction Stop
+& '{}'
+"#,
+            quote(&wrapper.display().to_string())
+        );
+        let (mut candidate, receiver) = capture(command);
+        candidate.producer_revision = revision;
+        candidate.offline_powershell = Some(executable.clone());
+        if scenario == "foreign-workflow" {
+            candidate.workflow_resource_id =
+                candidate.workflow_resource_id.replace("-example", "-other");
+        }
+        let (sink, emitted) = record_events();
+        let database = fixture.database.clone();
+        let project = fixture.project.clone();
+        let mut entry = fixture.snapshot.entry.clone();
+        entry.summary = "Changed source during the native operation".into();
+        let changed = ProjectTemplateSnapshot::new(entry).unwrap();
+        let target = fixture.saved();
+        let drifted_env = approved_env.replace("rg-fixture", "rg-other");
+        let operation = fixture
+            .launch(
+                candidate,
+                Arc::new(move |event| {
+                    if scenario == "source-drift" && event.state == "running" {
+                        database.save_project_template(&project, &changed).unwrap();
+                    }
+                    if scenario == "target-drift" && event.state == "running" {
+                        fs::write(&target, &drifted_env).unwrap();
+                    }
+                    sink(event);
+                }),
+            )
+            .unwrap();
+        let receipt = result(receiver).await;
+        assert_eq!(receipt.is_some(), accepts, "{scenario}");
+        fixture.assert_operation(&operation, expected_state);
+        if let Some(mut receipt) = receipt {
+            assert_eq!(receipt.operation_id, operation);
+            assert_eq!(
+                receipt.current_hostname(&fixture.database),
+                Some("example.logic.azure.com")
+            );
+        }
+        let events = serde_json::to_string(&*emitted.lock().unwrap()).unwrap();
+        assert!(!events.contains("synthetic ordinary output"));
+        assert!(!events.contains("example.logic.azure.com"));
+        assert!(!events.contains("synthetic-only"));
+        assert!(!fs::read_to_string(fixture.saved())
+            .unwrap()
+            .contains("synthetic-only"));
+        assert!(!Path::new(&fixture.project.path).join("reports").exists());
     }
 }

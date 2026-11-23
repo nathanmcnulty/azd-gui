@@ -14,7 +14,8 @@ use std::{collections::BTreeMap, path::Path, sync::Arc, time::SystemTime};
 use tokio::{io::AsyncRead, sync::oneshot};
 use uuid::Uuid;
 
-const REPOSITORY: &str = "https://github.com/nathanmcnulty/azd-pim";
+use super::workflow_producer::REPOSITORY;
+
 const LIMIT: usize = 1024;
 const WORKFLOW_ID: &str = "AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID";
 const APPLICATION_OBJECT_ID: &str = "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID";
@@ -83,6 +84,8 @@ pub(super) struct Capture {
     // From the same operation's independent deployment output, never .env.
     workflow_resource_id: String,
     completion: oneshot::Sender<Receipt>,
+    #[cfg(all(test, windows))]
+    offline_powershell: Option<std::path::PathBuf>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -249,6 +252,10 @@ impl Capture {
         )
         .cwd(assets.path());
         spec.assets = Some(assets);
+        #[cfg(all(test, windows))]
+        {
+            spec.offline_workflow_powershell = self.offline_powershell.clone();
+        }
         Ok((spec, saved.inputs))
     }
 

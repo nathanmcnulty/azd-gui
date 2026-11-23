@@ -123,12 +123,30 @@ source cannot restore a prior receipt. A later operation that could have
 affected resources, including a pending or failed operation, supersedes it.
 Graph application properties supply no hostname evidence.
 
-The registered capture is exercised with a synthetic child on Windows. The
-remaining integration is an azd-pim producer that delivers the two fields
-through this reviewed, native-owned route and supplies the exact workflow ID
-from its deployment output to the coordinator. The current hook writes
-editable files and has no such handoff. No production launch or verifier is
-enrolled, and the internal schema stays provisional.
+The native registry pins azd-pim revision
+`5d22767595740d5e3d1aafccecf3435bf0e9b9fc` at the repository root with a saved
+application ownership opt-in. The lane requires enforced session revocation
+with notifications disabled. It records the raw hashes of the hook declaration,
+entry point, post-provision modules, and vendored Graph authentication manifest
+and module. The pin covers the revocation-only source lane. The polling package,
+externally resolved Microsoft.Graph.Authentication module (minimum 2.30), Azure
+CLI, and azd are outside this qualification.
+
+The Windows offline qualification verifies all pinned bytes before running
+the actual entry point with a synthetic nested hook. It uses the same executable
+resolver as the app, checks the selected executable against the independently
+measured local file, and launches with the native operation metadata, a private
+working directory, and isolated PowerShell module search. It exercises
+successful and partial outcomes, source drift, and independent workflow ID
+mismatch. It runs no production hook, Azure CLI, or Graph module.
+
+Production verification stays unavailable. The ordinary azd lifecycle still
+launches its own post-provision hook, which can authenticate interactively and
+uses ambient CLI and module resolution. The remaining adapter is the
+native-owned deployment handoff that executes the reviewed stage once under
+the admitted target and supplies the independently observed workflow ID from
+that same deployment. A second hook run or a saved output file cannot supply
+that handoff. The internal schema remains provisional.
 
 ## Ownership receipt
 
