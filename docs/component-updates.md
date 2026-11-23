@@ -44,7 +44,8 @@ release references. Opening a template or saved project checks the tag
 details relevant to its installed pins from that cached list, within the
 shared request budget. Exact installed tags and eligible upgrades take
 priority over other release history. Repeated checks reuse results until
-the feed refreshes. Declarations for
+the feed refreshes. **Check for updates** rereads the local lock and its
+managed files before comparing the current installed pins. Declarations for
 skipped releases can contribute warnings. Missing or unsupported declarations
 leave coverage incomplete. Schema validation describes the JSON shape. Source
 review, catalog inclusion, release attestation, and execution approval each

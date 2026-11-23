@@ -36,7 +36,8 @@
     }
   }
 
-  async function refresh(source: string, path: string, binding?: LocalSourceBinding) {
+  async function refresh(source: string, path: string, binding?: LocalSourceBinding, forceUpdates = false) {
+    if (forceUpdates && (loading || checking)) return;
     const requestId = ++request;
     ++updateRequest;
     clearTimeout(expiry);
@@ -55,7 +56,7 @@
         : await getProjectComponentProvenance(path);
       if (requestId === request) {
         result = next ?? absent;
-        void refreshUpdates();
+        void refreshUpdates(forceUpdates);
       }
     } catch {
       if (requestId === request) result = { ...absent, state: "unsupported", reason: "unreadable" };
@@ -145,7 +146,7 @@
     {/if}
     <div class="project-deployment-actions">
       {#if result.state === "available" && result.components.length}
-        <button class="secondary compact" disabled={checking || loading} on:click={() => refreshUpdates(true)}><Icon name="refresh" size={14} /> Check for updates</button>
+        <button class="secondary compact" disabled={checking || loading} on:click={() => refresh(sourceKey, project?.path ?? "", template, true)}><Icon name="refresh" size={14} /> Check for updates</button>
       {/if}
       <button class="secondary compact" disabled={loading} on:click={() => refresh(sourceKey, project?.path ?? "", template)}><Icon name="refresh" size={14} /> Refresh components</button>
     </div>
