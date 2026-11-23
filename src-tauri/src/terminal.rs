@@ -260,7 +260,7 @@ fn open_recorded_with(
         timestamp: crate::timestamp::now(), stream: "system".into(),
         level: if result.opened { "info" } else { "error" }.into(),
         message: result.detail.clone().unwrap_or_else(|| "Terminal opened. Prepared, deployment not observed. No command was executed by the app.".into()),
-        progress: None, environment_binding: None,
+        progress: None, environment_binding: None, exit_code: None,
         outcome: Some(crate::models::OperationOutcome {
             resource_state: "unchanged".into(),
             summary: if result.opened { "Terminal opened. Prepared, deployment not observed." } else { "Terminal launch failed. Prepared, deployment not observed." }.into(),
@@ -511,6 +511,7 @@ mod tests {
                         progress: None,
                         outcome: None,
                         environment_binding: None,
+                        exit_code: None,
                     },
                     path,
                 )

@@ -328,6 +328,7 @@ export interface OperationEvent {
   progress?: number;
   outcome?: OperationOutcome;
   environmentBinding?: "current" | "other" | "unbound";
+  exitCode?: number;
 }
 
 export interface OperationOutcome {
