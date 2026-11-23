@@ -2,6 +2,7 @@ const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
 const { createHash, randomUUID } = require("node:crypto");
 const { once } = require("node:events");
+const http = require("node:http");
 const net = require("node:net");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -155,22 +156,123 @@ async function until(read, detail, timeoutMs = 45_000) {
   throw Error("Timed out waiting for " + detail);
 }
 
-async function withOfflineWebView(port, run) {
-  const target = await until(async () => {
-    try {
-      const response = await fetch("http://127.0.0.1:" + port + "/json/list", { signal: AbortSignal.timeout(2000) });
-      return (await response.json()).find((target) => /^https?:\/\/tauri\.localhost\/$/.test(target.url));
-    } catch {
-      return null;
-    }
-  }, "the installed WebView2 page");
-  const endpoint = new URL(target.webSocketDebuggerUrl);
-  assert.equal(endpoint.protocol, "ws:");
-  assert.equal(endpoint.hostname, "127.0.0.1");
-  assert.equal(endpoint.port, port);
+const debuggerDeadlineMs = 15_000;
+const pageIdPattern = /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i;
+const applicationDocument = /^https?:\/\/tauri\.localhost\/$/;
+
+function pipePageId(payload) {
+  let notice;
+  try {
+    notice = JSON.parse(payload.toString("utf8").replace(/\0+$/, ""));
+  } catch {
+    // WebView2 can write a notice in more than one pipe chunk.
+    return undefined;
+  }
+  if (notice?.type !== "page" || typeof notice.id !== "string" || !pageIdPattern.test(notice.id)) {
+    throw Error("The WebView2 pipe returned an invalid page notice");
+  }
+  return notice.id;
+}
+
+function loopbackState(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: "127.0.0.1", port: Number(port) });
+    socket.once("connect", () => { socket.destroy(); resolve("connected"); });
+    socket.once("error", (error) => resolve(error.code === "ECONNREFUSED" ? "refused" : "unavailable"));
+    socket.setTimeout(1000, () => { socket.destroy(); resolve("unavailable"); });
+  });
+}
+
+function readDevTools(port, route) {
+  return new Promise((resolve) => {
+    // Use a direct request so inherited HTTP proxy settings cannot affect CDP.
+    const request = http.get({
+      hostname: "127.0.0.1", port: Number(port), path: route, agent: false,
+      signal: AbortSignal.timeout(1500)
+    }, (response) => {
+      if (response.statusCode !== 200) { response.destroy(); resolve(null); return; }
+      const chunks = [];
+      let size = 0;
+      response.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > 64 * 1024) { response.destroy(); resolve(null); return; }
+        chunks.push(chunk);
+      });
+      response.on("aborted", () => resolve(null));
+      response.on("error", () => resolve(null));
+      response.on("end", () => {
+        try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+        catch { resolve(null); }
+      });
+    });
+    request.on("error", () => resolve(null));
+  });
+}
+
+async function findDebuggerTarget(port, pageId, timeoutMs = debuggerDeadlineMs) {
+  await until(async () => (await loopbackState(port)) === "connected", "WebView2 loopback connection", timeoutMs);
+  console.log("WebView2 loopback connection ready");
+  await until(async () => {
+    const version = await readDevTools(port, "/json/version");
+    return typeof version?.["Protocol-Version"] === "string";
+  }, "WebView2 browser endpoint", timeoutMs);
+  console.log("WebView2 browser endpoint ready");
+  const endpoint = await until(async () => {
+    const targets = await readDevTools(port, "/json/list");
+    const target = Array.isArray(targets) && targets.find((entry) => entry?.type === "page" && entry.id === pageId);
+    if (!target || typeof target.webSocketDebuggerUrl !== "string") return null;
+    let url;
+    try { url = new URL(target.webSocketDebuggerUrl); }
+    catch { return null; }
+    if (url.protocol !== "ws:" || !["127.0.0.1", "[::1]", "localhost"].includes(url.hostname) ||
+        url.port !== String(port) || url.pathname !== "/devtools/page/" + pageId ||
+        url.username || url.password || url.search || url.hash) return null;
+    url.hostname = "127.0.0.1";
+    return url;
+  }, "WebView2 target matching the pipe page ID", timeoutMs);
+  console.log("WebView2 target matched the pipe page ID");
+  return endpoint;
+}
+
+async function targetDiscoverySelfTest() {
+  const pageId = "a".repeat(32);
+  const decoyId = "b".repeat(32);
+  const notice = Buffer.from(JSON.stringify({ id: pageId, type: "page", url: "about:blank" }));
+  assert.equal(pipePageId(notice.subarray(0, 12)), undefined);
+  assert.equal(pipePageId(notice), pageId);
+  assert.throws(() => pipePageId(Buffer.from('{"id":"outside","type":"page"}')), /invalid page notice/);
+
+  let endpointReady = false;
+  let targets = [];
+  const browser = http.createServer((request, response) => {
+    if (!endpointReady) { response.writeHead(503).end(); return; }
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify(request.url === "/json/version" ? { "Protocol-Version": "1.3" } : targets));
+  });
+  browser.listen(0, "127.0.0.1");
+  await once(browser, "listening");
+  const port = browser.address().port;
+  const endpoint = (id) => "ws://127.0.0.1:" + port + "/devtools/page/" + id;
+  const shortDeadline = 500;
+  try {
+    await assert.rejects(findDebuggerTarget(port, pageId, shortDeadline), /waiting for WebView2 browser endpoint/);
+    endpointReady = true;
+    targets = [{ type: "page", id: decoyId, url: "http://tauri.localhost/", webSocketDebuggerUrl: endpoint(decoyId) }];
+    await assert.rejects(findDebuggerTarget(port, pageId, shortDeadline), /waiting for WebView2 target matching the pipe page ID/);
+    targets.push({ type: "page", id: pageId, url: "about:blank", webSocketDebuggerUrl: endpoint(pageId) });
+    assert.equal((await findDebuggerTarget(port, pageId, shortDeadline)).href, endpoint(pageId));
+  } finally {
+    await new Promise((resolve) => browser.close(resolve));
+  }
+  await assert.rejects(findDebuggerTarget(port, pageId, shortDeadline), /waiting for WebView2 loopback connection/);
+  console.log("Synthetic debugger stages passed, including a matching page ID with a stale reported URL");
+}
+
+async function withOfflineWebView(port, pageId, run) {
+  const endpoint = await findDebuggerTarget(port, pageId);
   const ws = new WebSocket(endpoint);
   try {
-    await until(() => ws.readyState === WebSocket.OPEN, "loopback debugger handshake");
+    await until(() => ws.readyState === WebSocket.OPEN, "WebView2 target WebSocket handshake", debuggerDeadlineMs);
     let next = 0;
     const pending = new Map();
     ws.addEventListener("message", (event) => {
@@ -198,15 +300,19 @@ async function withOfflineWebView(port, run) {
       await call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true })
     ).result.value;
     const pausedBeforeApp = "document.readyState === 'loading' && !document.querySelector('#app')?.childElementCount";
-    assert.equal(await evaluate(pausedBeforeApp), true, "The app document must be paused before rendering");
+    await until(async () => applicationDocument.test(await evaluate("location.href")) && await evaluate(pausedBeforeApp),
+      "WebView2 pre-script guard to see its paused app document", debuggerDeadlineMs);
     const source = "if (location.hostname === 'tauri.localhost' && !window.unsignedSmokeIpc) { (" +
       installIpcGuard.toString() + ")(window," + JSON.stringify(guideUrl) + "); }";
     const documentGuard = await call("Page.addScriptToEvaluateOnNewDocument", { source, runImmediately: true });
-    assert.ok(documentGuard.identifier);
-    assert.equal(await evaluate(pausedBeforeApp), true, "Installing the guard must not resume startup");
-    assert.deepEqual(await evaluate("window.unsignedSmokeIpc()"), {
-      updateChecks: 0, guide: [], blocked: [], nativeReads: []
-    });
+    const armedBeforeResume = await evaluate(
+      "(() => { const state = window.unsignedSmokeIpc?.(); return state?.updateChecks === 0 && " +
+      "state.guide.length === 0 && state.blocked.length === 0 && state.nativeReads.length === 0; })()"
+    );
+    if (!documentGuard.identifier || !armedBeforeResume || !await evaluate(pausedBeforeApp)) {
+      throw Error("WebView2 pre-script guard was not applied before startup");
+    }
+    console.log("WebView2 pre-script guard applied while the app was paused");
     await call("Runtime.runIfWaitingForDebugger");
 
     await run(evaluate);
@@ -215,11 +321,11 @@ async function withOfflineWebView(port, run) {
   }
 }
 
-async function probe(project, port) {
+async function probe(project, port, pageId) {
   const files = [fileName, lockName];
   const hashes = () => files.map((name) => hash(fs.readFileSync(path.join(project, name))));
   const before = hashes();
-  await withOfflineWebView(port, async (evaluate) => {
+  await withOfflineWebView(port, pageId, async (evaluate) => {
     const invoke = (name, args = {}) =>
       evaluate("window.__TAURI_INTERNALS__.invoke(" + JSON.stringify(name) + "," + JSON.stringify(args) + ")");
     const click = (label) => until(() => evaluate(
@@ -280,11 +386,31 @@ async function launchOffline(exe, scratch, port, run) {
   const id = randomUUID();
   const pipeName = "\\\\.\\pipe\\WebView2\\Debugger\\" + path.basename(exe) + "\\" + id;
   const sockets = new Set();
-  let startupNotice = false;
+  let pageId;
+  let invalidNotice = false;
   const debuggerPipe = net.createServer((socket) => {
     sockets.add(socket);
+    let payload = Buffer.alloc(0);
     socket.on("error", () => {});
-    socket.once("data", () => { startupNotice = true; socket.destroy(); });
+    socket.on("data", (chunk) => {
+      if (payload.length + chunk.length > 4096) {
+        invalidNotice = true;
+        socket.destroy();
+        return;
+      }
+      payload = Buffer.concat([payload, chunk]);
+      try {
+        const id = pipePageId(payload);
+        if (id) {
+          if (pageId && pageId !== id) invalidNotice = true;
+          pageId = id;
+          socket.destroy();
+        }
+      } catch {
+        invalidNotice = true;
+        socket.destroy();
+      }
+    });
     socket.once("close", () => sockets.delete(socket));
   });
   // Route WebView requests other than the two Tauri origins to a loopback
@@ -327,20 +453,16 @@ async function launchOffline(exe, scratch, port, run) {
     await once(app, "spawn");
     await until(() => {
       assert.equal(app.exitCode, null, "Installed app exited before its debugger handshake");
-      return startupNotice;
+      if (invalidNotice) throw Error("The WebView2 debugger pipe delivered an invalid or ambiguous page notice");
+      return pageId;
     }, "the pre-script debugger pipe notice");
-    await run();
+    await run(pageId);
   } finally {
     try {
       if (app?.pid) {
         if (app.exitCode === null && app.signalCode === null) app.kill();
         await until(() => app.exitCode !== null || app.signalCode !== null, "the installed app to exit", 8000);
-        await until(() => new Promise((resolve) => {
-          const probe = net.connect({ host: "127.0.0.1", port: Number(port) });
-          probe.once("connect", () => { probe.destroy(); resolve(false); });
-          probe.once("error", (error) => resolve(error.code === "ECONNREFUSED"));
-          probe.setTimeout(1000, () => { probe.destroy(); resolve(false); });
-        }), "the owned debugger listener to stop", 8000);
+        await until(async () => (await loopbackState(port)) === "refused", "the owned debugger listener to stop", 8000);
       }
     } finally {
       for (const socket of sockets) socket.destroy();
@@ -352,9 +474,13 @@ async function launchOffline(exe, scratch, port, run) {
 
 async function main() {
   const [mode, first, second, exe, scratch] = process.argv.slice(2);
-  if (mode === "--self-test") return selfTest();
+  if (mode === "--self-test") {
+    await selfTest();
+    await targetDiscoverySelfTest();
+    return;
+  }
   if (mode === "--seed") return seed(first, second);
-  if (mode === "--probe") return launchOffline(exe, scratch, second, () => probe(first, second));
+  if (mode === "--probe") return launchOffline(exe, scratch, second, (pageId) => probe(first, second, pageId));
   throw Error("Expected --self-test, --seed, or --probe");
 }
 

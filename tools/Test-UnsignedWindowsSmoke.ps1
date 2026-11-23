@@ -98,5 +98,6 @@ foreach ($resource in $resources) {
 Write-Output "Verified $($resources.Count) installed resources"
 
 node $harness --seed $project (Join-Path $profile 'azd-gui.sqlite')
+$env:NO_PROXY = '127.0.0.1,localhost'
 node $harness --probe $project $port $exe $scratch
 Write-Output 'Installed app and its debugger stopped. The disposable job VM owns the install and profile cleanup.'
