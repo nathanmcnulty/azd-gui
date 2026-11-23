@@ -8,7 +8,13 @@ $sourceHead = 'c8d7df8c7d7262bf5078a368704fc762f4bc4c1f'
 $identifier = 'dev.azd-gui.npm154-acceptance'
 $port = 19454
 
-if (-not $IsWindows -or -not $env:RUNNER_TEMP) { throw 'Use a Windows runner with a dedicated RUNNER_TEMP.' }
+# The NSIS install and roaming fixture belong to the disposable job VM.
+if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or
+    $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
+    $env:GITHUB_REPOSITORY -cne 'nathanmcnulty/azd-gui' -or
+    $env:GITHUB_EVENT_NAME -cne 'pull_request' -or -not $env:RUNNER_TEMP) {
+    throw 'This smoke may install only in a disposable GitHub-hosted Windows pull-request job.'
+}
 $sourceRoot = (Resolve-Path -LiteralPath $Source).ProviderPath
 if ((git -C $sourceRoot rev-parse HEAD) -cne $sourceHead -or (git -C $sourceRoot status --porcelain)) {
     throw 'Unsigned smoke requires the exact clean source.'
@@ -92,20 +98,5 @@ foreach ($resource in $resources) {
 Write-Output "Verified $($resources.Count) installed resources"
 
 node $harness --seed $project (Join-Path $profile 'azd-gui.sqlite')
-$env:AZURE_CONFIG_DIR = Join-Path $scratch 'azure-config'
-$env:AZD_CONFIG_DIR = Join-Path $scratch 'azd-config'
-$env:AZURE_DEV_CONFIG_DIR = $env:AZD_CONFIG_DIR
-$env:WEBVIEW2_USER_DATA_FOLDER = Join-Path $scratch 'webview'
-$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$port --remote-debugging-address=127.0.0.1"
-$app = Start-Process -FilePath $exe -WorkingDirectory $install -WindowStyle Hidden -PassThru
-try {
-    node $harness --probe $project $port
-} finally {
-    $app.Refresh()
-    if (-not $app.HasExited) {
-        if (-not $app.CloseMainWindow() -or -not $app.WaitForExit(6000)) {
-            Stop-Process -Id $app.Id
-            $app.WaitForExit(6000) | Out-Null
-        }
-    }
-}
+node $harness --probe $project $port $exe $scratch
+Write-Output 'Installed app and its debugger stopped. The disposable job VM owns the install and profile cleanup.'
