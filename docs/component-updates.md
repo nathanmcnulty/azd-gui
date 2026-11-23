@@ -42,7 +42,9 @@ The app currently queries only the reviewed first-party Reference repository.
 It reads GitHub-verified annotated tags for availability. Startup caches the
 release references. Opening a template or saved project checks the tag
 details relevant to its installed pins from that cached list, within the
-shared request budget. Exact installed tags and eligible upgrades take
+shared request budget. After preparation registers a destination, the wizard
+shows the installed pins and file integrity for that project, including for
+catalog and GitHub sources. Exact installed tags and eligible upgrades take
 priority over other release history. Repeated checks reuse results until
 the feed refreshes. **Check for updates** rereads the local lock and its
 managed files before comparing the current installed pins. Declarations for

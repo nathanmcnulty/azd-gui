@@ -4,6 +4,10 @@ import App from "./App.svelte";
 import * as bridge from "./lib/bridge";
 import { mockBootstrap } from "./lib/mock-data";
 import type { CatalogEntry, ProjectEnvironmentValue } from "./lib/types";
+import type { ComponentProvenanceRead } from "./lib/component-provenance";
+import * as componentUpdates from "./lib/component-updates";
+import consumerLock from "../src-tauri/tests/fixtures/deployment-validation-consumer-lock.json";
+import publisherUpdate from "../src-tauri/tests/fixtures/deployment-validation-component-update.json";
 
 const tenantId = "11111111-1111-4111-8111-111111111111";
 const subscriptionId = "33333333-3333-4333-8333-333333333333";
@@ -104,11 +108,70 @@ afterEach(() => {
 });
 
 
+describe("prepared wizard component discovery", () => {
+  it("checks the registered destination after preparation without blocking preview", async () => {
+    const { entry, starts } = setup();
+    const canonicalPath = "C:\\Deployments\\registered-canonical-destination";
+    let completePrepare!: (project: Awaited<ReturnType<typeof bridge.prepareDeployment>>) => void;
+    const prepare = vi.spyOn(bridge, "prepareDeployment").mockImplementation(() => new Promise(resolve => {
+      completePrepare = resolve;
+    }));
+    let finishProvenance!: (result: ComponentProvenanceRead) => void;
+    const provenance = vi.spyOn(bridge, "getProjectComponentProvenance").mockImplementation(() => new Promise(resolve => {
+      finishProvenance = resolve;
+    }));
+    const updates = vi.spyOn(componentUpdates, "checkComponentUpdates")
+      .mockResolvedValueOnce({ state: "unavailable", checkedAt: null, updates: [] })
+      .mockResolvedValue({
+        state: "fresh", checkedAt: new Date().toISOString(), updates: [{
+          id: publisherUpdate.componentId, version: publisherUpdate.version, state: "updateAvailable",
+          compatibility: "breaking", complete: true, historyIncomplete: false,
+          breakingVersions: [publisherUpdate.version], migrationNotes: [publisherUpdate.migrationNotes]
+        }]
+      });
+    const components = consumerLock.components.map(component => ({
+      ...component,
+      status: "verified" as const, unknownMetadata: false,
+      files: component.files.map(file => ({ ...file, status: "verified" as const }))
+    }));
+
+    render(App);
+    await openWizard();
+    await continueWizard();
+    await fireEvent.click(acknowledgementCheckbox());
+    await continueWizard();
+    await fireEvent.click(screen.getByRole("checkbox", { name: /approve pinned template code execution/i }));
+    await continueWizard();
+    await fireEvent.click(screen.getByRole("button", { name: /^Run checks and preview$/i }));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+    expect(prepare.mock.calls[0][0].destination).not.toBe(canonicalPath);
+    expect(provenance).not.toHaveBeenCalled();
+    expect(updates).toHaveBeenCalledExactlyOnceWith();
+
+    await act(() => completePrepare({
+      id: "prepared-exact-project", name: "Prepared project", path: canonicalPath,
+      environment: "dev", templateId: entry.id, revision: entry.commit, state: "ready"
+    }));
+    await waitFor(() => expect(starts).toHaveBeenCalledWith("preview", canonicalPath, "dev", expect.any(String)));
+    await waitFor(() => expect(provenance).toHaveBeenCalledExactlyOnceWith(canonicalPath));
+    expect(updates).toHaveBeenCalledExactlyOnceWith();
+
+    await act(() => finishProvenance({
+      state: "available", manifestVersion: "1.0", unknownMetadata: false, components
+    }));
+    await waitFor(() => expect(updates).toHaveBeenLastCalledWith(components, false));
+    expect(screen.getByRole("region", { name: "Shared component provenance" })).toHaveTextContent("1.1.1");
+    expect(screen.getByText("Breaking changes declared in 2.0.0.")).toBeInTheDocument();
+    expect(screen.getByText(publisherUpdate.migrationNotes)).toBeInTheDocument();
+  });
+});
+
 describe("acknowledgement preparation interruptions", () => {
   it.each([false, true])("does not adopt a late prepare result or launch after close/reopen (interactive=%s)", async (interactive) => {
     const entry = acknowledgementEntry();
     entry.manifest!.requiresInteractiveTerminal = interactive;
     const { starts, approvals } = setup(entry);
+    const provenance = vi.spyOn(bridge, "getProjectComponentProvenance");
     const terminal = vi.spyOn(bridge, "openExternalTerminal");
     let completePrepare!: (project: Awaited<ReturnType<typeof bridge.prepareDeployment>>) => void;
     const prepare = vi.spyOn(bridge, "prepareDeployment").mockImplementation(() => new Promise((resolve) => {
@@ -138,6 +201,7 @@ describe("acknowledgement preparation interruptions", () => {
     await waitFor(() => expect(destination).toHaveValue(newDestination));
     expect(starts).not.toHaveBeenCalled();
     expect(terminal).not.toHaveBeenCalled();
+    expect(provenance).not.toHaveBeenCalled();
     // The new wizard still has its own unaccepted acknowledgement, even though
     // the old project completed with ACK=true and a proof moments earlier.
     for (let step = 0; step < 4; step += 1) await continueWizard();
