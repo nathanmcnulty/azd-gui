@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     path::Path,
     sync::Mutex,
-    time::{Duration, Instant},
+    time::{Duration, Instant, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
@@ -88,6 +88,10 @@ struct Target {
     source_contract_digest: String,
     inputs_digest: String,
     object_id: Uuid,
+    #[serde(skip)]
+    resource_group: String,
+    #[serde(skip)]
+    environment_modified: u128,
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_application_id: Option<Uuid>,
 }
@@ -137,8 +141,14 @@ fn registered_target(
         object,
     ];
     keys.extend(client);
-    let saved = crate::evidence::read_environment_values(path, environment, &keys)
+    let saved = crate::evidence::read_environment_snapshot(path, environment, &keys)
         .ok_or_else(|| invalid("The saved environment is unavailable."))?;
+    let environment_modified = saved
+        .modified
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .ok_or_else(|| invalid("The saved environment's file revision is unavailable."))?
+        .as_nanos();
+    let saved = saved.values;
     let required_uuid = |key| {
         saved.get(key).and_then(|value| uuid(value)).ok_or_else(|| {
             invalid(
@@ -169,6 +179,8 @@ fn registered_target(
         subscription_id,
         environment: environment.into(),
         target_resource_digest: digest(json!([subscription_id, group.to_ascii_lowercase()])),
+        resource_group: group.clone(),
+        environment_modified,
         source_contract_digest: snapshot.digest,
         inputs_digest: digest(json!([project.id, object_id, expected_application_id])),
         object_id,
@@ -261,7 +273,53 @@ struct Pending {
 }
 
 #[derive(Default)]
-pub struct Reviews(Mutex<Option<Pending>>);
+struct ReviewState {
+    pending: Option<Pending>,
+    revision: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct Reviews(Mutex<ReviewState>);
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReviewContext {
+    #[serde(flatten)]
+    target: Target,
+    resource_group: String,
+    context_digest: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReviewRequest {
+    project_path: String,
+    environment: String,
+    context_digest: String,
+}
+
+impl ReviewRequest {
+    fn resolve(&self, database: &Database, revision: u64) -> AppResult<Target> {
+        let target = registered_target(database, &self.project_path, &self.environment)?;
+        if self.context_digest != target.context_digest(revision) {
+            return Err(invalid(
+                "The saved application target or source changed. Review it again.",
+            ));
+        }
+        Ok(target)
+    }
+}
+
+impl Target {
+    fn context_digest(&self, revision: u64) -> String {
+        digest(json!([
+            "application-registration-review-context",
+            self,
+            self.environment_modified.to_string(),
+            revision
+        ]))
+    }
+}
 
 fn binding_values(target: &Target, identity: &Identity) -> Value {
     json!([
@@ -280,12 +338,42 @@ fn binding_values(target: &Target, identity: &Identity) -> Value {
 }
 
 impl Reviews {
-    fn verify(&self, target: Target, transport: &impl Transport) -> AppResult<Verification> {
-        let mut pending = self
+    pub(crate) fn invalidate(&self) {
+        if let Ok(mut state) = self.0.lock() {
+            state.pending = None;
+            state.revision = state.revision.wrapping_add(1);
+        }
+    }
+
+    fn context(
+        &self,
+        database: &Database,
+        path: &str,
+        environment: &str,
+    ) -> AppResult<ReviewContext> {
+        let state = self
             .0
             .lock()
             .map_err(|_| invalid("Application review is unavailable."))?;
-        *pending = None;
+        let target = registered_target(database, path, environment)?;
+        Ok(ReviewContext {
+            context_digest: target.context_digest(state.revision),
+            resource_group: target.resource_group.clone(),
+            target,
+        })
+    }
+
+    fn verify(
+        &self,
+        resolve: impl FnOnce(u64) -> AppResult<Target>,
+        transport: &impl Transport,
+    ) -> AppResult<Verification> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| invalid("Application review is unavailable."))?;
+        state.pending = None;
+        let target = resolve(state.revision)?;
         let Some(identity) = transport.identity() else {
             return Ok(Verification::Unknown {
                 reason: Unknown::Unavailable,
@@ -367,7 +455,7 @@ impl Reviews {
             ]
         ]));
         let binding = Box::new(Binding::new(target.clone(), &identity));
-        *pending = Some(Pending {
+        state.pending = Some(Pending {
             target,
             identity,
             properties: properties.clone(),
@@ -386,17 +474,18 @@ impl Reviews {
 
     fn confirm(
         &self,
-        target: Target,
+        resolve: impl FnOnce(u64) -> AppResult<Target>,
         transport: &impl Transport,
         expected_digest: &str,
     ) -> AppResult<ReviewReceipt> {
-        let mut slot = self
+        let mut state = self
             .0
             .lock()
             .map_err(|_| invalid("Application review is unavailable."))?;
-        let pending = slot.take().ok_or_else(|| {
+        let pending = state.pending.take().ok_or_else(|| {
             invalid("Verify this exact application again before recording the review.")
         })?;
+        let target = resolve(state.revision)?;
         if pending.issued.elapsed() >= REVIEW_LIFETIME
             || pending.target != target
             || expected_digest != pending.digest
@@ -462,30 +551,67 @@ impl Binding {
 }
 
 #[tauri::command]
-pub(crate) fn verify_project_application_ownership(
+pub(crate) async fn get_project_application_review_context(
     state: tauri::State<'_, crate::AppState>,
-    reviews: tauri::State<'_, Reviews>,
     project_path: String,
     environment: String,
+) -> AppResult<ReviewContext> {
+    let _lock = state.environment_writes.lock().await;
+    state
+        .application_reviews
+        .context(&state.database, &project_path, &environment)
+}
+
+#[tauri::command]
+pub(crate) async fn verify_project_application_ownership(
+    state: tauri::State<'_, crate::AppState>,
+    request: ReviewRequest,
 ) -> AppResult<Verification> {
-    reviews.verify(
-        registered_target(&state.database, &project_path, &environment)?,
+    let _lock = state.environment_writes.lock().await;
+    verify_saved_project(
+        &state.application_reviews,
+        &state.database,
+        &request,
         &OfflineTransport,
     )
 }
 
 #[tauri::command]
-pub fn confirm_project_application_review(
+pub(crate) async fn confirm_project_application_review(
     state: tauri::State<'_, crate::AppState>,
-    reviews: tauri::State<'_, Reviews>,
-    project_path: String,
-    environment: String,
+    request: ReviewRequest,
     verification_digest: String,
 ) -> AppResult<ReviewReceipt> {
-    reviews.confirm(
-        registered_target(&state.database, &project_path, &environment)?,
+    let _lock = state.environment_writes.lock().await;
+    confirm_saved_project(
+        &state.application_reviews,
+        &state.database,
+        &request,
         &OfflineTransport,
         &verification_digest,
+    )
+}
+
+fn verify_saved_project(
+    reviews: &Reviews,
+    database: &Database,
+    request: &ReviewRequest,
+    transport: &impl Transport,
+) -> AppResult<Verification> {
+    reviews.verify(|revision| request.resolve(database, revision), transport)
+}
+
+fn confirm_saved_project(
+    reviews: &Reviews,
+    database: &Database,
+    request: &ReviewRequest,
+    transport: &impl Transport,
+    verification_digest: &str,
+) -> AppResult<ReviewReceipt> {
+    reviews.confirm(
+        |revision| request.resolve(database, revision),
+        transport,
+        verification_digest,
     )
 }
 
@@ -493,7 +619,7 @@ pub fn confirm_project_application_review(
 mod tests {
     use super::*;
     use crate::models::{CatalogEntry, ProjectSummary, ProjectTemplateSnapshot};
-    use std::{cell::Cell, fs};
+    use std::{cell::Cell, collections::HashMap, fs, sync::Arc};
 
     const TENANT: &str = "11111111-1111-4111-8111-111111111111";
     const SUBSCRIPTION: &str = "22222222-2222-4222-8222-222222222222";
@@ -504,7 +630,7 @@ mod tests {
 
     struct Fixture {
         _root: tempfile::TempDir,
-        database: Database,
+        state: crate::AppState,
         project: String,
     }
 
@@ -542,7 +668,19 @@ mod tests {
             database.save_project_template(&summary, &snapshot).unwrap();
             let fixture = Self {
                 _root: root,
-                database,
+                state: crate::AppState {
+                    database: Arc::new(database),
+                    operations: Default::default(),
+                    environment_writes: Default::default(),
+                    application_reviews: Reviews::default(),
+                    template_cache: Path::new(&project).join("cache"),
+                    inspected_manifests: Mutex::new(HashMap::new()),
+                    reviewed_contracts: Mutex::new(HashMap::new()),
+                    catalog_reviews: Default::default(),
+                    execution_approvals: Default::default(),
+                    tool_install_approvals: Default::default(),
+                    graph_sessions: Default::default(),
+                },
                 project,
             };
             fixture.set_saved(TENANT, OBJECT);
@@ -556,7 +694,7 @@ mod tests {
         }
 
         fn target(&self) -> Target {
-            registered_target(&self.database, &self.project, "dev").unwrap()
+            registered_target(&self.state.database, &self.project, "dev").unwrap()
         }
     }
 
@@ -600,7 +738,8 @@ mod tests {
     }
 
     fn verify(reviews: &Reviews, target: Target, transport: &Scripted) -> String {
-        let result = serde_json::to_value(reviews.verify(target, transport).unwrap()).unwrap();
+        let result =
+            serde_json::to_value(reviews.verify(|_| Ok(target), transport).unwrap()).unwrap();
         assert_eq!(result["kind"], "verification");
         assert_eq!(result["state"], "verified");
         assert_eq!(result["binding"]["objectId"], OBJECT);
@@ -609,72 +748,268 @@ mod tests {
         result["verificationDigest"].as_str().unwrap().to_owned()
     }
 
+    impl Fixture {
+        fn request(&self) -> ReviewRequest {
+            let context = self
+                .state
+                .application_reviews
+                .context(&self.state.database, &self.project, "dev")
+                .unwrap();
+            ReviewRequest {
+                project_path: self.project.clone(),
+                environment: "dev".into(),
+                context_digest: context.context_digest,
+            }
+        }
+
+        fn verify_saved(
+            &self,
+            request: &ReviewRequest,
+            transport: &impl Transport,
+        ) -> AppResult<Verification> {
+            verify_saved_project(
+                &self.state.application_reviews,
+                &self.state.database,
+                request,
+                transport,
+            )
+        }
+
+        fn confirm_saved(
+            &self,
+            request: &ReviewRequest,
+            transport: &impl Transport,
+            digest: &str,
+        ) -> AppResult<ReviewReceipt> {
+            confirm_saved_project(
+                &self.state.application_reviews,
+                &self.state.database,
+                request,
+                transport,
+                digest,
+            )
+        }
+
+        fn fingerprint(&self, request: &ReviewRequest, transport: &Scripted) -> String {
+            let result =
+                serde_json::to_value(self.verify_saved(request, transport).unwrap()).unwrap();
+            assert_eq!(result["kind"], "verification");
+            assert_eq!(result["state"], "verified");
+            assert_eq!(result["binding"]["objectId"], OBJECT);
+            assert_eq!(result["properties"]["applicationId"], APPLICATION);
+            assert!(result.get("reason").is_none());
+            result["verificationDigest"].as_str().unwrap().to_owned()
+        }
+
+        fn set_file(&self, contents: &str, seconds: u64) {
+            let file = fs::File::create(Path::new(&self.project).join(".azure/dev/.env")).unwrap();
+            use std::io::Write;
+            (&file).write_all(contents.as_bytes()).unwrap();
+            file.set_times(
+                fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)),
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
-    fn actual_registered_caller_rechecks_object_and_tenant_before_one_use_review_receipt() {
+    fn ownership_only_context_uses_narrow_native_values_and_reaches_offline_transport() {
+        let fixture = Fixture::new();
+        let path = Path::new(&fixture.project).join(".azure/dev/.env");
+        let text =
+            fs::read_to_string(&path).unwrap() + "UNRELATED_SECRET=sentinel-not-for-renderer\n";
+        fixture.set_file(&text, 1_800_000_000);
+        let reviews = &fixture.state.application_reviews;
+        let database = &fixture.state.database;
+        let shown = reviews.context(database, &fixture.project, "dev").unwrap();
+        let serialized = serde_json::to_value(&shown).unwrap();
+        assert_eq!(serialized["tenantId"], TENANT);
+        assert_eq!(serialized["subscriptionId"], SUBSCRIPTION);
+        assert_eq!(serialized["resourceGroup"], "rg-fixture");
+        assert_eq!(serialized["objectId"], OBJECT);
+        assert_eq!(serialized["expectedApplicationId"], APPLICATION);
+        assert_eq!(
+            serialized["sourceContractDigest"],
+            fixture.target().source_contract_digest
+        );
+        assert_eq!(
+            serialized["targetResourceDigest"],
+            fixture.target().target_resource_digest
+        );
+        assert_eq!(serialized.as_object().unwrap().len(), 10);
+        assert!(!serialized.to_string().contains("sentinel-not-for-renderer"));
+        assert!(reviews
+            .context(database, &fixture.project, "foreign")
+            .is_err());
+        assert!(reviews
+            .context(database, r"\\not-registered.invalid\share", "dev")
+            .is_err());
+        assert!(matches!(
+            fixture
+                .verify_saved(&fixture.request(), &OfflineTransport)
+                .unwrap(),
+            Verification::Unknown {
+                reason: Unknown::Unavailable
+            }
+        ));
+        assert_eq!(fs::read_to_string(path).unwrap(), text);
+    }
+
+    #[test]
+    fn verify_and_confirm_reject_subscription_group_and_source_drift() {
         let fixture = Fixture::new();
         let transport = Scripted::matching();
-        let reviews = Reviews::default();
-        let target = fixture.target();
-        let before = fs::read(Path::new(&fixture.project).join(".azure/dev/.env")).unwrap();
-        assert!(reviews
-            .confirm(target.clone(), &transport, "unverified")
-            .is_err());
-        assert!(registered_target(&fixture.database, &fixture.project, "foreign").is_err());
-        assert!(
-            registered_target(&fixture.database, r"\\not-registered.invalid\share", "dev").is_err()
-        );
-        let digest = verify(&reviews, target.clone(), &transport);
-        fixture.set_saved(OTHER, OBJECT);
-        assert!(reviews
-            .confirm(fixture.target(), &transport, &digest)
-            .is_err());
-        fixture.set_saved(TENANT, OBJECT);
-        let digest = verify(&reviews, target.clone(), &transport);
-        fixture.set_saved(TENANT, OTHER);
-        assert!(reviews
-            .confirm(fixture.target(), &transport, &digest)
-            .is_err());
-        fixture.set_saved(TENANT, OBJECT);
-        let digest = verify(&reviews, target.clone(), &transport);
         let path = Path::new(&fixture.project).join(".azure/dev/.env");
-        let previous = String::from_utf8(before.clone()).unwrap();
-        fs::write(&path, previous.replace("rg-fixture", "rg-changed")).unwrap();
-        assert!(reviews
-            .confirm(fixture.target(), &transport, &digest)
-            .is_err());
-        fs::write(&path, &before).unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+        for (old, new) in [
+            (SUBSCRIPTION, OTHER),
+            ("rg-fixture", "rg-changed"),
+            (TENANT, OTHER),
+            (OBJECT, OTHER),
+        ] {
+            fixture.set_file(&before, 1_800_000_000);
+            let request = fixture.request();
+            let digest = fixture.fingerprint(&request, &transport);
+            fixture.set_file(&before.replace(old, new), 1_800_000_001);
+            let reads = transport.read_count.get();
+            assert!(fixture
+                .confirm_saved(&request, &transport, &digest)
+                .is_err());
+            assert!(fixture.verify_saved(&request, &transport).is_err());
+            assert_eq!(transport.read_count.get(), reads);
+            fixture.set_file(&before, 1_800_000_002);
+            assert!(fixture
+                .confirm_saved(&fixture.request(), &transport, &digest)
+                .is_err());
+        }
 
-        let digest = verify(&reviews, target.clone(), &transport);
-        let mut different_operator = Scripted::matching();
-        different_operator.identity.as_mut().unwrap().operator = "e".repeat(64);
-        assert!(reviews
-            .confirm(fixture.target(), &different_operator, &digest)
+        let database = &fixture.state.database;
+        let old_snapshot = database
+            .project_template_exact(&fixture.project)
+            .unwrap()
+            .unwrap();
+        let request = fixture.request();
+        let digest = fixture.fingerprint(&request, &transport);
+        let mut entry = old_snapshot.entry;
+        entry
+            .manifest
+            .as_mut()
+            .unwrap()
+            .application_ownership
+            .as_mut()
+            .unwrap()
+            .application_id_field = None;
+        let changed = ProjectTemplateSnapshot::new(entry).unwrap();
+        assert_ne!(changed.digest, old_snapshot.digest);
+        let project = database.projects().unwrap().remove(0);
+        database.save_project_template(&project, &changed).unwrap();
+        assert!(fixture.verify_saved(&request, &transport).is_err());
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_requests_and_native_edits_cannot_revive_a_pending_review() {
+        let fixture = Fixture::new();
+        let transport = Scripted::matching();
+        let path = Path::new(&fixture.project).join(".azure/dev/.env");
+        let before = fs::read_to_string(&path).unwrap();
+        fixture.set_file(&before, 1_800_000_000);
+
+        let request = fixture.request();
+        let digest = fixture.fingerprint(&request, &transport);
+        fs::remove_file(&path).unwrap();
+        assert!(fixture.verify_saved(&request, &transport).is_err());
+        fixture.set_file(&before, 1_800_000_000);
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
             .is_err());
 
-        let digest = verify(&reviews, target.clone(), &transport);
-        reviews.0.lock().unwrap().as_mut().unwrap().issued -= REVIEW_LIFETIME;
-        assert!(reviews
-            .confirm(fixture.target(), &transport, &digest)
+        let digest = fixture.fingerprint(&request, &transport);
+        fs::remove_file(&path).unwrap();
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
+        fixture.set_file(&before, 1_800_000_000);
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
             .is_err());
 
-        let digest = verify(&reviews, target.clone(), &transport);
+        let digest = fixture.fingerprint(&request, &transport);
+        fixture.set_file(&before.replace("rg-fixture", "rg-changed"), 1_800_000_001);
+        assert!(fixture.verify_saved(&request, &transport).is_err());
+        fixture.set_file(&before, 1_800_000_000);
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
+
+        let digest = fixture.fingerprint(&request, &transport);
+        fixture.set_file(&before.replace("rg-fixture", "rg-changed"), 1_800_000_001);
+        fixture.set_file(&before, 1_800_000_002);
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
+
+        fixture.set_file(&before, 1_800_000_000);
+        let digest = fixture.fingerprint(&request, &transport);
+        {
+            let _write = fixture.state.lock_environment_for_write().await;
+            fixture.set_file(&before.replace("rg-fixture", "rg-changed"), 1_800_000_000);
+        }
+        {
+            let _write = fixture.state.lock_environment_for_write().await;
+            fixture.set_file(&before, 1_800_000_000);
+        }
+        let fresh_request = fixture.request();
+        assert_ne!(fresh_request.context_digest, request.context_digest);
+        assert!(fixture
+            .confirm_saved(&fresh_request, &transport, &digest)
+            .is_err());
+        assert!(fixture.verify_saved(&request, &transport).is_err());
+
+        let digest = fixture.fingerprint(&fresh_request, &transport);
         let receipt = serde_json::to_value(
-            reviews
-                .confirm(fixture.target(), &transport, &digest)
+            fixture
+                .confirm_saved(&fresh_request, &transport, &digest)
                 .unwrap(),
         )
         .unwrap();
         assert_eq!(receipt["kind"], "ownershipReviewDecision");
-        assert_eq!(receipt["binding"]["tenantId"], TENANT);
         assert_eq!(receipt["binding"]["objectId"], OBJECT);
         assert!(receipt.get("ownershipSource").is_none());
         assert!(receipt.get("accessToken").is_none());
-        assert!(reviews.confirm(target, &transport, &digest).is_err());
-        assert_eq!(transport.read_count.get(), 6);
-        assert_eq!(
-            before,
-            fs::read(Path::new(&fixture.project).join(".azure/dev/.env")).unwrap()
-        );
+        assert!(fixture
+            .confirm_saved(&fresh_request, &transport, &digest)
+            .is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), before);
+    }
+
+    #[test]
+    fn changed_operator_and_expired_proof_cannot_issue_a_receipt() {
+        let fixture = Fixture::new();
+        let transport = Scripted::matching();
+        let request = fixture.request();
+        let digest = fixture.fingerprint(&request, &transport);
+        let mut different_operator = Scripted::matching();
+        different_operator.identity.as_mut().unwrap().operator = "e".repeat(64);
+        assert!(fixture
+            .confirm_saved(&request, &different_operator, &digest)
+            .is_err());
+        let digest = fixture.fingerprint(&request, &transport);
+        fixture
+            .state
+            .application_reviews
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .as_mut()
+            .unwrap()
+            .issued -= REVIEW_LIFETIME;
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
     }
 
     #[test]
@@ -685,7 +1020,7 @@ mod tests {
         let mut transport = Scripted::matching();
         transport.identity.as_mut().unwrap().tenant = uuid(OTHER).unwrap();
         assert!(matches!(
-            reviews.verify(target.clone(), &transport).unwrap(),
+            reviews.verify(|_| Ok(target.clone()), &transport).unwrap(),
             Verification::Foreign {
                 reason: "differentTenant"
             }
@@ -696,17 +1031,19 @@ mod tests {
         let token = verify(&reviews, target.clone(), &transport);
         transport.response = Err(Unknown::AccessDenied);
         assert!(matches!(
-            reviews.verify(target.clone(), &transport).unwrap(),
+            reviews.verify(|_| Ok(target.clone()), &transport).unwrap(),
             Verification::Unknown {
                 reason: Unknown::AccessDenied
             }
         ));
-        assert!(reviews.confirm(target.clone(), &transport, &token).is_err());
+        assert!(reviews
+            .confirm(|_| Ok(target.clone()), &transport, &token)
+            .is_err());
 
         let mut transport = Scripted::matching();
         transport.response.as_mut().unwrap().object_id = uuid(OTHER).unwrap();
         assert!(matches!(
-            reviews.verify(target.clone(), &transport).unwrap(),
+            reviews.verify(|_| Ok(target.clone()), &transport).unwrap(),
             Verification::Mismatch {
                 reason: "differentObject"
             }
@@ -714,13 +1051,13 @@ mod tests {
         transport.response.as_mut().unwrap().object_id = target.object_id;
         transport.response.as_mut().unwrap().access_token_version = None;
         assert!(matches!(
-            reviews.verify(target.clone(), &transport).unwrap(),
+            reviews.verify(|_| Ok(target.clone()), &transport).unwrap(),
             Verification::Unknown {
                 reason: Unknown::Incomplete
             }
         ));
         assert!(matches!(
-            reviews.verify(target, &OfflineTransport).unwrap(),
+            reviews.verify(|_| Ok(target), &OfflineTransport).unwrap(),
             Verification::Unknown {
                 reason: Unknown::Unavailable
             }

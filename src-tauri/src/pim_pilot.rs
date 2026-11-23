@@ -717,6 +717,7 @@ mod tests {
             database: Arc::new(Database::open(&root.path().join("state.sqlite")).unwrap()),
             operations: Default::default(),
             environment_writes: tokio::sync::Mutex::new(()),
+            application_reviews: Default::default(),
             template_cache: root.path().join("cache"),
             inspected_manifests: Mutex::new(HashMap::new()),
             reviewed_contracts: Mutex::new(HashMap::new()),

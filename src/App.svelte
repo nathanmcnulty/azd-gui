@@ -51,6 +51,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
+    getProjectTemplate,
     refreshProjectTemplate,
     getProjectEnvironmentValues,
     listProjectEnvironments,
@@ -2277,7 +2278,10 @@
     }
   }
 
-  function isPimProject(project: ProjectSummary) { return project.templateId === 'pim-pilot' || selectedProject?.path === project.path && selectedProjectTemplate?.entry.repository.replace(/\.git$|\/$/g, '') === 'https://github.com/nathanmcnulty/azd-pim'; }
+  function isPimProject(project: ProjectSummary, template: ProjectTemplateSnapshot | null = null) {
+    return project.templateId === "pim-pilot" ||
+      template?.entry.repository.replace(/\.git$|\/$/g, "") === "https://github.com/nathanmcnulty/azd-pim";
+  }
   function verificationFinished(event: CustomEvent<OperationEvent>) {
     verificationRefresh += 1;
     if (!selectedProject) return;
@@ -2333,11 +2337,17 @@
       if (!isCurrent()) return;
     }
     projectWaitingForEnvironment = false;
-    if (isPimProject(project)) { projectLoading = false; return; }
+    if (isPimProject(project)) {
+      const template = await getProjectTemplate(project.path).catch(() => null);
+      if (!isCurrent()) return;
+      selectedProjectTemplate = template;
+      projectLoading = false;
+      return;
+    }
     const snapshot = await loadProjectWorkspace(project);
     if (!isCurrent()) return;
     selectedProjectTemplate = snapshot.template;
-    if (isPimProject(project)) { projectLoading = false; return; }
+    if (isPimProject(project, snapshot.template)) { projectLoading = false; return; }
     projectState = snapshot.state;
     projectEnvironments = snapshot.environments;
     applyProjectEnvironments(projectEnvironments);
@@ -3424,10 +3434,14 @@
       </section>
     {:else if activeNav === "projects"}
       <section class="page">
-        {#if selectedProject && isPimProject(selectedProject)}
+        {#if selectedProject && isPimProject(selectedProject, selectedProjectTemplate)}
           <button class="text-button back-link" on:click={closeProjectWorkspace}>‹ All projects</button>
           <section class="workspace-panel"><h2>Source</h2><p>Supported native PIM engine · https://github.com/nathanmcnulty/azd-pim</p><code>{selectedProject.revision}</code><p>Local project: {selectedProject.path}. Reports and checkpoints remain private in this workspace.</p></section>
           <ProjectComponentProvenance project={selectedProject} />
+          {#if selectedProjectTemplate?.entry.manifest?.applicationOwnership}
+            <ProjectApplicationOwnership projectPath={selectedProject.path} environment={selectedProject.environment ?? ""}
+              sourceContractDigest={selectedProjectTemplate.digest} context={data.connections} />
+          {/if}
           {#key selectedProject.path}<PimPlan projects={data.projects} {selectedProject} sourceContext={selectedProjectTemplate?.digest} on:registered={registeredPilot} on:environment={pilotEnvironment} />{/key}
         {:else if selectedProject}
           <div class="project-workspace-header">
@@ -3470,15 +3484,9 @@
                 <ProjectVerification project={selectedProject} verificationContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate.digest]} on:finished={verificationFinished} />
               {/if}
               {#if selectedProjectTemplate?.entry.manifest?.applicationOwnership}
-                {@const verifier = selectedProjectTemplate.entry.manifest.applicationOwnership}
-                {@const objectIdVariable = selectedProjectConfigurationFields.find((field) => field.id === verifier.objectIdField)?.environmentVariable}
-                {@const applicationIdVariable = selectedProjectConfigurationFields.find((field) => field.id === verifier.applicationIdField)?.environmentVariable}
                 <ProjectApplicationOwnership projectPath={selectedProject.path} environment={selectedProject.environment ?? ""}
-                  tenantId={projectEnvironmentValues.find((value) => value.name === "AZURE_TENANT_ID")?.value?.trim() ?? ""}
-                  objectId={projectEnvironmentValues.find((value) => value.name === objectIdVariable)?.value?.trim() ?? ""}
-                  expectedApplicationId={projectEnvironmentValues.find((value) => value.name === applicationIdVariable)?.value?.trim() ?? ""}
-                  context={[selectedProjectTemplate.digest, data.connections, projectEnvironmentValues]}
-                  inputsSaved={!environmentConfigurationDirty.length && !environmentConfigurationBusy && !environmentBusy && environmentConfigurationState === "ready"} />
+                  sourceContractDigest={selectedProjectTemplate.digest} context={data.connections}
+                  inputsSaved={!environmentConfigurationDirty.length && !environmentConfigurationBusy && !environmentBusy} />
               {/if}
               <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />
               <ProjectDeploymentReceipt project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest]} />

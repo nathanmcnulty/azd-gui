@@ -188,7 +188,7 @@ describe("desktop experience", () => {
     expect(starts).not.toHaveBeenCalled();
   });
 
-  it("passes the exact opened saved project and environment to the opted-in verifier", async () => {
+  it.each(["generic", "bundled PIM", "reviewed PIM source"])("uses the scoped native target on the %s route without an exposed generic tenant", async (route) => {
     const path = "C:\\Deployments\\maester-lab";
     const snapshot = (await bridge.getProjectTemplate(path))!;
     const manifest = snapshot.entry.manifest!;
@@ -202,25 +202,39 @@ describe("desktop experience", () => {
         { id: declaration.applicationIdField, environmentVariable: applicationVariable, label: "Application ID", type: "text" }
       ]
     });
+    if (route === "bundled PIM") {
+      const data = await bridge.bootstrap();
+      data.projects = data.projects.map(project => project.path === path ? { ...project, templateId: "pim-pilot" } : project);
+      vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    }
+    if (route !== "generic") snapshot.entry.repository = "https://github.com/nathanmcnulty/azd-pim";
     vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
-    const saved = (name: string, value: string) => ({ name, value, sensitive: false, declared: true, isSet: true, required: false });
-    vi.spyOn(bridge, "getProjectEnvironmentValues").mockResolvedValue([
-      saved("AZURE_TENANT_ID", binding.tenantId), saved(objectVariable, binding.objectId),
-      saved(applicationVariable, binding.expectedApplicationId)
+    const ordinaryEnvironment = vi.spyOn(bridge, "getProjectEnvironmentValues").mockResolvedValue([
+      { name: "AZURE_TENANT_ID", sensitive: true, declared: false, isSet: true, required: false }
     ]);
+    const environment = route === "generic" ? binding.environment : "lab";
+    const contextDigest = "c".repeat(64);
+    const loadTarget = vi.spyOn(applicationOwnership, "getProjectApplicationReviewContext").mockResolvedValue({
+      ...binding, environment, sourceContractDigest: snapshot.digest, resourceGroup: "rg-fixture", contextDigest
+    });
     const verify = vi.spyOn(applicationOwnership, "verifyProjectApplication").mockResolvedValue({ state: "unknown", reason: "unavailable" });
     const confirm = vi.spyOn(applicationOwnership, "confirmProjectApplicationReview");
     render(App);
     await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
     await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    if (route !== "generic") {
+      expect(await screen.findByRole("heading", { name: "Selected-role PIM pilot" })).toBeVisible();
+      expect(ordinaryEnvironment).not.toHaveBeenCalled();
+    }
     const panel = await screen.findByRole("region", { name: "Application ownership review" });
     const verifyButton = within(panel).getByRole("button", { name: "Verify existing application" });
     await waitFor(() => expect(verifyButton).toBeEnabled());
+    expect(loadTarget).toHaveBeenCalledWith(path, environment);
     expect(within(panel).getByText(binding.objectId)).toBeInTheDocument();
     expect(within(panel).getByText(binding.tenantId)).toBeInTheDocument();
     expect(verify).not.toHaveBeenCalled();
     await fireEvent.click(verifyButton);
-    expect(verify).toHaveBeenCalledWith(path, binding.environment);
+    expect(verify).toHaveBeenCalledWith({ projectPath: path, environment, contextDigest });
     expect(await within(panel).findByText("A verified application read is unavailable.")).toBeInTheDocument();
     expect(confirm).not.toHaveBeenCalled();
   });

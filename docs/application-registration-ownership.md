@@ -67,13 +67,27 @@ exercise this contract offline.
 
 ## Local review
 
-A saved project can opt in with `applicationOwnership` set to the verifier
-declaration. The declared fields stay ordinary typed configuration inputs.
-Save the identity and target before verification. The native command resolves
-the exact registered project and reads the tenant, public Azure subscription,
-resource group and stable application IDs from the same bounded environment
-file. The target resource digest binds the saved resource-group scope.
-The renderer sends the saved project and environment.
+A saved project can opt in with a reviewed applicationOwnership declaration.
+The declared fields stay ordinary typed configuration inputs. The project
+Overview and the registered PIM workspace share the review panel. A reviewed
+PIM contract must opt in. The bundled pilot's existing contract and behavior
+stay unchanged.
+
+The native context command reads the exact registered project and the same
+bounded environment file for the public Azure tenant, subscription, resource
+group and stable application IDs. It returns those typed values, the
+reviewed source and target digests, and an opaque context digest. The general
+environment view keeps its existing redaction rules. Neither context nor
+review returns raw environment content. The target resource digest binds the
+saved resource-group scope.
+
+Verify and Confirm reread the exact native target and require the displayed
+context digest. It also binds the environment's modification time and a
+native revision that advances on GUI environment writes and source refresh.
+A failed verification or confirmation discards the pending native review.
+After a mismatch or failed request the panel reloads the target for the
+operator to inspect before another explicit verification. If the source
+changed, reopen the project to load its current reviewed contract.
 
 The verifier has an unavailable production transport in this slice. Synthetic
 tests exercise the native registered caller and the project review view.
