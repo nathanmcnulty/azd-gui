@@ -5,7 +5,6 @@ use crate::{
     persistence::Database,
     redaction::redact,
 };
-use chrono::Utc;
 use std::{
     collections::HashMap,
     ffi::OsString,
@@ -759,7 +758,7 @@ fn emit_event(
         operation_id: operation_id.into(),
         kind: kind.into(),
         state: state.into(),
-        timestamp: Utc::now().to_rfc3339(),
+        timestamp: crate::timestamp::now(),
         stream: stream.into(),
         level: level.into(),
         message: redact(&message.into()),
@@ -1505,7 +1504,7 @@ mod tests {
                 level: "info".into(),
                 message: "Validation completed".into(),
                 progress: Some(100),
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: crate::timestamp::now(),
                 outcome: Some(outcome),
                 environment_binding: None,
             });

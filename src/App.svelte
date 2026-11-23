@@ -3529,10 +3529,10 @@
                 <div class="section-toolbar"><div><h2>Lifecycle</h2><p>Run individual azd stages when you do not need the full guided workflow.</p></div></div>
                 <div class="lifecycle-actions">
                   {#if !projectRequiresInteractiveTerminal}
-                  <button disabled={!projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong><span>Apply infrastructure changes</span></button>
-                  <button disabled={!projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong><span>Deploy all application services</span></button>
+                  <button disabled={!projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("provision")}><Icon name="cloud" size={19} /><strong>Provision</strong>{" "}<span>Apply infrastructure changes</span></button>
+                  <button disabled={!projectContractReady || !projectExecutionAccepted || !projectConfigurationReady} on:click={() => runProjectAction("deploy")}><Icon name="play" size={19} /><strong>Deploy</strong>{" "}<span>Deploy all application services</span></button>
                   {/if}
-                  <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong><span>Refresh environment state</span></button>
+                  <button on:click={() => runProjectAction("refresh")}><Icon name="refresh" size={19} /><strong>Refresh</strong>{" "}<span>Refresh environment state</span></button>
                 </div>
               </section>
             </div>

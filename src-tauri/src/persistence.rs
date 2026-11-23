@@ -8,7 +8,6 @@ use crate::{
     },
     redaction::redact,
 };
-use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{path::Path, sync::Mutex};
 
@@ -129,7 +128,7 @@ fn recover_interrupted_operations(connection: &mut Connection) -> AppResult<()> 
         guidance: "Check whether a terminal opened. Retry only the handoff if needed; do not prepare or deploy automatically.".into(),
         retryable: true,
     })?;
-    let timestamp = Utc::now().to_rfc3339();
+    let timestamp = crate::timestamp::now();
     let outcome = serde_json::to_string(&crate::models::OperationOutcome {
         resource_state: "possiblyModified".into(),
         summary: "The app closed before this operation reported completion.".into(),
@@ -465,7 +464,7 @@ impl Database {
             params![
                 project_key,
                 serde_json::to_string(values)?,
-                chrono::Utc::now().to_rfc3339()
+                crate::timestamp::now()
             ],
         )?;
         Ok(())
@@ -522,10 +521,7 @@ impl Database {
              VALUES (1, ?1, ?2)
              ON CONFLICT(id) DO UPDATE SET
              values_json=excluded.values_json, updated_at=excluded.updated_at",
-            params![
-                serde_json::to_string(settings)?,
-                chrono::Utc::now().to_rfc3339()
-            ],
+            params![serde_json::to_string(settings)?, crate::timestamp::now()],
         )?;
         Ok(())
     }
@@ -565,7 +561,7 @@ impl Database {
     ) -> AppResult<()> {
         self.lock()?.execute(
             "INSERT INTO requirement_snapshots (id,project_path,action,recorded_at,snapshot_json) VALUES (?1,?2,?3,?4,?5)",
-            params![id,project_path,action,Utc::now().to_rfc3339(),serde_json::to_string(snapshot)?],
+            params![id,project_path,action,crate::timestamp::now(),serde_json::to_string(snapshot)?],
         )?;
         Ok(())
     }
@@ -595,7 +591,7 @@ impl Database {
             ));
         }
         let project_path = self.stored_project_path(project_path)?;
-        let timestamp = Utc::now().to_rfc3339();
+        let timestamp = crate::timestamp::now();
         let context_json = context.map(serde_json::to_string).transpose()?;
         let connection = self.lock()?;
         connection.execute(
@@ -1243,6 +1239,86 @@ mod tests {
             .context
             .is_none());
         assert_eq!(reopened.projects().unwrap()[0].state, "attention");
+    }
+
+    #[test]
+    fn old_and_new_timestamps_sort_within_one_second() {
+        use crate::timestamp::Timestamp;
+
+        let directory = tempdir().unwrap();
+        let database = Database::open(&directory.path().join("state.sqlite")).unwrap();
+        let build_project = |id: &str, timestamp: &str| ProjectSummary {
+            id: id.into(),
+            name: id.into(),
+            path: directory.path().join(id).display().to_string(),
+            environment: Some("dev".into()),
+            template_id: None,
+            revision: None,
+            last_operation: Some(timestamp.into()),
+            state: "ready".into(),
+        };
+        let old_before = "2026-11-22T12:34:56+00:00";
+        let new_whole = Timestamp::parse("2026-11-22T12:34:56Z").unwrap().format();
+        let old_middle = "2026-11-22T12:34:56.000000001+00:00";
+        let new_fraction = Timestamp::parse("2026-11-22T12:34:56.001003Z")
+            .unwrap()
+            .format();
+        let old_after = "2026-11-22T12:34:56.001003001+00:00";
+        assert_eq!(new_whole, old_before);
+
+        let active = build_project("new", &new_whole);
+        let other = build_project("old", old_after);
+        database.upsert_project(&active).unwrap();
+        database.upsert_project(&other).unwrap();
+        let connection = database.lock().unwrap();
+        for (id, started, completed) in [
+            ("new-whole", new_whole.as_str(), Some(new_whole.as_str())),
+            ("old-middle", old_before, Some(old_middle)),
+            (
+                "new-fraction",
+                new_whole.as_str(),
+                Some(new_fraction.as_str()),
+            ),
+            ("old-after", old_after, None),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO operation_history (id, project_path, kind, state, started_at, completed_at, summary)
+                     VALUES (?1, ?2, 'refresh', 'succeeded', ?3, ?4, 'Synthetic history.')",
+                    rusqlite::params![id, active.path, started, completed],
+                )
+                .unwrap();
+        }
+        drop(connection);
+
+        assert_eq!(
+            database
+                .projects()
+                .unwrap()
+                .into_iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>(),
+            ["old", "new"]
+        );
+        let expected = ["old-after", "new-fraction", "old-middle", "new-whole"];
+        assert_eq!(
+            database
+                .operation_history(&active.path)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.operation_id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            database
+                .evidence_operations(&active.path)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
     }
 
     #[test]

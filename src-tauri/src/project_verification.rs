@@ -177,7 +177,7 @@ mod tests {
         for (name, content) in FILES {
             assert_eq!(
                 source["files"][name],
-                format!("{:x}", Sha256::digest(content.as_bytes())),
+                hex::encode(Sha256::digest(content.as_bytes())),
                 "{name}"
             );
         }

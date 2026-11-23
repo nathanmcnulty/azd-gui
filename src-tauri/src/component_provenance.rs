@@ -649,7 +649,7 @@ fn verify_file(
     if bytes != metadata.len() {
         return Err(ReadError::Unsupported(Reason::Unreadable));
     }
-    Ok(if format!("{:x}", hasher.finalize()) == expected {
+    Ok(if hex::encode(hasher.finalize()) == expected {
         Status::Verified
     } else {
         Status::Modified
@@ -683,8 +683,7 @@ mod tests {
         );
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(target, content).unwrap();
-        value["components"][0]["files"][0]["sha256"] =
-            json!(format!("{:x}", Sha256::digest(content)));
+        value["components"][0]["files"][0]["sha256"] = json!(hex::encode(Sha256::digest(content)));
         write_lock(root, value);
     }
 

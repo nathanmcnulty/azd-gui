@@ -651,7 +651,7 @@ fn digest(entry: &CatalogEntry) -> AppResult<String> {
             "Template snapshot exceeds its size limit.".into(),
         ));
     }
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(hex::encode(Sha256::digest(bytes)))
 }
 
 impl ProjectTemplateSnapshot {

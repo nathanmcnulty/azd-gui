@@ -257,7 +257,7 @@ fn open_recorded_with(
     let event = crate::models::OperationEvent {
         operation_id: id, kind: "terminalHandoff".into(),
         state: if result.opened { "succeeded" } else { "failed" }.into(),
-        timestamp: chrono::Utc::now().to_rfc3339(), stream: "system".into(),
+        timestamp: crate::timestamp::now(), stream: "system".into(),
         level: if result.opened { "info" } else { "error" }.into(),
         message: result.detail.clone().unwrap_or_else(|| "Terminal opened. Prepared, deployment not observed. No command was executed by the app.".into()),
         progress: None, environment_binding: None,

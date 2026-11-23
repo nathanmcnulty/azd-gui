@@ -1,4 +1,4 @@
-use chrono::DateTime;
+use crate::timestamp::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::HashMap, fs, io::Read, path::Path};
@@ -489,7 +489,7 @@ pub fn correlate(
         return EvidenceBindingState::InsufficientContext;
     }
 
-    let Ok(matched_at) = DateTime::parse_from_rfc3339(&operation.timestamp) else {
+    let Some(matched_at) = Timestamp::parse(&operation.timestamp) else {
         return EvidenceBindingState::InsufficientContext;
     };
     let stale = expected.operations.iter().any(|candidate| {
@@ -497,8 +497,8 @@ pub fn correlate(
             candidate.kind.as_str(),
             "up" | "provision" | "deploy" | "down"
         ) && candidate.id != operation.id
-            && DateTime::parse_from_rfc3339(&candidate.timestamp)
-                .is_ok_and(|timestamp| timestamp > matched_at)
+            && Timestamp::parse(&candidate.timestamp)
+                .is_some_and(|timestamp| timestamp.instant() > matched_at.instant())
     });
     if stale {
         EvidenceBindingState::Stale

@@ -166,10 +166,9 @@ impl Input {
                 "A role definition cannot be selected in both tiers.".into(),
             ));
         }
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&(SOURCE, SCOPES, &self))?)
-        );
+        let digest = hex::encode(Sha256::digest(serde_json::to_vec(&(
+            SOURCE, SCOPES, &self,
+        ))?));
         let binding = GraphBinding {
             requirements_digest: digest,
             account: self.account,
@@ -371,7 +370,7 @@ mod tests {
         ] {
             assert_eq!(
                 manifest["files"][name]["sha256"],
-                format!("{:x}", Sha256::digest(bytes))
+                hex::encode(Sha256::digest(bytes))
             );
         }
     }
