@@ -1,3 +1,5 @@
+import applicationOwnershipFixture from "./lib/fixtures/application-registration-ownership.json";
+import * as applicationOwnership from "./lib/application-ownership";
 import pimProviderFixture from "./lib/fixtures/pim-provider-acknowledgement.json";
 import * as acknowledgementProviders from "./lib/acknowledgement-providers";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
@@ -184,6 +186,43 @@ describe("desktop experience", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Recheck local role evidence" }));
     await waitFor(() => expect(checkbox).toBeDisabled());
     expect(starts).not.toHaveBeenCalled();
+  });
+
+  it("passes the exact opened saved project and environment to the opted-in verifier", async () => {
+    const path = "C:\\Deployments\\maester-lab";
+    const snapshot = (await bridge.getProjectTemplate(path))!;
+    const manifest = snapshot.entry.manifest!;
+    const { declaration, binding } = applicationOwnershipFixture;
+    const objectVariable = "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID";
+    const applicationVariable = "AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID";
+    manifest.applicationOwnership = { ...declaration, kind: "verifier", provider: "entra-application-registration" };
+    manifest.configuration.groups.push({
+      id: "registration", title: "Application registration", fields: [
+        { id: declaration.objectIdField, environmentVariable: objectVariable, label: "Object ID", type: "entraObject" },
+        { id: declaration.applicationIdField, environmentVariable: applicationVariable, label: "Application ID", type: "text" }
+      ]
+    });
+    vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
+    const saved = (name: string, value: string) => ({ name, value, sensitive: false, declared: true, isSet: true, required: false });
+    vi.spyOn(bridge, "getProjectEnvironmentValues").mockResolvedValue([
+      saved("AZURE_TENANT_ID", binding.tenantId), saved(objectVariable, binding.objectId),
+      saved(applicationVariable, binding.expectedApplicationId)
+    ]);
+    const verify = vi.spyOn(applicationOwnership, "verifyProjectApplication").mockResolvedValue({ state: "unknown", reason: "unavailable" });
+    const confirm = vi.spyOn(applicationOwnership, "confirmProjectApplicationReview");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    const panel = await screen.findByRole("region", { name: "Application ownership review" });
+    const verifyButton = within(panel).getByRole("button", { name: "Verify existing application" });
+    await waitFor(() => expect(verifyButton).toBeEnabled());
+    expect(within(panel).getByText(binding.objectId)).toBeInTheDocument();
+    expect(within(panel).getByText(binding.tenantId)).toBeInTheDocument();
+    expect(verify).not.toHaveBeenCalled();
+    await fireEvent.click(verifyButton);
+    expect(verify).toHaveBeenCalledWith(path, binding.environment);
+    expect(await within(panel).findByText("A verified application read is unavailable.")).toBeInTheDocument();
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it("leaves native null defaults empty in reopened project configuration", async () => {

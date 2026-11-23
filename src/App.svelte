@@ -10,6 +10,7 @@
   import Icon from "./components/Icon.svelte";
   import InstallReviewDialog from "./components/InstallReviewDialog.svelte";
   import OutputPanel from "./components/OutputPanel.svelte";
+  import ProjectApplicationOwnership from "./components/ProjectApplicationOwnership.svelte";
   import ProjectVerification from "./components/ProjectVerification.svelte";
   import TerminalHandoff from "./components/TerminalHandoff.svelte";
   import ProjectValidationReport from "./components/ProjectValidationReport.svelte";
@@ -3467,6 +3468,17 @@
               </section>
               {#if selectedProjectTemplate?.entry.repository === 'https://github.com/nathanmcnulty/azd-reference' && selectedProjectTemplate.entry.commit === 'abc6e896620990e68360a63dd14efda66a3f75cd' && selectedProjectTemplate.entry.subdirectory === 'examples/deployment-check'}
                 <ProjectVerification project={selectedProject} verificationContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate.digest]} on:finished={verificationFinished} />
+              {/if}
+              {#if selectedProjectTemplate?.entry.manifest?.applicationOwnership}
+                {@const verifier = selectedProjectTemplate.entry.manifest.applicationOwnership}
+                {@const objectIdVariable = selectedProjectConfigurationFields.find((field) => field.id === verifier.objectIdField)?.environmentVariable}
+                {@const applicationIdVariable = selectedProjectConfigurationFields.find((field) => field.id === verifier.applicationIdField)?.environmentVariable}
+                <ProjectApplicationOwnership projectPath={selectedProject.path} environment={selectedProject.environment ?? ""}
+                  tenantId={projectEnvironmentValues.find((value) => value.name === "AZURE_TENANT_ID")?.value?.trim() ?? ""}
+                  objectId={projectEnvironmentValues.find((value) => value.name === objectIdVariable)?.value?.trim() ?? ""}
+                  expectedApplicationId={projectEnvironmentValues.find((value) => value.name === applicationIdVariable)?.value?.trim() ?? ""}
+                  context={[selectedProjectTemplate.digest, data.connections, projectEnvironmentValues]}
+                  inputsSaved={!environmentConfigurationDirty.length && !environmentConfigurationBusy && !environmentBusy && environmentConfigurationState === "ready"} />
               {/if}
               <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />
               <ProjectDeploymentReceipt project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest]} />

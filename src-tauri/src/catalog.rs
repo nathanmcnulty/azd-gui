@@ -826,6 +826,7 @@ fn inferred_manifest(yaml: &crate::inspection_yaml::Value) -> TemplateManifest {
         .map(ToOwned::to_owned);
     TemplateManifest {
         post_deployment: None,
+        application_ownership: None,
         schema_version: "1.0".into(),
         minimum_azd_version: minimum_azd_version.clone(),
         requires_interactive_terminal: false,

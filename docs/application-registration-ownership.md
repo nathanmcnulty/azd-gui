@@ -3,7 +3,7 @@
 This provisional internal contract is the first local slice of #59 and the
 input to #161. It defines one host-owned verifier for an existing Entra
 application registration. The ownership path must keep the template's CLI
-validation authoritative. This slice only defines and tests the contract.
+validation authoritative. The local review path uses the contract with an offline transport boundary.
 
 ## Verification
 
@@ -63,5 +63,31 @@ verificationDigest]`. Preserve the authoritative timestamps exactly.
 
 The [internal schema](../schemas/internal/application-registration-ownership.schema.json)
 and [synthetic fixture](../src/lib/fixtures/application-registration-ownership.json)
-exercise this contract offline. #161 still owns registered dispatch, native
-receipt provenance, UI wiring and the explicit adoption path.
+exercise this contract offline.
+
+## Local review
+
+A saved project can opt in with `applicationOwnership` set to the verifier
+declaration. The declared fields stay ordinary typed configuration inputs.
+Save the identity and target before verification. The native command resolves
+the exact registered project and reads the tenant, public Azure subscription,
+resource group and stable application IDs from the same bounded environment
+file. The target resource digest binds the saved resource-group scope.
+The renderer sends the saved project and environment.
+
+The verifier has an unavailable production transport in this slice. Synthetic
+tests exercise the native registered caller and the project review view.
+An unverified IPC response is only a status and fixed reason, since an
+unavailable or foreign identity cannot supply the verified evidence binding.
+The verified response uses the internal evidence format.
+A verified observation can enable the explicit review decision. Context edits
+clear the view. The native decision consumes the prior verification once
+and checks the current saved context and verified operator. The review receipt
+is session evidence. It has its own `ownershipReviewDecision` kind and carries
+no ownership source. It does not persist or authorize an adoption. Native
+receipt provenance and a separately qualified provider and adoption action
+remain follow-up work.
+
+The review receipt hash uses `["application-registration-review-receipt",
+bindingArray, applicationId, verifiedAt, reviewedAt, verificationDigest]`,
+with the same compact UTF-8 JSON encoding as the verification.

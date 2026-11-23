@@ -1,5 +1,6 @@
 mod acknowledgement_provider;
 mod acknowledgements;
+mod application_ownership;
 mod azd;
 mod azure;
 mod catalog;
@@ -2832,6 +2833,7 @@ fn load_wizard_draft(
 pub fn run() {
     tauri::Builder::default()
         .manage(component_updates::Cache::default())
+        .manage(application_ownership::Reviews::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -2876,6 +2878,8 @@ pub fn run() {
             start_azd_operation,
             start_project_verification,
             get_project_verification_target,
+            application_ownership::verify_project_application_ownership,
+            application_ownership::confirm_project_application_review,
             cancel_operation,
             open_external_terminal,
             get_external_terminal_handoff,
