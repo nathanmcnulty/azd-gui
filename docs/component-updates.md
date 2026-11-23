@@ -39,14 +39,20 @@ is an example for an unpublished tag. Consumers keep their installed pin
 until they intentionally adopt a reviewed release.
 
 The wizard can show declared component versions before preparation when the app
-bundles a lock for that exact reviewed catalog entry. The
-[deployment-check snapshot](../catalog/component-locks/deployment-check.json)
-is byte-for-byte from `examples/deployment-check/azd-components.lock.json`
-in Reference at catalog commit `abc6e896620990e68360a63dd14efda66a3f75cd`.
-The snapshot applies to that repository, revision and template path. When
-refreshing the pin, review the lock at the new revision before updating the
-snapshot binding. Local file integrity and update comparisons still use the lock
-in the prepared project.
+bundles a lock for that exact reviewed catalog entry. The bundled snapshots
+match their respective source locks byte for byte.
+
+- [Deployment check](../catalog/component-locks/deployment-check.json) uses
+  `examples/deployment-check/azd-components.lock.json` in Reference at
+  `abc6e896620990e68360a63dd14efda66a3f75cd`.
+- [Maester Automation Account](../catalog/component-locks/maester-automation.json)
+  uses `automation-account/azd-components.lock.json` in azd-maester at
+  `1cbaf9064a6ac4c61dd175bf2f61ca08367de0ff`.
+
+Each snapshot applies only to its catalog entry, repository, revision and path.
+When refreshing a pin, review the new source lock before updating the snapshot
+binding. Local file integrity and update comparisons use the prepared project's
+lock.
 
 The app currently queries only the reviewed first-party Reference repository.
 It reads GitHub-verified annotated tags for availability. Startup caches the
