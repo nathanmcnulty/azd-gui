@@ -33,6 +33,8 @@ Prerequisites:
 
 - Node.js 22.22.2+ on the 22.x line, 24.15.0+ on the 24.x line, or 26.0.0+
 - Rust stable (1.90 or newer)
+- PowerShell 7.6 or newer for maintained tooling and PowerShell-based template operations
+- Pester 6.2.0 (stable release) for offline signing and verifier tests
 - .NET SDK 8.0.4xx for native builds, tests and linting (the Graph adapter's `global.json` selects the latest installed patch in that feature band)
 - Windows: Visual Studio Build Tools with the C++ workload
 - macOS: Xcode command-line tools
@@ -66,6 +68,18 @@ The `Signed Windows release` workflow runs for `v*` tags and by explicitly confi
 The Azure IDs are stored as secrets on the dedicated `artifact-signing` GitHub Environment. The signing endpoint, account name, and certificate profile are non-secret workflow configuration. Security-sensitive Azure actions are pinned to immutable commits.
 
 ## Validation
+
+Use PowerShell 7.6 or newer and install the pinned Pester test module before
+running the offline signing and verifier suites.
+
+```powershell
+Install-Module Pester -RequiredVersion 6.2.0 -Scope CurrentUser -Repository PSGallery
+npm run test:powershell
+```
+
+`npm run verify` includes the same suite. The tests mock signing and
+Authenticode checks. Native signatures and installed-package acceptance have
+separate checks.
 
 ```powershell
 npm run verify

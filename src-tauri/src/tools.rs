@@ -1,5 +1,5 @@
 use crate::{
-    command_runner::{capture, CommandSpec, Executable},
+    command_runner::{capture, CapturedOutput, CommandSpec, Executable},
     error::{AppError, AppResult},
     models::{
         Prerequisite, TemplateManifest, ToolInstallApprovalGrant, ToolInstallPlan, ToolStatus,
@@ -167,6 +167,10 @@ async fn version(
     else {
         return ToolProbe::default();
     };
+    version_probe(executable, output)
+}
+
+fn version_probe(executable: Executable, output: CapturedOutput) -> ToolProbe {
     let executable_path = Some(output.executable_path);
     if !output.success {
         return ToolProbe {
@@ -175,6 +179,12 @@ async fn version(
         };
     }
     let value = output.stdout.trim();
+    if matches!(executable, Executable::PowerShell) {
+        return ToolProbe {
+            version: semver::Version::parse(value).ok().map(|_| value.to_owned()),
+            executable_path,
+        };
+    }
     let mut version = None;
     if value.starts_with('{') {
         if let Ok(json) = serde_json::from_str::<Value>(value) {
@@ -294,15 +304,7 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
             None,
         ),
         azure_cli,
-        tool(
-            "pwsh",
-            "PowerShell",
-            "tool",
-            Some("7.4.0"),
-            pwsh,
-            "manual",
-            None,
-        ),
+        powershell_tool(pwsh),
         tool(
             "Az.Accounts",
             "Azure PowerShell",
@@ -331,6 +333,18 @@ pub async fn check_all(include_azd_updates: bool) -> Vec<ToolStatus> {
             Some("ExchangeOnlineManagement"),
         ),
     ]
+}
+
+fn powershell_tool(probe: ToolProbe) -> ToolStatus {
+    tool(
+        "pwsh",
+        "PowerShell",
+        "tool",
+        Some("7.6.0"),
+        probe,
+        "manual",
+        None,
+    )
 }
 
 fn version_requirement(value: &str) -> Result<semver::VersionReq, semver::Error> {
@@ -521,7 +535,11 @@ fn tool(
     let state = match (reported_version, installed_version, required_version) {
         (None, _, _) => "missing",
         (Some(_), None, _) => "unknown",
-        (Some(_), Some(installed), Some(required)) if installed < required => "outdated",
+        (Some(_), Some(installed), Some(required))
+            if installed < required || (id == "pwsh" && !installed.pre.is_empty()) =>
+        {
+            "outdated"
+        }
         (Some(_), Some(_), _) => "ready",
     };
     let can_install = approved_install(id).is_some();
@@ -678,11 +696,114 @@ pub fn install_spec(id: &str, exact_version: &str) -> AppResult<CommandSpec> {
 mod tests {
     use super::{
         approved_install, evaluate_requirement, install_spec, manifest_prerequisites,
-        parse_azd_tool_inventory, parse_azd_tool_updates, tool, ToolInstallApprovals, ToolProbe,
+        parse_azd_tool_inventory, parse_azd_tool_updates, powershell_tool, tool, version_probe,
+        CapturedOutput, Executable, ToolInstallApprovals, ToolProbe,
     };
     use crate::models::{Prerequisite, TemplateManifest};
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[test]
+    fn powershell_readiness_enforces_the_76_boundary() {
+        for (version, expected_state) in [
+            (Some("7.4.0"), "outdated"),
+            (Some("7.5.99"), "outdated"),
+            (Some("7.6.0-preview.1"), "outdated"),
+            (Some("7.6.0"), "ready"),
+            (Some("7.6.6"), "ready"),
+            (Some("7.7.0"), "ready"),
+            (Some("bad output"), "unknown"),
+            (Some(""), "missing"),
+            (None, "missing"),
+        ] {
+            let status = powershell_tool(ToolProbe {
+                version: version.map(Into::into),
+                executable_path: Some("pwsh.exe".into()),
+            });
+            assert_eq!(status.state, expected_state, "version: {version:?}");
+            assert_eq!(status.minimum_version.as_deref(), Some("7.6.0"));
+            assert_eq!(status.install_provider.as_deref(), Some("manual"));
+            assert_eq!(status.executable_path.as_deref(), Some("pwsh.exe"));
+            assert!(!status.can_install);
+        }
+    }
+
+    #[test]
+    fn powershell_probe_requires_an_exact_semver_line() {
+        let requirement = Prerequisite {
+            id: "pwsh".into(),
+            name: "PowerShell".into(),
+            kind: "tool".into(),
+            minimum_version: Some("7.6.0".into()),
+            required: true,
+            install_provider: None,
+            install_id: None,
+            documentation_url: None,
+            condition: None,
+        };
+        for (success, stdout, expected_version, expected_state) in [
+            (
+                true,
+                "7.6.0-preview.1\r\n",
+                Some("7.6.0-preview.1"),
+                "outdated",
+            ),
+            (true, " \r\n7.6.0\r\n", Some("7.6.0"), "ready"),
+            (true, "7.6.9+build.4", Some("7.6.9+build.4"), "ready"),
+            (true, "7.5.99", Some("7.5.99"), "outdated"),
+            (true, "7.7.0-preview.1", Some("7.7.0-preview.1"), "outdated"),
+            (true, "PowerShell 7.6.9", None, "missing"),
+            (true, "Warning\r\n7.6.9\r\n", None, "missing"),
+            (true, "7.6.9\r\n7.7.0\r\n", None, "missing"),
+            (true, r#"{"version":"7.6.9"}"#, None, "missing"),
+            (true, "7.6.9.1", None, "missing"),
+            (true, "", None, "missing"),
+            (false, "7.6.9", None, "missing"),
+        ] {
+            let inventory = powershell_tool(version_probe(
+                Executable::PowerShell,
+                CapturedOutput {
+                    stdout: stdout.into(),
+                    stderr: String::new(),
+                    success,
+                    executable_path: "pwsh.exe".into(),
+                },
+            ));
+            assert_eq!(
+                inventory.installed_version.as_deref(),
+                expected_version,
+                "{stdout:?}"
+            );
+            assert_eq!(inventory.state, expected_state, "{stdout:?}");
+            let status = evaluate_requirement(&requirement, &[inventory]);
+            assert_eq!(status.state, expected_state, "{stdout:?}");
+        }
+    }
+
+    #[test]
+    fn az_and_azd_probes_preserve_json_and_legacy_text() {
+        for (executable, stdout, expected_version) in [
+            (Executable::AzureCli, r#"{"azure-cli":"2.91.0"}"#, "2.91.0"),
+            (Executable::AzureCli, "azure-cli 2.91.0", "2.91.0"),
+            (Executable::Azd, r#"{"version":"1.23.17"}"#, "1.23.17"),
+            (
+                Executable::Azd,
+                "azd version 1.23.17 (commit fixture)",
+                "1.23.17",
+            ),
+        ] {
+            let probe = version_probe(
+                executable,
+                CapturedOutput {
+                    stdout: stdout.into(),
+                    stderr: String::new(),
+                    success: true,
+                    executable_path: "fixture".into(),
+                },
+            );
+            assert_eq!(probe.version.as_deref(), Some(expected_version));
+        }
+    }
 
     #[test]
     fn parses_public_azd_tool_inventory_and_update_contracts() {
