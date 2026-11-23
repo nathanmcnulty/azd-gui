@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/svelte";
+import { cleanup, render, screen, within } from "@testing-library/svelte";
 import { afterEach, expect, it } from "vitest";
 import CatalogComponentPins from "./CatalogComponentPins.svelte";
 import { bundledCatalog } from "../lib/mock-data";
@@ -16,6 +16,29 @@ it("shows the bundled lock declaration for the exact reviewed template", () => {
   expect(panel).toHaveTextContent("eb8340a433cf1fe4ab75251ce369e3d58a9bd636");
   expect(panel).toHaveTextContent("Local file integrity is checked separately");
   expect(panel).not.toHaveTextContent("Verified");
+});
+
+it("switches to Maester's exact lock and clears it for a different template path", async () => {
+  const maester = bundledCatalog.entries.find(({ id }) => id === "maester-automation")!;
+  const { rerender } = render(CatalogComponentPins, { entry: deploymentCheck });
+  await rerender({ entry: maester });
+
+  const panel = screen.getByRole("region", { name: "Declared template components" });
+  const declarations = [
+    ["deployment-receipt", "0.2.1"],
+    ["deployment-validation", "1.1.1"],
+    ["maester-azd-hooks", "0.1.0"],
+    ["maester-report-webapp", "0.1.1"]
+  ];
+  expect(within(panel).getAllByRole("article")).toHaveLength(declarations.length);
+  for (const [name, version] of declarations) {
+    expect(within(panel).getByRole("article", { name })).toHaveTextContent(version);
+  }
+  expect(panel).not.toHaveTextContent("0.3.2");
+  expect(panel).not.toHaveTextContent("Verified");
+
+  await rerender({ entry: { ...maester, subdirectory: "container-app-job" } });
+  expect(screen.queryByRole("region", { name: "Declared template components" })).not.toBeInTheDocument();
 });
 
 const mismatches: [string, Partial<CatalogEntry>][] = [
