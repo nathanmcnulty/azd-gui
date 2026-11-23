@@ -105,15 +105,20 @@ reports and environment output files never enter that pipe. The capture checks
 the full resource ID, public cloud, tenant, subscription, resource group,
 registered project, environment generation and reviewed source contract.
 It issues a process-local receipt only after the matching operation succeeds
-and that terminal result is persisted. A changed saved environment during
-capture, a failure, cancellation or incomplete output leaves the capture
-unavailable.
+and that terminal result is persisted. The capture permits writes to the pinned
+producer's known deployment outputs. Every other saved value must match the
+admitted inputs. The final saved workflow ID must match both the independent
+native ID and the child observation. The saved file corroborates that match
+without supplying hostname provenance. Failure, cancellation or incomplete
+output leaves the capture unavailable.
 
-The native read checks the captured context and the latest relevant operation
-again. Observing a mismatch revokes the receipt, even if the prior values
-return. A later operation that could have affected resources, including a
-pending or failed operation, supersedes the receipt. Graph application
-properties supply no hostname evidence.
+The receipt binds the exact final environment snapshot and the native project's
+monotonic selection revision. The revision advances on saved environment or
+source changes and explicit GUI target edits. The PIM picker shares the native
+operation guard with generic selection. Returning to an earlier environment or
+source cannot restore a prior receipt. A later operation that could have
+affected resources, including a pending or failed operation, supersedes it.
+Graph application properties supply no hostname evidence.
 
 The registered capture is exercised with a synthetic child on Windows. The
 remaining integration is an azd-pim producer that delivers the two fields

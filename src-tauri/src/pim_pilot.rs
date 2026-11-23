@@ -546,8 +546,9 @@ pub(crate) async fn select_saved_pim_environment(
     environment: String,
 ) -> AppResult<()> {
     let _environment_lock = state.lock_environment_for_write().await;
+    let _environment_change = state.operations.begin_environment_change()?;
     saved_directory(state, &project_path, &environment)?;
-    let mut project = state
+    let project = state
         .database
         .project_by_path(&project_path)?
         .ok_or_else(unsafe_path)?;
@@ -563,8 +564,9 @@ pub(crate) async fn select_saved_pim_environment(
     {
         return Err(unsafe_path());
     }
-    project.environment = Some(environment);
-    state.database.upsert_project(&project)
+    state
+        .database
+        .set_project_environment(&project.path, &environment)
 }
 
 #[tauri::command]

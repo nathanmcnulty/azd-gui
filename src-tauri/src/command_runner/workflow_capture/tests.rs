@@ -9,6 +9,7 @@ use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
 const REVISION: &str = "97054a7c8bb67c4a4de52caccb68442c1e1ce769";
 const SAVED_TARGET: &str = "AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=11111111-1111-4111-8111-111111111111\nAZURE_SUBSCRIPTION_ID=22222222-2222-4222-8222-222222222222\nAZURE_RESOURCE_GROUP=rg-fixture\n";
 const OUTPUT: &str = include_str!("../../../tests/fixtures/azd-pim-workflow-host-observation.json");
+const WORKFLOW: &str = "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/rg-fixture/providers/Microsoft.Logic/workflows/pim-revoke-sessions-example";
 const EMIT: &str = concat!(
     "[Console]::Out.WriteLine('",
     include_str!("../../../tests/fixtures/azd-pim-workflow-host-observation.json"),
@@ -35,7 +36,12 @@ impl Fixture {
         let project_path = root.path().join("project");
         let saved = project_path.join(".azure/dev");
         fs::create_dir_all(&saved).unwrap();
-        fs::write(saved.join(".env"), SAVED_TARGET).unwrap();
+        fs::create_dir_all(project_path.join(".azure/other")).unwrap();
+        fs::write(
+            saved.join(".env"),
+            format!("{SAVED_TARGET}{WORKFLOW_ID}={WORKFLOW}\n"),
+        )
+        .unwrap();
         let path = fs::canonicalize(project_path)
             .unwrap()
             .display()
@@ -77,6 +83,22 @@ impl Fixture {
         Path::new(&self.project.path).join(".azure/dev/.env")
     }
 
+    fn app_state(&self) -> crate::AppState {
+        crate::AppState {
+            database: self.database.clone(),
+            operations: self.operations.clone(),
+            environment_writes: Default::default(),
+            application_reviews: Default::default(),
+            template_cache: self._root.path().join("cache"),
+            inspected_manifests: Default::default(),
+            reviewed_contracts: Default::default(),
+            catalog_reviews: Default::default(),
+            execution_approvals: Default::default(),
+            tool_install_approvals: Default::default(),
+            graph_sessions: Default::default(),
+        }
+    }
+
     fn persistence(&self) -> OperationPersistence {
         OperationPersistence::with_context(
             self.database.clone(),
@@ -103,7 +125,8 @@ impl Fixture {
     }
 }
 
-fn capture(script: &'static str) -> (Capture, oneshot::Receiver<Receipt>) {
+fn capture(script: impl Into<String>) -> (Capture, oneshot::Receiver<Receipt>) {
+    let script = script.into();
     let output: Observation = serde_json::from_str(OUTPUT).unwrap();
     let (completion, receiver) = oneshot::channel();
     (
@@ -216,23 +239,82 @@ async fn rejects_another_resource_in_the_same_group_and_changed_environment() {
     fixture.assert_operation(&id, "succeeded");
 }
 
-#[tokio::test]
-async fn captured_hostname_is_revoked_on_observed_source_or_environment_change() {
-    let fixture = Fixture::new();
-    let (candidate, receiver) = capture(EMIT);
-    fixture.launch(candidate, Arc::new(|_| {})).unwrap();
-    let mut receipt = result(receiver).await.unwrap();
-    fixture
-        .database
-        .set_project_environment(&fixture.project.path, "other")
-        .unwrap();
-    assert!(receipt.current_hostname(&fixture.database).is_none());
-    fixture
-        .database
-        .set_project_environment(&fixture.project.path, "dev")
-        .unwrap();
-    assert!(receipt.current_hostname(&fixture.database).is_none());
+fn writes_output(path: &Path, body: &str) -> String {
+    let quote = |value: &str| value.replace('\'', "''");
+    format!(
+        "[IO.File]::WriteAllText('{}', '{}'); {EMIT}",
+        quote(&path.display().to_string()),
+        quote(body)
+    )
+}
 
+#[tokio::test]
+async fn reviewed_output_writes_are_allowed_and_unrelated_saved_edits_are_rejected() {
+    let fixture = Fixture::new();
+    let path = fixture.saved();
+    fs::write(&path, SAVED_TARGET).unwrap();
+    let final_body = format!(
+        "{SAVED_TARGET}{WORKFLOW_ID}={WORKFLOW}\nAZD_PIM_REVOCATION_LOGIC_APP_NAME=fixture\n"
+    );
+    let (candidate, receiver) = capture(writes_output(&path, &final_body));
+    let id = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+    let mut receipt = result(receiver).await.unwrap();
+    fixture.assert_operation(&id, "succeeded");
+    assert_eq!(
+        receipt.current_hostname(&fixture.database),
+        Some("example.logic.azure.com")
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), final_body);
+
+    // Even a valid record and expected saved workflow ID cannot cover another input edit.
+    fs::write(&path, SAVED_TARGET).unwrap();
+    let (candidate, receiver) = capture(writes_output(
+        &path,
+        &format!("{final_body}AZURE_LOCATION=unknown-drift\n"),
+    ));
+    let id = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+    assert!(result(receiver).await.is_none());
+    fixture.assert_operation(&id, "succeeded");
+
+    fs::write(&path, SAVED_TARGET).unwrap();
+    let wrong_id = final_body.replace("pim-revoke-sessions-example", "pim-revoke-sessions-other");
+    let (candidate, receiver) = capture(writes_output(&path, &wrong_id));
+    let id = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+    assert!(result(receiver).await.is_none());
+    fixture.assert_operation(&id, "succeeded");
+}
+
+#[tokio::test]
+async fn real_pim_picker_is_excluded_during_capture_and_an_unobserved_round_trip_revokes() {
+    let fixture = Fixture::new();
+    let state = fixture.app_state();
+    let select = |environment: &str| {
+        crate::pim_pilot::select_saved_pim_environment(
+            &state,
+            fixture.project.path.clone(),
+            environment.into(),
+        )
+    };
+    let (candidate, receiver) = capture(format!("Start-Sleep -Seconds 2; {EMIT}"));
+    fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+    assert!(select("other")
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("active operation"));
+    let mut receipt = result(receiver).await.unwrap();
+    assert_eq!(
+        receipt.current_hostname(&fixture.database),
+        Some("example.logic.azure.com")
+    );
+    select("other").await.unwrap();
+    select("dev").await.unwrap();
+    assert!(receipt.current_hostname(&fixture.database).is_none());
+}
+
+#[tokio::test]
+async fn saved_source_round_trip_revokes_even_before_any_mismatch_is_read() {
+    let fixture = Fixture::new();
     let (candidate, receiver) = capture(EMIT);
     fixture.launch(candidate, Arc::new(|_| {})).unwrap();
     let mut receipt = result(receiver).await.unwrap();
@@ -243,7 +325,6 @@ async fn captured_hostname_is_revoked_on_observed_source_or_environment_change()
         .database
         .save_project_template(&fixture.project, &changed)
         .unwrap();
-    assert!(receipt.current_hostname(&fixture.database).is_none());
     fixture
         .database
         .save_project_template(&fixture.project, &fixture.snapshot)

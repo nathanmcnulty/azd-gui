@@ -124,6 +124,23 @@ pub(crate) fn read_environment_snapshot(
     environment: &str,
     wanted: &[&str],
 ) -> Option<EnvironmentSnapshot> {
+    read_environment_snapshot_inner(project_root, environment, Some(wanted))
+}
+
+/// Native workflow verification needs to distinguish known outputs from all
+/// other saved values without exposing the full environment to the renderer.
+pub(crate) fn read_complete_environment_snapshot(
+    project_root: &Path,
+    environment: &str,
+) -> Option<EnvironmentSnapshot> {
+    read_environment_snapshot_inner(project_root, environment, None)
+}
+
+fn read_environment_snapshot_inner(
+    project_root: &Path,
+    environment: &str,
+    wanted: Option<&[&str]>,
+) -> Option<EnvironmentSnapshot> {
     if crate::deployment::validate_environment_name(environment).is_err()
         || matches!(environment, "." | "..")
     {
@@ -182,14 +199,16 @@ pub(crate) fn read_environment_snapshot(
             continue;
         };
         let key = key.trim();
-        if !wanted.contains(&key) {
+        if wanted.is_some_and(|wanted| !wanted.contains(&key)) {
             continue;
         }
         let value = dotenv_value(raw.trim())?;
         if value.len() > 32_768 || value.chars().any(|character| character <= '\u{1f}') {
             return None;
         }
-        values.insert(key.to_string(), value);
+        if values.insert(key.to_string(), value).is_some() && wanted.is_none() {
+            return None;
+        }
     }
     Some(EnvironmentSnapshot { values, modified })
 }

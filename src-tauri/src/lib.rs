@@ -2693,6 +2693,9 @@ async fn set_project_environment_values(
         .into_iter()
         .map(|value| (value.name, value.value))
         .collect::<Vec<_>>();
+    state
+        .database
+        .note_project_environment_edit(&canonical.display().to_string())?;
     azd::environment_set_values(&canonical, &environment, &values).await
 }
 

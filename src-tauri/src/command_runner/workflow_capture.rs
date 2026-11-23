@@ -4,24 +4,58 @@ use super::{read_bounded_output, CommandSpec, Executable, OperationPersistence};
 use crate::{
     application_ownership::valid_endpoint_host,
     error::{AppError, AppResult},
-    evidence::{read_target_snapshot, OperationEvidenceContext},
+    evidence::{read_complete_environment_snapshot, OperationEvidenceContext},
     models::OperationEvent,
     persistence::Database,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{path::Path, sync::Arc, time::SystemTime};
+use std::{collections::BTreeMap, path::Path, sync::Arc, time::SystemTime};
 use tokio::{io::AsyncRead, sync::oneshot};
 use uuid::Uuid;
 
 const REPOSITORY: &str = "https://github.com/nathanmcnulty/azd-pim";
 const LIMIT: usize = 1024;
+const WORKFLOW_ID: &str = "AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID";
+// Outputs of the reviewed PIM ARM deployment and post-provision producer.
+// Keep AZD_PIM_NOTIFICATION_MODE bound because it is also an input.
+const OUTPUTS: &[&str] = &[
+    "AZD_PIM_POLLING_FUNCTION_NAME",
+    "AZD_PIM_POLLING_FUNCTION_RESOURCE_ID",
+    "AZD_PIM_POLLING_FUNCTION_PRINCIPAL_ID",
+    "AZD_PIM_SENTINEL_NOTIFICATION_LOGIC_APP_RESOURCE_ID",
+    "AZD_PIM_SENTINEL_NOTIFICATION_ALERT_RESOURCE_ID",
+    "AZD_PIM_SENTINEL_NOTIFICATION_ACTION_GROUP_RESOURCE_ID",
+    "AZD_PIM_REVOCATION_LOGIC_APP_NAME",
+    WORKFLOW_ID,
+    "AZD_PIM_REVOCATION_LOGIC_APP_PRINCIPAL_ID",
+    "AZD_PIM_REVOCATION_ALERT_RESOURCE_ID",
+    "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID",
+    "AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID",
+    "AZD_PIM_REVOCATION_CUSTOM_EXTENSION_ID",
+    "AZD_PIM_REVOCATION_PRE_APPROVAL_CUSTOM_EXTENSION_ID",
+    "AZD_PIM_REVOCATION_POST_APPROVAL_CUSTOM_EXTENSION_ID",
+];
+
+#[derive(PartialEq, Eq, Serialize)]
+pub(super) struct CaptureInputs {
+    selection_revision: i64,
+    digest: [u8; 32],
+}
+
+#[derive(PartialEq, Eq, Serialize)]
+struct SavedEnvironment {
+    inputs: CaptureInputs,
+    modified: SystemTime,
+    digest: [u8; 32],
+    workflow_resource_id: Option<String>,
+}
 
 pub(super) struct Capture {
     // These values belong to a native registration, not template metadata or IPC.
     producer_revision: &'static str,
     producer_sha256: String,
-    script: &'static str,
+    script: String,
     // From the same operation's independent deployment output, never .env.
     workflow_resource_id: String,
     completion: oneshot::Sender<Receipt>,
@@ -40,7 +74,7 @@ pub(super) struct Receipt {
     project_path: String,
     context: OperationEvidenceContext,
     producer_sha256: String,
-    environment_generation: SystemTime,
+    saved_environment: SavedEnvironment,
     observation: Observation,
     #[serde(skip)]
     valid: bool,
@@ -72,11 +106,12 @@ fn scoped_workflow_id(resource_id: &str, context: &OperationEvidenceContext) -> 
     })
 }
 
-fn generation(
+fn saved_environment(
     database: &Database,
     path: &str,
     expected: &OperationEvidenceContext,
-) -> Option<SystemTime> {
+) -> Option<SavedEnvironment> {
+    let selection_revision = database.project_selection_revision(path).ok()??;
     let project = database
         .projects()
         .ok()?
@@ -100,25 +135,41 @@ fn generation(
     {
         return None;
     }
-    let (target, modified) = read_target_snapshot(Path::new(path), &expected.environment)?;
-    let group = target.resource_group.as_deref()?;
+    let saved = read_complete_environment_snapshot(Path::new(path), &expected.environment)?;
+    let saved_value = |name: &str| saved.values.get(name).map(String::as_str);
+    let group = saved_value("AZURE_RESOURCE_GROUP")?;
     let valid_uuid = |id: Option<&str>| {
         id.and_then(|value| Uuid::parse_str(value).ok())
             .is_some_and(|value| !value.is_nil())
     };
-    if target.azure_cloud.as_deref() != Some("AzureCloud")
-        || target.azure_cloud != expected.azure_cloud
-        || target.tenant_id != expected.tenant_id
-        || target.subscription_id != expected.subscription_id
-        || target.resource_group != expected.resource_group
-        || !valid_uuid(target.tenant_id.as_deref())
-        || !valid_uuid(target.subscription_id.as_deref())
+    if saved_value("AZD_GUI_AZURE_CLOUD") != Some("AzureCloud")
+        || saved_value("AZD_GUI_AZURE_CLOUD") != expected.azure_cloud.as_deref()
+        || saved_value("AZURE_TENANT_ID") != expected.tenant_id.as_deref()
+        || saved_value("AZURE_SUBSCRIPTION_ID") != expected.subscription_id.as_deref()
+        || Some(group) != expected.resource_group.as_deref()
+        || !valid_uuid(expected.tenant_id.as_deref())
+        || !valid_uuid(expected.subscription_id.as_deref())
         || crate::deployment::validate_resource_group(Some(group)).is_err()
         || group.is_empty()
+        || database.project_selection_revision(path).ok()?? != selection_revision
     {
         return None;
     }
-    modified
+
+    let entries: BTreeMap<_, _> = saved.values.iter().collect();
+    let inputs: BTreeMap<_, _> = entries
+        .iter()
+        .filter(|(key, _)| !OUTPUTS.contains(&key.as_str()))
+        .collect();
+    Some(SavedEnvironment {
+        inputs: CaptureInputs {
+            selection_revision,
+            digest: Sha256::digest(serde_json::to_vec(&inputs).ok()?).into(),
+        },
+        modified: saved.modified?,
+        digest: Sha256::digest(serde_json::to_vec(&entries).ok()?).into(),
+        workflow_resource_id: saved_value(WORKFLOW_ID).map(str::to_ascii_lowercase),
+    })
 }
 
 impl Capture {
@@ -126,7 +177,7 @@ impl Capture {
         &self,
         kind: &str,
         persistence: Option<&OperationPersistence>,
-    ) -> AppResult<(CommandSpec, SystemTime)> {
+    ) -> AppResult<(CommandSpec, CaptureInputs)> {
         let persistence = persistence.ok_or_else(invalid)?;
         let context = persistence.context.as_ref().ok_or_else(invalid)?;
         if !matches!(kind, "up" | "provision")
@@ -141,7 +192,7 @@ impl Capture {
         {
             return Err(invalid());
         }
-        let generation = generation(&persistence.database, &persistence.project_path, context)
+        let saved = saved_environment(&persistence.database, &persistence.project_path, context)
             .ok_or_else(invalid)?;
         // Execute the verified bytes passed by the host, away from project files.
         let assets = Arc::new(tempfile::tempdir()?);
@@ -152,19 +203,19 @@ impl Capture {
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                self.script,
+                self.script.as_str(),
             ],
         )
         .cwd(assets.path());
         spec.assets = Some(assets);
-        Ok((spec, generation))
+        Ok((spec, saved.inputs))
     }
 
     pub(super) fn complete(
         self,
         event: &OperationEvent,
         persistence: &OperationPersistence,
-        environment_generation: SystemTime,
+        prepared_inputs: CaptureInputs,
         observation: Option<Observation>,
     ) {
         let Some(observation) = observation else {
@@ -178,12 +229,25 @@ impl Capture {
         let Some(context) = persistence.context.clone() else {
             return;
         };
+        let Some(saved_environment) =
+            saved_environment(&persistence.database, &persistence.project_path, &context)
+        else {
+            return;
+        };
+        // Saved output is only a consistency check against the independently
+        // supplied ID and the reviewed child's observation.
+        if saved_environment.inputs != prepared_inputs
+            || saved_environment.workflow_resource_id.as_deref()
+                != Some(self.workflow_resource_id.as_str())
+        {
+            return;
+        }
         let mut receipt = Receipt {
             operation_id: event.operation_id.clone(),
             project_path: persistence.project_path.clone(),
             context,
             producer_sha256: self.producer_sha256,
-            environment_generation,
+            saved_environment,
             observation,
             valid: true,
         };
@@ -197,8 +261,8 @@ impl Receipt {
     // Recheck before a native consumer uses the hostname. No I/O to the cloud.
     pub(super) fn current_hostname(&mut self, database: &Database) -> Option<&str> {
         self.valid = self.valid
-            && generation(database, &self.project_path, &self.context)
-                == Some(self.environment_generation)
+            && saved_environment(database, &self.project_path, &self.context).as_ref()
+                == Some(&self.saved_environment)
             && matches!(
                 database.is_current_workflow_operation(&self.project_path, &self.operation_id),
                 Ok(true)
