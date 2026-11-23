@@ -228,7 +228,7 @@ Review GUI-002 against the current repository state. Its status or authorization
 
 - **Kind:** discovery
 - **Priority:** P1
-- **Status:** proposed
+- **Status:** done
 - **Wave:** 2
 - **Authorization:** local-only
 - **Blocker:** _none_
@@ -272,6 +272,7 @@ The Maester preprovision hook warns from the count of regional Automation Accoun
 
 **Sources:**
 
+- docs/automation-regional-quota.md
 - docs/maester-minimal-pilot-20260921.md
 - docs/maester-automation-qualification.md
 - docs/windows-readiness-roadmap.md
@@ -286,7 +287,8 @@ The Maester preprovision hook warns from the count of regional Automation Accoun
 
 **Evidence:**
 
-- Initial documentation review&colon; Azure Automation quota guidance describes current regional Automation Account usage and limits in the portal; Microsoft&#39;s Quota REST API documents a provider set that does not include Automation and requires provider registration plus the Quota Request Operator role; the documented Automation Usages REST endpoint requires an existing account. A read-only review of stable Automation ARM specification version 2024-10-23 found only an account-scoped Usages route, not a subscription/region account-quota operation.
+- Reviewed current Microsoft Automation, Azure Quota, and Azure Support documentation and the stable Automation ARM 2024-10-23 specification against main cf221d0f95efd3c055940f2a68642c8e9e6ec861. The portal exposes the manual subscription and region view. The reviewed APIs offer no supported pre-create quota and usage read.
+- docs/automation-regional-quota.md records the operator path, host-owned target binding, and deterministic acceptance cases for a future supported API. Runtime automation requires new provider evidence. No Azure requests or permission changes were required for discovery.
 
 **Review and authorization note:**
 

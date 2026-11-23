@@ -546,7 +546,7 @@
       "title": "Design a target-bound regional quota preflight for deployments",
       "kind": "discovery",
       "priority": "P1",
-      "status": "proposed",
+      "status": "done",
       "wave": 2,
       "problem": "The Maester preprovision hook warns from the count of regional Automation Accounts, but a count cannot show the subscription's effective per-region limit or remaining capacity. azd-gui has no authoritative capacity result before a deployment action allowed by the active project contract, so ARM can still reject account creation after preparation.",
       "scope": [
@@ -576,6 +576,7 @@
         "terminal handoff"
       ],
       "sources": [
+        "docs/automation-regional-quota.md",
         "docs/maester-minimal-pilot-20260921.md",
         "docs/maester-automation-qualification.md",
         "docs/windows-readiness-roadmap.md",
@@ -589,7 +590,8 @@
         "https://learn.microsoft.com/en-us/azure/quotas/view-quotas"
       ],
       "evidence": [
-        "Initial documentation review: Azure Automation quota guidance describes current regional Automation Account usage and limits in the portal; Microsoft's Quota REST API documents a provider set that does not include Automation and requires provider registration plus the Quota Request Operator role; the documented Automation Usages REST endpoint requires an existing account. A read-only review of stable Automation ARM specification version 2024-10-23 found only an account-scoped Usages route, not a subscription/region account-quota operation."
+        "Reviewed current Microsoft Automation, Azure Quota, and Azure Support documentation and the stable Automation ARM 2024-10-23 specification against main cf221d0f95efd3c055940f2a68642c8e9e6ec861. The portal exposes the manual subscription and region view. The reviewed APIs offer no supported pre-create quota and usage read.",
+        "docs/automation-regional-quota.md records the operator path, host-owned target binding, and deterministic acceptance cases for a future supported API. Runtime automation requires new provider evidence. No Azure requests or permission changes were required for discovery."
       ],
       "blocker": null
     }
