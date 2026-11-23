@@ -8,6 +8,23 @@ import * as bridge from "./lib/bridge";
 import App from "./App.svelte";
 import * as componentUpdates from "./lib/component-updates";
 
+async function ownershipProjectFixture() {
+  const path = "C:\\Deployments\\maester-lab";
+  const snapshot = (await bridge.getProjectTemplate(path))!;
+  const manifest = snapshot.entry.manifest!;
+  const { declaration } = applicationOwnershipFixture;
+  const objectVariable = "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID";
+  const applicationVariable = "AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID";
+  manifest.applicationOwnership = { ...declaration, kind: "verifier", provider: "entra-application-registration" };
+  manifest.configuration.groups.push({
+    id: "registration", title: "Application registration", fields: [
+      { id: declaration.objectIdField, environmentVariable: objectVariable, label: "Object ID", type: "entraObject" },
+      { id: declaration.applicationIdField, environmentVariable: applicationVariable, label: "Application ID", type: "text" }
+    ]
+  });
+  return { path, snapshot };
+}
+
 async function useNoninteractiveProjectFixture() {
   const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
   snapshot!.entry.manifest!.requiresInteractiveTerminal = false;
@@ -189,19 +206,8 @@ describe("desktop experience", () => {
   });
 
   it.each(["generic", "bundled PIM", "reviewed PIM source"])("uses the scoped native target on the %s route without an exposed generic tenant", async (route) => {
-    const path = "C:\\Deployments\\maester-lab";
-    const snapshot = (await bridge.getProjectTemplate(path))!;
-    const manifest = snapshot.entry.manifest!;
-    const { declaration, binding } = applicationOwnershipFixture;
-    const objectVariable = "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID";
-    const applicationVariable = "AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID";
-    manifest.applicationOwnership = { ...declaration, kind: "verifier", provider: "entra-application-registration" };
-    manifest.configuration.groups.push({
-      id: "registration", title: "Application registration", fields: [
-        { id: declaration.objectIdField, environmentVariable: objectVariable, label: "Object ID", type: "entraObject" },
-        { id: declaration.applicationIdField, environmentVariable: applicationVariable, label: "Application ID", type: "text" }
-      ]
-    });
+    const { path, snapshot } = await ownershipProjectFixture();
+    const { binding } = applicationOwnershipFixture;
     if (route === "bundled PIM") {
       const data = await bridge.bootstrap();
       data.projects = data.projects.map(project => project.path === path ? { ...project, templateId: "pim-pilot" } : project);
@@ -236,6 +242,55 @@ describe("desktop experience", () => {
     await fireEvent.click(verifyButton);
     expect(verify).toHaveBeenCalledWith({ projectPath: path, environment, contextDigest });
     expect(await within(panel).findByText("A verified application read is unavailable.")).toBeInTheDocument();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("reloads only the displayed ownership target when its Overview refresh finishes", async () => {
+    const { path, snapshot } = await ownershipProjectFixture();
+    const data = await bridge.bootstrap();
+    data.isNative = true;
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue(data);
+    vi.spyOn(bridge, "getProjectTemplate").mockResolvedValue(snapshot);
+    const { binding, checkedAt, properties } = applicationOwnershipFixture;
+    const target = {
+      ...binding, resourceGroup: "rg-before", sourceContractDigest: snapshot.digest, contextDigest: "c".repeat(64)
+    };
+    const loadTarget = vi.spyOn(applicationOwnership, "getProjectApplicationReviewContext").mockResolvedValue(target);
+    vi.spyOn(applicationOwnership, "verifyProjectApplication").mockResolvedValue({
+      kind: "verification", state: "verified",
+      binding: { ...binding, sourceContractDigest: snapshot.digest, provider: "entra-application-registration", cloud: "AzureCloud" },
+      properties: { ...properties, singleTenant: true, identifierUriMatches: true, accessTokenVersion: 2 },
+      checkedAt, verificationDigest: "a".repeat(64)
+    });
+    const confirm = vi.spyOn(applicationOwnership, "confirmProjectApplicationReview");
+    let emit!: Parameters<typeof bridge.onOperationEvent>[0];
+    vi.spyOn(bridge, "onOperationEvent").mockImplementation(async listener => { emit = listener; return () => {}; });
+    const start = vi.spyOn(bridge, "startAzdOperation").mockResolvedValue("ownership-refresh");
+    render(App);
+    await fireEvent.click(screen.getByRole("button", { name: /^Projects,/ }));
+    await fireEvent.click(screen.getByRole("button", { name: /maester/i }));
+    const panel = within(await screen.findByRole("region", { name: "Application ownership review" }));
+    await panel.findByText("rg-before");
+    await fireEvent.click(panel.getByRole("button", { name: "Verify existing application" }));
+    await fireEvent.click(await panel.findByRole("checkbox", { name: /reviewed this exact verified application/i }));
+    const decision = () => panel.queryByRole("button", { name: "Record review decision" });
+    expect(decision()).toBeEnabled();
+    expect(loadTarget).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(start).toHaveBeenCalledWith("refresh", path, binding.environment));
+    const completion = { kind: "refresh", state: "succeeded" as const, timestamp: new Date().toISOString(),
+      stream: "stdout" as const, level: "success" as const, message: "Refresh finished", progress: 100 };
+    await act(() => emit({ ...completion, operationId: "unrelated-refresh" }));
+    expect(decision()).toBeEnabled();
+    expect(loadTarget).toHaveBeenCalledTimes(1);
+
+    loadTarget.mockResolvedValue({ ...target, resourceGroup: "rg-after", contextDigest: "d".repeat(64) });
+    await act(() => emit({ ...completion, operationId: "ownership-refresh" }));
+    expect(await panel.findByText("rg-after")).toBeVisible();
+    expect(loadTarget).toHaveBeenCalledTimes(2);
+    expect(loadTarget).toHaveBeenLastCalledWith(path, binding.environment);
+    expect(decision()).not.toBeInTheDocument();
     expect(confirm).not.toHaveBeenCalled();
   });
 

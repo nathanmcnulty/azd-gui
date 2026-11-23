@@ -278,6 +278,13 @@ struct ReviewState {
     revision: u64,
 }
 
+impl ReviewState {
+    fn invalidate(&mut self) {
+        self.pending = None;
+        self.revision = self.revision.wrapping_add(1);
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Reviews(Mutex<ReviewState>);
 
@@ -340,8 +347,7 @@ fn binding_values(target: &Target, identity: &Identity) -> Value {
 impl Reviews {
     pub(crate) fn invalidate(&self) {
         if let Ok(mut state) = self.0.lock() {
-            state.pending = None;
-            state.revision = state.revision.wrapping_add(1);
+            state.invalidate();
         }
     }
 
@@ -351,11 +357,19 @@ impl Reviews {
         path: &str,
         environment: &str,
     ) -> AppResult<ReviewContext> {
-        let state = self
+        let mut state = self
             .0
             .lock()
             .map_err(|_| invalid("Application review is unavailable."))?;
-        let target = registered_target(database, path, environment)?;
+        let target = registered_target(database, path, environment);
+        if state
+            .pending
+            .as_ref()
+            .is_some_and(|pending| target.as_ref().ok() != Some(&pending.target))
+        {
+            state.invalidate();
+        }
+        let target = target?;
         Ok(ReviewContext {
             context_digest: target.context_digest(state.revision),
             resource_group: target.resource_group.clone(),
@@ -652,7 +666,7 @@ mod tests {
                 state: "ready".into(),
             };
             let entry: CatalogEntry = serde_json::from_value(json!({
-                "id":"fixture","title":"Fixture","description":"","summary":"","repository":"https://example.invalid/fixture",
+                "id":"fixture","title":"Fixture","description":"","summary":"","repository":"https://github.com/nathanmcnulty/azd-pim",
                 "commit":"a".repeat(40),"tags":[],"platforms":["windows"],"trusted":true,
                 "manifest":{
                     "schemaVersion":"1.0","prerequisites":[],"connections":[],
@@ -983,6 +997,75 @@ mod tests {
             .confirm_saved(&fresh_request, &transport, &digest)
             .is_err());
         assert_eq!(fs::read_to_string(path).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn native_pim_environment_selection_cannot_revive_earlier_review() {
+        let fixture = Fixture::new();
+        fs::create_dir(Path::new(&fixture.project).join(".azure/recovery")).unwrap();
+        let transport = Scripted::matching();
+        let original = fixture.request();
+        let proof = fixture.fingerprint(&original, &transport);
+
+        crate::pim_pilot::select_saved_pim_environment(
+            &fixture.state,
+            fixture.project.clone(),
+            "recovery".into(),
+        )
+        .await
+        .unwrap();
+        let selected = fixture.state.database.projects().unwrap().remove(0);
+        assert_eq!(selected.environment.as_deref(), Some("recovery"));
+
+        crate::pim_pilot::select_saved_pim_environment(
+            &fixture.state,
+            fixture.project.clone(),
+            "dev".into(),
+        )
+        .await
+        .unwrap();
+        let restored = fixture.request();
+        assert_ne!(restored.context_digest, original.context_digest);
+        assert!(fixture
+            .confirm_saved(&restored, &transport, &proof)
+            .is_err());
+        assert_eq!(transport.read_count.get(), 1);
+    }
+
+    #[test]
+    fn native_context_observation_revokes_pending_on_failure_or_change() {
+        let fixture = Fixture::new();
+        let reviews = &fixture.state.application_reviews;
+        let database = &fixture.state.database;
+        let path = Path::new(&fixture.project).join(".azure/dev/.env");
+        let before = fs::read_to_string(&path).unwrap();
+        let transport = Scripted::matching();
+        let stamp = 1_800_000_000;
+        fixture.set_file(&before, stamp);
+
+        let original = fixture.request();
+        let proof = fixture.fingerprint(&original, &transport);
+        assert_eq!(fixture.request().context_digest, original.context_digest);
+        fs::remove_file(&path).unwrap();
+        assert!(reviews.context(database, &fixture.project, "dev").is_err());
+        fixture.set_file(&before, stamp);
+        let restored = fixture.request();
+        assert_ne!(restored.context_digest, original.context_digest);
+        assert!(fixture
+            .confirm_saved(&restored, &transport, &proof)
+            .is_err());
+
+        let proof = fixture.fingerprint(&restored, &transport);
+        fixture.set_file(&before.replace("rg-fixture", "rg-changed"), stamp);
+        let changed = reviews.context(database, &fixture.project, "dev").unwrap();
+        assert_eq!(changed.resource_group, "rg-changed");
+        fixture.set_file(&before, stamp);
+        let restored_again = fixture.request();
+        assert_ne!(restored_again.context_digest, restored.context_digest);
+        assert!(fixture
+            .confirm_saved(&restored_again, &transport, &proof)
+            .is_err());
+        assert_eq!(transport.read_count.get(), 2);
     }
 
     #[test]

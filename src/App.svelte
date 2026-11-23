@@ -247,6 +247,7 @@
   let selectedProject: ProjectSummary | null = null;
   let selectedProjectTemplate: ProjectTemplateSnapshot | null = null;
   let verificationRefresh = 0;
+  let applicationOwnershipRefresh = 0;
   let projectTab: "overview" | "environments" | "operations" | "resources" = "overview";
   let projectState: AzdProjectState | null = null;
   let projectEnvironments: ProjectEnvironment[] = [];
@@ -1756,6 +1757,13 @@
       }
       const projectPath = operationProjectPaths.get(event.operationId);
       const operationEnvironment = operationEnvironments.get(event.operationId);
+      if (
+        event.kind === "refresh" && projectPath && operationEnvironment &&
+        selectedProject?.path === projectPath && selectedProject.environment === operationEnvironment &&
+        selectedProjectTemplate?.entry.manifest?.applicationOwnership
+      ) {
+        applicationOwnershipRefresh += 1;
+      }
       if (
         projectPath &&
         ["up", "provision", "preview", "deploy", "refresh", "show", "down"].includes(event.kind)
@@ -3485,7 +3493,7 @@
               {/if}
               {#if selectedProjectTemplate?.entry.manifest?.applicationOwnership}
                 <ProjectApplicationOwnership projectPath={selectedProject.path} environment={selectedProject.environment ?? ""}
-                  sourceContractDigest={selectedProjectTemplate.digest} context={data.connections}
+                  sourceContractDigest={selectedProjectTemplate.digest} context={[data.connections, applicationOwnershipRefresh]}
                   inputsSaved={!environmentConfigurationDirty.length && !environmentConfigurationBusy && !environmentBusy} />
               {/if}
               <ProjectValidationReport project={selectedProject} reportContext={[data.connections, environmentConfigurationValues, selectedProjectTemplate?.digest, verificationRefresh]} />

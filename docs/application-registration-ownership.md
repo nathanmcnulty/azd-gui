@@ -83,11 +83,14 @@ saved resource-group scope.
 
 Verify and Confirm reread the exact native target and require the displayed
 context digest. It also binds the environment's modification time and a
-native revision that advances on GUI environment writes and source refresh.
-A failed verification or confirmation discards the pending native review.
-After a mismatch or failed request the panel reloads the target for the
-operator to inspect before another explicit verification. If the source
-changed, reopen the project to load its current reviewed contract.
+native revision that advances on GUI environment writes, including selecting
+a saved PIM environment, and on source refresh. Failed verification,
+confirmation, or context retrieval discards the pending native review.
+A context read that observes a changed target also discards the review.
+When an Overview refresh finishes for the displayed project and environment,
+the ownership panel clears its evidence and reloads that saved target.
+The operator can inspect the current target before another verification.
+If the source changed, reopen the project to load its current contract.
 
 The verifier has an unavailable production transport in this slice. Synthetic
 tests exercise the native registered caller and the project review view.
