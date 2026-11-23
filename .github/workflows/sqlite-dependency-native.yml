@@ -1,0 +1,83 @@
+name: SQLite dependency Windows native validation
+on:
+  pull_request:
+    types: [ready_for_review]
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: >-
+      github.repository == 'nathanmcnulty/azd-gui' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'codex/gui-199-sqlite-native-smoke'
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 4794f8ac8a4d0ff25665d2a53ac5924314288063
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 95928e67867c782160c07f1b23e907851162e43c
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+          package-manager-cache: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '8.0.4xx'
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Build frontend assets and run the default Windows native suite
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $head = '4794f8ac8a4d0ff25665d2a53ac5924314288063'
+          if ((git rev-parse HEAD) -ne $head -or (git status --porcelain)) { throw 'Unexpected SQLite candidate' }
+          ./scripts/assert-powershell-version.ps1
+          node --version
+          rustc --version
+          dotnet --version
+          npm ci --no-audit --no-fund
+          npm run build
+          $target = 'x86_64-pc-windows-msvc'
+          $manifest = 'src-tauri/Cargo.toml'
+          $lockHash = (Get-FileHash src-tauri/Cargo.lock).Hash
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'azd-gui-199-sqlite-target'
+          $env:CARGO_INCREMENTAL = '0'
+          $env:CARGO_PROFILE_TEST_DEBUG = '0'
+          cargo fetch --manifest-path $manifest --locked --target $target
+          cargo fmt --manifest-path $manifest --all -- --check
+          cargo tree --manifest-path $manifest --target $target --locked --offline -e features -i libsqlite3-sys
+          $runner = Join-Path $env:GITHUB_WORKSPACE 'tools/Invoke-NativeTestWithoutAccounts.ps1'
+          $shell = (Get-Process -Id $PID).Path
+          $argsToml = ConvertTo-Json -InputObject @($shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $runner) -Compress
+          $config = Join-Path $env:RUNNER_TEMP 'azd-gui-199-test-runner.toml'
+          "[target.$target]", "runner = $argsToml" | Set-Content -LiteralPath $config
+          cargo --config $config test --manifest-path $manifest --target $target --locked --offline
+          if ((Get-FileHash src-tauri/Cargo.lock).Hash -ne $lockHash) { throw 'Locked tests changed Cargo.lock' }
+      - name: Verify a copied database across the pinned SQLite builds
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $base = Join-Path $env:GITHUB_WORKSPACE 'base'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'source'
+          $scratch = Join-Path $env:RUNNER_TEMP 'azd-gui-199-sqlite-compat'
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'azd-gui-199-sqlite-target'
+          $config = Join-Path $env:RUNNER_TEMP 'azd-gui-199-test-runner.toml'
+          cargo fetch --manifest-path "$base/src-tauri/Cargo.toml" --locked --target x86_64-pc-windows-msvc
+          ./tools/Test-SqlitePackageCompatibility.ps1 -Base $base -Candidate $source -Scratch $scratch -CargoConfig $config
