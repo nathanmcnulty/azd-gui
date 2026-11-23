@@ -5,7 +5,7 @@
 ## Development validation
 
 Run the complete validation suite locally before requesting review. Maintained
-PowerShell tooling requires PowerShell 7.6+ and exactly Pester 6.2.0; install the
+PowerShell tooling uses PowerShell 7.6+ and the stable Pester 6.2.0 release. Install the
 test module explicitly (the runner never installs it):
 
 ```powershell

@@ -34,7 +34,7 @@ Prerequisites:
 - Node.js 22.22.2+ on the 22.x line, 24.15.0+ on the 24.x line, or 26.0.0+
 - Rust stable (1.90 or newer)
 - PowerShell 7.6 or newer for maintained tooling and PowerShell-based template operations
-- Pester 6.2.0 for offline signing and verifier tests
+- Pester 6.2.0 (stable release) for offline signing and verifier tests
 - .NET SDK 8.0.4xx for native builds, tests and linting (the Graph adapter's `global.json` selects the latest installed patch in that feature band)
 - Windows: Visual Studio Build Tools with the C++ workload
 - macOS: Xcode command-line tools

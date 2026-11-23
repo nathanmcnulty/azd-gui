@@ -85,6 +85,18 @@ Describe 'Pinned Pester entry point' {
         Should -Invoke Invoke-Pester -Times 0 -Exactly
     }
 
+    It 'rejects a prerelease with the pinned numeric module version before running tests' {
+        Mock Import-Module {
+            [pscustomobject]@{
+                Version = [version] '6.2.0'
+                PrivateData = @{ PSData = @{ Prerelease = 'alpha2' } }
+            }
+        }
+
+        { & $runner } | Should -Throw '*stable*'
+        Should -Invoke Invoke-Pester -Times 0 -Exactly
+    }
+
     It 'rejects <Case> instead of reporting successful validation' -ForEach @(
         @{ Case = 'a failed result'; Property = 'Result'; Value = 'Failed' }
         @{ Case = 'zero discovered tests'; Property = 'TotalCount'; Value = 0 }
