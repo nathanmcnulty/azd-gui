@@ -726,6 +726,7 @@ async fn stream_output(
                 level,
                 line,
                 inferred,
+                None,
             );
         }
     }
@@ -738,6 +739,7 @@ async fn stream_output(
             stream,
             level,
             line,
+            None,
             None,
         );
     }
@@ -753,6 +755,7 @@ fn emit_event(
     level: &str,
     message: impl Into<String>,
     progress: Option<u8>,
+    exit_code: Option<i32>,
 ) -> OperationEvent {
     let event = OperationEvent {
         operation_id: operation_id.into(),
@@ -765,6 +768,7 @@ fn emit_event(
         progress,
         outcome: terminal_outcome(kind, state),
         environment_binding: None,
+        exit_code,
     };
     let _ = app.emit("operation-event", event.clone());
     event
@@ -903,6 +907,7 @@ pub fn spawn_operation(
         "info",
         "Operation queued.",
         Some(0),
+        None,
     );
 
     let result_id = operation_id.clone();
@@ -920,6 +925,7 @@ pub fn spawn_operation(
                     "system",
                     "error",
                     error.to_string(),
+                    None,
                     None,
                 );
                 if let Some(persistence) = persistence.as_ref() {
@@ -950,6 +956,7 @@ pub fn spawn_operation(
                     "error",
                     message,
                     None,
+                    None,
                 );
                 if let Some(persistence) = persistence.as_ref() {
                     persistence.record(&event);
@@ -971,6 +978,7 @@ pub fn spawn_operation(
                     "error",
                     format!("Could not supervise the process tree: {error}"),
                     None,
+                    None,
                 );
                 if let Some(persistence) = persistence.as_ref() {
                     persistence.record(&event);
@@ -989,6 +997,7 @@ pub fn spawn_operation(
             "info",
             format!("Started {}.", display_executable(&executable)),
             Some(2),
+            None,
         );
 
         let stdout = child.stdout.take();
@@ -1076,6 +1085,7 @@ pub fn spawn_operation(
                 "warning",
                 "Operation cancelled.",
                 Some(terminal_progress),
+                None,
             )
         } else if timed_out {
             emit_event(
@@ -1087,29 +1097,38 @@ pub fn spawn_operation(
                 "error",
                 "Operation exceeded its time limit and was stopped.",
                 Some(terminal_progress),
+                None,
             )
         } else {
             match status {
-                Ok(status) if status.success() => emit_event(
-                    &app,
-                    &operation_id,
-                    &kind,
-                    "succeeded",
-                    "system",
-                    "success",
-                    "Operation completed successfully.",
-                    Some(100),
-                ),
-                Ok(status) => emit_event(
-                    &app,
-                    &operation_id,
-                    &kind,
-                    "failed",
-                    "system",
-                    "error",
-                    format!("Process exited with status {status}."),
-                    Some(terminal_progress),
-                ),
+                Ok(status) => {
+                    let (state, level, message, progress) = if status.success() {
+                        (
+                            "succeeded",
+                            "success",
+                            "Operation completed successfully.".into(),
+                            100,
+                        )
+                    } else {
+                        (
+                            "failed",
+                            "error",
+                            format!("Process exited with status {status}."),
+                            terminal_progress,
+                        )
+                    };
+                    emit_event(
+                        &app,
+                        &operation_id,
+                        &kind,
+                        state,
+                        "system",
+                        level,
+                        message,
+                        Some(progress),
+                        status.code().filter(|_| kind == "validate"),
+                    )
+                }
                 Err(error) => emit_event(
                     &app,
                     &operation_id,
@@ -1119,6 +1138,7 @@ pub fn spawn_operation(
                     "error",
                     error.to_string(),
                     Some(terminal_progress),
+                    None,
                 ),
             }
         };
@@ -1507,6 +1527,7 @@ mod tests {
                 timestamp: crate::timestamp::now(),
                 outcome: Some(outcome),
                 environment_binding: None,
+                exit_code: None,
             });
             let history = database.operation_history(&path).unwrap();
             assert!(history

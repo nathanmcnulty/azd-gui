@@ -69,7 +69,10 @@ The normal operation manager supervises and cancels the child process tree.
 The existing validation and receipt views show historical records, even when
 source/environment correlation matches. Current-session validation is displayed
 separately. Account, environment, source and configuration changes invalidate
-that session result and hide/reload report content. Context is observed when
+that session result and hide/reload report content. Current-session verification
+shows when the native process finished and its exit code when available. A
+cancellation request stays pending until the native terminal result arrives.
+Context is observed when
 refreshed; an external account/configuration change cannot be detected before
 the app refreshes or runs a new check. Failed/cancelled checks can be retried
 explicitly. Old completion replies cannot validate a different project context.

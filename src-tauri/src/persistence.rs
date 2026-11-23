@@ -790,6 +790,7 @@ impl Database {
                 progress: None,
                 outcome,
                 environment_binding: environment_binding.map(str::to_string),
+                exit_code: None,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(AppError::from)
@@ -1150,6 +1151,7 @@ mod tests {
                 retryable: true,
             }),
             environment_binding: None,
+            exit_code: None,
         };
 
         database.record_operation(&event, &project.path).unwrap();
@@ -1341,6 +1343,7 @@ mod tests {
                 retryable: true,
             }),
             environment_binding: None,
+            exit_code: None,
         };
 
         database
@@ -1381,6 +1384,7 @@ mod tests {
             progress: Some(100),
             outcome: None,
             environment_binding: None,
+            exit_code: None,
         };
         let context = OperationEvidenceContext {
             project_id: project.id.clone(),

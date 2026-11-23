@@ -9,6 +9,8 @@
   const dispatch = createEventDispatcher();
   let operation: string | null = null;
   let starting = false;
+  let cancelling = false;
+  let completion: OperationEvent | null = null;
   let listening = false;
   let generation = 0;
   let status = 'Not checked in this session. Saved validation reports are historical records.';
@@ -18,7 +20,11 @@
   $: key = JSON.stringify([project.path, project.environment, project.templateId, project.revision, verificationContext]);
   $: if (key !== previous) { previous = key; invalidate(); }
   function invalidate(refresh = true) {
-    generation += 1; starting = false;
+    generation += 1;
+    starting = false;
+    cancelling = false;
+    completion = null;
+    early.clear();
     status = 'Stale / not checked for this account, environment, source and configuration.';
     const old = operation; operation = null;
     if (old) void cancelOperation(old).catch(() => {});
@@ -37,6 +43,8 @@
     if (starting && !operation) { early.set(value.operationId, value); return; }
     if (value.operationId !== operation) return;
     operation = null;
+    cancelling = false;
+    completion = value;
     status = value.state === 'succeeded' ? 'Read-only validation completed. Review the report for resource group access; this does not prove application behavior.' : value.state === 'cancelled' ? 'Check cancelled. Previous reports remain historical. Retry when ready.' : 'Check failed. Review the report and current account access, then retry. No sign-in was started.';
     dispatch('finished', value);
   }
@@ -47,13 +55,50 @@
     try {
       if (!isTauri()) throw new Error('Desktop required');
       const id = await invoke<string>('start_project_verification', { projectPath: project.path, environment: project.environment, expectedTargetDigest: target.digest });
-      if (current !== generation) { await cancelOperation(id); return; }
-      operation = id; starting = false; status = 'Checking the saved tenant, subscription and resource group using the existing Azure CLI account…';
-      const terminal = early.get(id); early.clear(); if (terminal) event(terminal);
-    } catch { if (current === generation) status = 'Check could not start. Confirm the saved target and existing Azure CLI sign-in, then retry. No template hooks were run.'; }
-    finally { if (current === generation) starting = false; }
+      if (current !== generation) {
+        await cancelOperation(id).catch(() => {});
+        return;
+      }
+      operation = id;
+      starting = false;
+      const terminal = early.get(id);
+      early.clear();
+      if (terminal) {
+        event(terminal);
+      } else if (cancelling) {
+        void requestCancellation(id, current);
+      } else {
+        status = 'Checking the saved tenant, subscription and resource group using the existing Azure CLI account.';
+      }
+    } catch {
+      if (current === generation) {
+        status = cancelling
+          ? 'The check did not start. Retry when ready.'
+          : 'Check could not start. Confirm the saved target and existing Azure CLI sign-in, then retry. No template hooks were run.';
+        cancelling = false;
+      }
+    } finally {
+      if (current === generation) starting = false;
+    }
   }
-  async function cancel() { invalidate(); status = 'Check cancelled. Previous reports remain historical. Retry when ready.'; }
+
+  async function requestCancellation(id: string, current: number) {
+    try {
+      await cancelOperation(id);
+    } catch {
+      if (current === generation && operation === id) {
+        cancelling = false;
+        status = 'Cancellation could not be confirmed. Waiting for the operation to finish.';
+      }
+    }
+  }
+
+  function cancel() {
+    if (cancelling || (!starting && !operation)) return;
+    cancelling = true;
+    status = 'Cancellation requested. Waiting for the operation to finish.';
+    if (operation) void requestCancellation(operation, generation);
+  }
   onMount(() => { let active = true; void onOperationEvent(event).then(stop => { if (active) { unlisten = stop; listening = true; } else stop(); }).catch(() => { if (active) status = 'Operation updates are unavailable. Reopen the project before checking.'; }); return () => { active = false; unlisten(); }; });
   onDestroy(() => invalidate(false));
 </script>
@@ -64,7 +109,13 @@
   <dl class="summary-list columns"><div><dt>Tenant</dt><dd>{target.tenant || 'Saved tenant required'}</dd></div><div><dt>Subscription</dt><dd>{target.subscription || 'Saved subscription required'}</dd></div><div><dt>Resource group</dt><dd>{target.resourceGroup || 'Saved deployed group required'}</dd></div></dl>
   <p>Reads the saved tenant, subscription and deployed resource group with the existing Azure CLI account. Writes a private local validation report. No interactive sign-in or project hooks.</p>
   <p role="status">{status}</p>
+  {#if completion}
+    <dl class="summary-list columns">
+      <div><dt>Finished</dt><dd><time datetime={completion.timestamp}>{completion.timestamp}</time></dd></div>
+      <div><dt>Process exit code</dt><dd>{completion.exitCode ?? 'Unavailable'}</dd></div>
+    </dl>
+  {/if}
   <button class="primary" disabled={!target.digest || !listening || !project.environment || starting || !!operation} on:click={run}>Run read-only validation</button>
-  <button class="secondary" disabled={!starting && !operation} on:click={cancel}>Cancel validation</button>
+  <button class="secondary" disabled={cancelling || (!starting && !operation)} on:click={cancel}>Cancel validation</button>
   <p>Next: review each recorded check. Resolve failed access or missing resource group checks before retrying. When finished, review cleanup for the dedicated group; deleting it requires separate approval.</p>
 </section>

@@ -723,6 +723,8 @@ pub struct OperationEvent {
     pub outcome: Option<OperationOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment_binding: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
