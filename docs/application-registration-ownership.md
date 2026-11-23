@@ -33,6 +33,36 @@ omit observed foreign identifiers, raw Graph data and proof fields. The safe
 verified projection carries UUIDs, Boolean comparisons and token version.
 It never contains the actual identifier or callback URI.
 
+## Offline application lookup
+
+The native verifier constructs one Graph v1.0 GET for the saved application
+object ID. It selects id, appId, signInAudience, identifierUris, and api.
+The owned transport must attest the authorized tenant and operator before
+and after the read. The single-object response must identify the application
+resource type. The projection rejects collection responses, service
+principals, agent identity blueprints, and unsupported shapes.
+See [Microsoft Graph Get application](https://learn.microsoft.com/en-us/graph/api/application-get?view=graph-rest-1.0).
+
+The pinned azd-pim producer derives the expected URI as
+api://{workflowHost}/{applicationId}. The native verification needs a
+workflow DNS host independently bound to the saved deployment target.
+An unavailable host keeps verification unavailable, including when the
+Graph body contains a plausible URI. Confirmation checks the same host
+again before consuming the pending verification. The mock provides its
+reviewed host independently of the mock application response.
+See [the pinned azd-pim producer](https://github.com/nathanmcnulty/azd-pim/blob/97054a7c8bb67c4a4de52caccb68442c1e1ce769/scripts/AzdPim.Optional.psm1#L195-L231).
+
+An explicit null requestedAccessTokenVersion has effective version 1,
+which mismatches this provider's required version 2. An omitted version
+or api projection leaves verification incomplete.
+See [the Microsoft Graph apiApplication contract](https://learn.microsoft.com/en-us/graph/api/resources/apiapplication?view=graph-rest-1.0).
+
+The verifier consumes a bounded response and produces only the documented
+safe evidence. Denial, unavailability, or an incomplete response ends
+the attempt without review proof. The app still uses its offline transport.
+The real owned read and independent workflow-host evidence need separate
+qualification.
+
 ## Ownership receipt
 
 A verified result describes the exact object at a point in time. It does not

@@ -194,14 +194,131 @@ struct Identity {
     operator: String,
 }
 
-#[derive(Debug, Clone)]
-struct Observation {
+const MAX_APPLICATION_RESPONSE_BYTES: usize = 64 * 1024;
+const APPLICATION_FIELDS: &str = "id,appId,signInAudience,identifierUris,api";
+
+#[derive(Clone)]
+struct ApplicationRead {
+    // The owned transport attests its identity outside the Graph body.
     identity: Identity,
-    object_id: Uuid,
-    application_id: Uuid,
-    single_tenant: bool,
-    identifier_uri_matches: bool,
-    access_token_version: Option<u8>,
+    status: reqwest::StatusCode,
+    body: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphApplication {
+    id: Uuid,
+    app_id: Uuid,
+    sign_in_audience: String,
+    identifier_uris: Vec<String>,
+    api: GraphApplicationApi,
+    #[serde(rename = "@odata.type")]
+    resource_type: Option<String>,
+    #[serde(rename = "@odata.context")]
+    context: Option<String>,
+    #[serde(rename = "@odata.nextLink")]
+    continuation: Option<serde::de::IgnoredAny>,
+    value: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GraphApplicationApi {
+    #[serde(default, deserialize_with = "present_token_version")]
+    requested_access_token_version: Option<u8>,
+}
+
+fn present_token_version<'de, D: serde::Deserializer<'de>>(
+    value: D,
+) -> Result<Option<u8>, D::Error> {
+    // Graph defines explicit null as version 1. A missing projection remains unknown.
+    Option::<u8>::deserialize(value).map(|version| Some(version.unwrap_or(1)))
+}
+
+impl GraphApplication {
+    fn is_application(&self) -> bool {
+        let exact_type = "#microsoft.graph.application";
+        if self
+            .resource_type
+            .as_deref()
+            .is_some_and(|kind| kind != exact_type)
+        {
+            return false;
+        }
+        match self.context.as_deref() {
+            Some(context) => context
+                .strip_prefix("https://graph.microsoft.com/v1.0/$metadata#applications")
+                .and_then(|context| context.strip_suffix("/$entity"))
+                .is_some_and(|projection| {
+                    projection.is_empty()
+                        || projection
+                            .strip_prefix('(')
+                            .and_then(|projection| projection.strip_suffix(')'))
+                            .is_some_and(|fields| {
+                                fields.split(',').all(|field| {
+                                    APPLICATION_FIELDS.split(',').any(|known| known == field)
+                                })
+                            })
+                }),
+            None => self.resource_type.as_deref() == Some(exact_type),
+        }
+    }
+}
+
+fn application_request(object_id: Uuid) -> AppResult<reqwest::Request> {
+    let mut url = reqwest::Url::parse(&format!(
+        "https://graph.microsoft.com/v1.0/applications/{object_id}"
+    ))
+    .map_err(|_| invalid("The registered application lookup is unavailable."))?;
+    url.query_pairs_mut()
+        .append_pair("$select", APPLICATION_FIELDS);
+    Ok(reqwest::Request::new(reqwest::Method::GET, url))
+}
+
+impl ApplicationRead {
+    fn application(&self) -> Result<GraphApplication, Unknown> {
+        use reqwest::StatusCode;
+        match self.status {
+            StatusCode::OK => {}
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => return Err(Unknown::AccessDenied),
+            status if status.is_redirection() || status.is_success() => {
+                return Err(Unknown::Incomplete);
+            }
+            _ => return Err(Unknown::Unavailable),
+        }
+        if self.body.len() > MAX_APPLICATION_RESPONSE_BYTES {
+            return Err(Unknown::Incomplete);
+        }
+        let application: GraphApplication =
+            serde_json::from_slice(&self.body).map_err(|_| Unknown::Incomplete)?;
+        if application.id.is_nil()
+            || application.app_id.is_nil()
+            || application.continuation.is_some()
+            || application.value.is_some()
+            || !application.is_application()
+        {
+            return Err(Unknown::Incomplete);
+        }
+        Ok(application)
+    }
+}
+
+fn valid_endpoint_host(host: &str) -> bool {
+    // The pinned producer uses the canonical DNS host of the workflow. It
+    // never uses a path, query, port or the identifier URI from Graph as input.
+    host.len() <= 253
+        && host.contains('.')
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+        && host.parse::<std::net::IpAddr>().is_err()
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -215,7 +332,13 @@ pub(crate) enum Unknown {
 
 trait Transport {
     fn identity(&self) -> Option<Identity>;
-    fn read(&self, tenant: Uuid, object: Uuid) -> Result<Observation, Unknown>;
+
+    // Native evidence for this exact saved target, independent of the application response.
+    fn reviewed_endpoint_host(&self, target: &Target) -> Option<&str>;
+
+    // One authorized read. A future transport must bound the body while
+    // receiving it and reject redirects, retries and alternate endpoints.
+    fn read(&self, tenant: Uuid, request: reqwest::Request) -> Result<ApplicationRead, Unknown>;
 }
 
 struct OfflineTransport;
@@ -223,7 +346,11 @@ impl Transport for OfflineTransport {
     fn identity(&self) -> Option<Identity> {
         None
     }
-    fn read(&self, _: Uuid, _: Uuid) -> Result<Observation, Unknown> {
+    fn reviewed_endpoint_host(&self, _: &Target) -> Option<&str> {
+        None
+    }
+
+    fn read(&self, _: Uuid, _: reqwest::Request) -> Result<ApplicationRead, Unknown> {
         Err(Unknown::Unavailable)
     }
 }
@@ -266,6 +393,7 @@ pub(crate) enum Verification {
 struct Pending {
     target: Target,
     identity: Identity,
+    endpoint_host: String,
     properties: Properties,
     checked_at: String,
     digest: String,
@@ -408,49 +536,63 @@ impl Reviews {
                 reason: Unknown::Incomplete,
             });
         }
-        let observed = match transport.read(target.tenant_id, target.object_id) {
-            Ok(observed) => observed,
-            Err(reason) => return Ok(Verification::Unknown { reason }),
+        let Some(endpoint_host) = transport
+            .reviewed_endpoint_host(&target)
+            .filter(|host| valid_endpoint_host(host))
+        else {
+            return Ok(Verification::Unknown {
+                reason: Unknown::Unavailable,
+            });
         };
-        if observed.identity.tenant != identity.tenant {
+        let response =
+            match transport.read(target.tenant_id, application_request(target.object_id)?) {
+                Ok(response) => response,
+                Err(reason) => return Ok(Verification::Unknown { reason }),
+            };
+        if response.identity.tenant != identity.tenant {
             return Ok(Verification::Foreign {
                 reason: "differentTenant",
             });
         }
-        if observed.identity != identity {
+        if response.identity != identity {
             return Ok(Verification::Foreign {
                 reason: "differentOperator",
             });
         }
-        if observed.object_id != target.object_id {
+        let application = match response.application() {
+            Ok(application) => application,
+            Err(reason) => return Ok(Verification::Unknown { reason }),
+        };
+        if application.id != target.object_id {
             return Ok(Verification::Mismatch {
                 reason: "differentObject",
             });
         }
-        if observed.application_id.is_nil() || observed.access_token_version.is_none() {
+        if application.api.requested_access_token_version.is_none() {
             return Ok(Verification::Unknown {
                 reason: Unknown::Incomplete,
             });
         }
         if target
             .expected_application_id
-            .is_some_and(|expected| expected != observed.application_id)
+            .is_some_and(|expected| expected != application.app_id)
         {
             return Ok(Verification::Mismatch {
                 reason: "differentApplication",
             });
         }
-        if !observed.single_tenant
-            || !observed.identifier_uri_matches
-            || observed.access_token_version != Some(2)
+        let identifier_uri = format!("api://{endpoint_host}/{}", application.app_id);
+        if application.sign_in_audience != "AzureADMyOrg"
+            || application.identifier_uris.as_slice() != [identifier_uri]
+            || application.api.requested_access_token_version != Some(2)
         {
             return Ok(Verification::Mismatch {
                 reason: "unexpectedProperties",
             });
         }
         let properties = Properties {
-            object_id: observed.object_id,
-            application_id: observed.application_id,
+            object_id: application.id,
+            application_id: application.app_id,
             single_tenant: true,
             identifier_uri_matches: true,
             access_token_version: 2,
@@ -472,6 +614,7 @@ impl Reviews {
         state.pending = Some(Pending {
             target,
             identity,
+            endpoint_host: endpoint_host.into(),
             properties: properties.clone(),
             checked_at: checked_at.clone(),
             digest: verification_digest.clone(),
@@ -504,6 +647,7 @@ impl Reviews {
             || pending.target != target
             || expected_digest != pending.digest
             || transport.identity().as_ref() != Some(&pending.identity)
+            || transport.reviewed_endpoint_host(&target) != Some(pending.endpoint_host.as_str())
         {
             return Err(invalid(
                 "The application review context changed. Verify again.",
@@ -712,9 +856,23 @@ mod tests {
         }
     }
 
+    const WORKFLOW_HOST: &str = "example.logic.azure.com";
+
+    fn application_body() -> Value {
+        json!({
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#applications(id,appId,signInAudience,identifierUris,api)/$entity",
+            "id": OBJECT,
+            "appId": APPLICATION,
+            "signInAudience": "AzureADMyOrg",
+            "identifierUris": [format!("api://{WORKFLOW_HOST}/{APPLICATION}")],
+            "api": { "requestedAccessTokenVersion": 2 }
+        })
+    }
+
     struct Scripted {
         identity: Option<Identity>,
-        response: Result<Observation, Unknown>,
+        reviewed_host: Option<&'static str>,
+        response: Result<ApplicationRead, Unknown>,
         read_count: Cell<usize>,
     }
 
@@ -726,13 +884,11 @@ mod tests {
             };
             Self {
                 identity: Some(identity.clone()),
-                response: Ok(Observation {
+                reviewed_host: Some(WORKFLOW_HOST),
+                response: Ok(ApplicationRead {
                     identity,
-                    object_id: uuid(OBJECT).unwrap(),
-                    application_id: uuid(APPLICATION).unwrap(),
-                    single_tenant: true,
-                    identifier_uri_matches: true,
-                    access_token_version: Some(2),
+                    status: reqwest::StatusCode::OK,
+                    body: serde_json::to_vec(&application_body()).unwrap(),
                 }),
                 read_count: Cell::new(0),
             }
@@ -743,9 +899,39 @@ mod tests {
         fn identity(&self) -> Option<Identity> {
             self.identity.clone()
         }
-        fn read(&self, tenant: Uuid, object: Uuid) -> Result<Observation, Unknown> {
+        fn reviewed_endpoint_host(&self, target: &Target) -> Option<&str> {
+            assert_eq!(target.tenant_id, uuid(TENANT).unwrap());
+            assert_eq!(target.subscription_id, uuid(SUBSCRIPTION).unwrap());
+            assert_eq!(target.resource_group, "rg-fixture");
+            self.reviewed_host
+        }
+
+        fn read(
+            &self,
+            tenant: Uuid,
+            request: reqwest::Request,
+        ) -> Result<ApplicationRead, Unknown> {
             assert_eq!(tenant, uuid(TENANT).unwrap());
-            assert_eq!(object, uuid(OBJECT).unwrap());
+            assert_eq!(request.method(), reqwest::Method::GET);
+            let url = request.url();
+            assert_eq!(
+                url.origin().ascii_serialization(),
+                "https://graph.microsoft.com"
+            );
+            assert_eq!(url.path(), format!("/v1.0/applications/{OBJECT}"));
+            assert_eq!(
+                url.query_pairs()
+                    .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                    .collect::<Vec<_>>(),
+                [(
+                    "$select".to_owned(),
+                    "id,appId,signInAudience,identifierUris,api".to_owned()
+                )]
+            );
+            assert!(
+                url.username().is_empty() && url.password().is_none() && url.fragment().is_none()
+            );
+            assert!(request.body().is_none() && request.headers().is_empty());
             self.read_count.set(self.read_count.get() + 1);
             self.response.clone()
         }
@@ -1095,6 +1281,270 @@ mod tests {
             .is_err());
     }
 
+    fn result(fixture: &Fixture, request: &ReviewRequest, transport: &Scripted) -> Value {
+        serde_json::to_value(fixture.verify_saved(request, transport).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn exact_read_projects_safe_evidence_without_changing_saved_project() {
+        let fixture = Fixture::new();
+        let env = Path::new(&fixture.project).join(".azure/dev/.env");
+        let before = fs::read(&env).unwrap();
+        let database = &fixture.state.database;
+        let source = database
+            .project_template_exact(&fixture.project)
+            .unwrap()
+            .unwrap()
+            .digest;
+        let project = serde_json::to_value(database.projects().unwrap()).unwrap();
+
+        let mut transport = Scripted::matching();
+        let mut payload = application_body();
+        payload["web"] = json!({"redirectUris":["https://synthetic.invalid/callback?sig=opaque"]});
+        payload["displayName"] = json!("Untrusted display metadata");
+        payload["accessToken"] = json!("synthetic-secret");
+        payload["api"]["oauth2PermissionScopes"] = json!([{"value":"synthetic-grant"}]);
+        transport.response.as_mut().unwrap().body = serde_json::to_vec(&payload).unwrap();
+
+        let request = fixture.request();
+        let evidence = result(&fixture, &request, &transport);
+        assert_eq!(evidence["state"], "verified");
+        assert_eq!(evidence["binding"]["tenantId"], TENANT);
+        assert_eq!(
+            evidence["properties"],
+            json!({
+                "objectId": OBJECT, "applicationId": APPLICATION,
+                "singleTenant": true, "identifierUriMatches": true, "accessTokenVersion": 2
+            })
+        );
+        let serialized = evidence.to_string();
+        for private in [
+            WORKFLOW_HOST,
+            "synthetic.invalid",
+            "Untrusted display metadata",
+            "synthetic-secret",
+            "synthetic-grant",
+        ] {
+            assert!(!serialized.contains(private));
+        }
+        assert!(evidence.get("ownershipSource").is_none());
+        assert_eq!(transport.read_count.get(), 1);
+        assert_eq!(fs::read(&env).unwrap(), before);
+        assert_eq!(
+            database
+                .project_template_exact(&fixture.project)
+                .unwrap()
+                .unwrap()
+                .digest,
+            source
+        );
+        assert_eq!(
+            serde_json::to_value(database.projects().unwrap()).unwrap(),
+            project
+        );
+
+        // Older state can use the returned client ID after an exact object-ID read.
+        let only_object = String::from_utf8(before).unwrap().replace(
+            &format!("AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID={APPLICATION}\n"),
+            "",
+        );
+        fs::write(&env, only_object).unwrap();
+        let evidence = result(&fixture, &fixture.request(), &transport);
+        assert_eq!(evidence["state"], "verified");
+        assert_eq!(evidence["properties"]["applicationId"], APPLICATION);
+        assert!(evidence["binding"].get("expectedApplicationId").is_none());
+        assert_eq!(transport.read_count.get(), 2);
+    }
+
+    #[test]
+    fn changed_properties_remain_distinct_from_missing_or_wrong_resource_type() {
+        let fixture = Fixture::new();
+        let request = fixture.request();
+        let mut transport = Scripted::matching();
+        let mut changed = application_body();
+        changed["api"]["requestedAccessTokenVersion"] = Value::Null;
+        let mut missing_version = application_body();
+        missing_version["api"] = json!({});
+        let mut missing_api = application_body();
+        missing_api.as_object_mut().unwrap().remove("api");
+        let mut missing_type = application_body();
+        missing_type
+            .as_object_mut()
+            .unwrap()
+            .remove("@odata.context");
+        let mut explicit_type = missing_type.clone();
+        explicit_type["@odata.type"] = json!("#microsoft.graph.application");
+        transport.response.as_mut().unwrap().body = serde_json::to_vec(&explicit_type).unwrap();
+        assert_eq!(result(&fixture, &request, &transport)["state"], "verified");
+        let baseline = fixture.fingerprint(&request, &Scripted::matching());
+
+        let cases = [
+            (changed, "mismatch", "unexpectedProperties"),
+            (missing_version, "unknown", "incomplete"),
+            (missing_api, "unknown", "incomplete"),
+            (missing_type, "unknown", "incomplete"),
+            (
+                application_body_for("@odata.type", json!("#microsoft.graph.servicePrincipal")),
+                "unknown",
+                "incomplete",
+            ),
+            (
+                application_body_for(
+                    "@odata.type",
+                    json!("#microsoft.graph.agentIdentityBlueprint"),
+                ),
+                "unknown",
+                "incomplete",
+            ),
+            (
+                application_body_for(
+                    "@odata.context",
+                    json!("https://graph.microsoft.com/v1.0/$metadata#servicePrincipals/$entity"),
+                ),
+                "unknown",
+                "incomplete",
+            ),
+            (
+                application_body_for("appId", json!(OTHER)),
+                "mismatch",
+                "differentApplication",
+            ),
+            (
+                application_body_for("signInAudience", json!("AzureADMultipleOrgs")),
+                "mismatch",
+                "unexpectedProperties",
+            ),
+            (
+                application_body_for(
+                    "identifierUris",
+                    json!([format!("api://foreign.logic.azure.com/{APPLICATION}")]),
+                ),
+                "mismatch",
+                "unexpectedProperties",
+            ),
+        ];
+        for (body, state, reason) in cases {
+            transport.response.as_mut().unwrap().body = serde_json::to_vec(&body).unwrap();
+            assert_eq!(
+                result(&fixture, &request, &transport),
+                json!({"state":state,"reason":reason})
+            );
+            assert!(fixture
+                .confirm_saved(&request, &transport, &baseline)
+                .is_err());
+        }
+    }
+
+    fn application_body_for(key: &str, value: Value) -> Value {
+        let mut body = application_body();
+        body[key] = value;
+        body
+    }
+
+    #[test]
+    fn unavailable_and_unsupported_reads_are_single_attempts_without_proof() {
+        use reqwest::StatusCode;
+        let fixture = Fixture::new();
+        let request = fixture.request();
+        let mut transport = Scripted::matching();
+        for (status, reason) in [
+            (StatusCode::UNAUTHORIZED, "accessDenied"),
+            (StatusCode::FORBIDDEN, "accessDenied"),
+            (StatusCode::NOT_FOUND, "unavailable"),
+            (StatusCode::TOO_MANY_REQUESTS, "unavailable"),
+            (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
+            (StatusCode::FOUND, "incomplete"),
+            (StatusCode::PARTIAL_CONTENT, "incomplete"),
+        ] {
+            let response = transport.response.as_mut().unwrap();
+            response.status = status;
+            response.body = br#"{"error":{"message":"synthetic-provider-details"}}"#.to_vec();
+            let before = transport.read_count.get();
+            assert_eq!(
+                result(&fixture, &request, &transport),
+                json!({"state":"unknown","reason":reason})
+            );
+            assert_eq!(transport.read_count.get(), before + 1);
+        }
+        transport.response.as_mut().unwrap().status = StatusCode::OK;
+        for body in [
+            b"{".to_vec(),
+            serde_json::to_vec(&json!({"value":[application_body()]})).unwrap(),
+            serde_json::to_vec(&application_body_for(
+                "@odata.nextLink",
+                json!("https://synthetic.invalid/next"),
+            ))
+            .unwrap(),
+            vec![b' '; MAX_APPLICATION_RESPONSE_BYTES + 1],
+        ] {
+            transport.response.as_mut().unwrap().body = body;
+            assert_eq!(
+                result(&fixture, &request, &transport),
+                json!({"state":"unknown","reason":"incomplete"})
+            );
+        }
+        transport.response = Err(Unknown::Cancelled);
+        assert_eq!(
+            result(&fixture, &request, &transport),
+            json!({"state":"unknown","reason":"cancelled"})
+        );
+        assert!(fixture
+            .state
+            .application_reviews
+            .0
+            .lock()
+            .unwrap()
+            .pending
+            .is_none());
+    }
+
+    #[test]
+    fn only_transport_identity_and_independent_endpoint_evidence_can_bind_the_read() {
+        let fixture = Fixture::new();
+        let request = fixture.request();
+        let mut transport = Scripted::matching();
+        transport.reviewed_host = None;
+        assert_eq!(
+            result(&fixture, &request, &transport),
+            json!({"state":"unknown","reason":"unavailable"})
+        );
+        transport.reviewed_host = Some("example.logic.azure.com/path?sig=secret");
+        assert_eq!(
+            result(&fixture, &request, &transport),
+            json!({"state":"unknown","reason":"unavailable"})
+        );
+        assert_eq!(transport.read_count.get(), 0);
+
+        transport.reviewed_host = Some(WORKFLOW_HOST);
+        let response = transport.response.as_mut().unwrap();
+        response.identity.tenant = uuid(OTHER).unwrap();
+        response.body =
+            serde_json::to_vec(&application_body_for("tenantId", json!(TENANT))).unwrap();
+        assert_eq!(
+            result(&fixture, &request, &transport),
+            json!({"state":"foreign","reason":"differentTenant"})
+        );
+        let response = transport.response.as_mut().unwrap();
+        response.identity.tenant = uuid(TENANT).unwrap();
+        response.identity.operator = "e".repeat(64);
+        assert_eq!(
+            result(&fixture, &request, &transport),
+            json!({"state":"foreign","reason":"differentOperator"})
+        );
+        transport.response.as_mut().unwrap().identity.operator = "b".repeat(64);
+
+        let digest = fixture.fingerprint(&request, &transport);
+        transport.reviewed_host = Some("changed.logic.azure.com");
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
+        transport.reviewed_host = Some(WORKFLOW_HOST);
+        assert!(fixture
+            .confirm_saved(&request, &transport, &digest)
+            .is_err());
+        assert_eq!(transport.read_count.get(), 3);
+    }
+
     #[test]
     fn wrong_identity_denied_incomplete_and_mismatched_results_cannot_be_reviewed() {
         let fixture = Fixture::new();
@@ -1124,15 +1574,18 @@ mod tests {
             .is_err());
 
         let mut transport = Scripted::matching();
-        transport.response.as_mut().unwrap().object_id = uuid(OTHER).unwrap();
+        let mut foreign_object = application_body();
+        foreign_object["id"] = json!(OTHER);
+        transport.response.as_mut().unwrap().body = serde_json::to_vec(&foreign_object).unwrap();
         assert!(matches!(
             reviews.verify(|_| Ok(target.clone()), &transport).unwrap(),
             Verification::Mismatch {
                 reason: "differentObject"
             }
         ));
-        transport.response.as_mut().unwrap().object_id = target.object_id;
-        transport.response.as_mut().unwrap().access_token_version = None;
+        let mut missing_version = application_body();
+        missing_version["api"] = json!({});
+        transport.response.as_mut().unwrap().body = serde_json::to_vec(&missing_version).unwrap();
         assert!(matches!(
             reviews.verify(|_| Ok(target.clone()), &transport).unwrap(),
             Verification::Unknown {
