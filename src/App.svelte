@@ -319,6 +319,12 @@
   const operationEnvironments = new Map<string, string | undefined>();
 
   $: activePage = wizardPlan?.pages[activeStep] ?? null;
+  $: preparedWizardProject = projectPrepared && selectedEntry
+    ? data.projects.find((project) =>
+        project.path === wizardValues.projectPath &&
+        project.templateId === selectedEntry?.id &&
+        (project.revision ?? "local") === selectedEntry?.commit)
+    : undefined;
   $: currentWizardDeployment = wizardDeployment && selectedEntry &&
     wizardDeployment.session === wizardSession &&
     wizardDeployment.projectPath === String(wizardValues.projectPath || "") &&
@@ -2807,7 +2813,9 @@
         </div>
 
         <div class="wizard-content">
-          {#if selectedInspection?.sourceBinding &&
+          {#if preparedWizardProject}
+            <ProjectComponentProvenance project={preparedWizardProject} />
+          {:else if selectedInspection?.sourceBinding &&
             ((wizardValues.sourceMode === "existingProject" && wizardValues.projectPath === selectedInspectionPath) ||
               (wizardValues.sourceMode === "localTemplate" && wizardValues.sourcePath === selectedInspectionPath))}
             <ProjectComponentProvenance template={selectedInspection.sourceBinding} />
