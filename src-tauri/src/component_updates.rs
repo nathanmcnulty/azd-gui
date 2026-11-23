@@ -3,7 +3,7 @@ use reqwest::Client;
 use semver::Version;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     time::{Duration, Instant},
 };
 use tokio::sync::Mutex;
@@ -12,8 +12,12 @@ const API: &str = "https://api.github.com/repos/nathanmcnulty/azd-reference/git"
 const SOURCE: &str = "https://github.com/nathanmcnulty/azd-reference";
 const TAG_PREFIX: &str = "component/";
 const DECLARATION: &str = "azd-component-update: ";
-const MAX_TAGS: usize = 48;
-const MAX_BYTES: usize = 128 * 1024;
+const MAX_REF_BYTES: usize = 1024 * 1024;
+const MAX_TAG_BYTES: usize = 128 * 1024;
+const MAX_TAG_REQUESTS: usize = 20;
+const MAX_REQUESTS_PER_HOUR: usize = 40;
+const REQUEST_WINDOW: Duration = Duration::from_secs(60 * 60);
+const TAG_CONCURRENCY: usize = 4;
 const FRESH_FOR: Duration = Duration::from_secs(15 * 60);
 const RETRY_AFTER: Duration = Duration::from_secs(30);
 
@@ -63,6 +67,7 @@ fn optional_note<'de, D: serde::Deserializer<'de>>(value: D) -> Result<Option<St
 struct Release {
     version: Version,
     revision: Option<String>,
+    unresolved: bool,
     compatibility: Option<Declaration>,
 }
 
@@ -85,6 +90,7 @@ pub struct Update {
     version: Option<String>,
     compatibility: &'static str,
     complete: bool,
+    history_incomplete: bool,
     breaking_versions: Vec<String>,
     migration_notes: Vec<String>,
 }
@@ -105,6 +111,7 @@ struct CacheEntry {
     last_attempt: Option<(Instant, bool)>,
     snapshot: Option<(String, Releases)>,
     tags: HashMap<String, Tag>,
+    requests: VecDeque<Instant>,
 }
 
 fn should_fetch(last: Option<(Instant, bool)>, requested: Instant, force: bool) -> bool {
@@ -156,7 +163,7 @@ fn declaration(message: &str, id: &str, version: &Version) -> Option<Declaration
     Some(value)
 }
 
-async fn read_json<T: DeserializeOwned>(client: &Client, route: &str) -> Option<T> {
+async fn read_json<T: DeserializeOwned>(client: &Client, route: &str, limit: usize) -> Option<T> {
     let mut response = client
         .get(format!("{API}/{route}"))
         .send()
@@ -167,13 +174,13 @@ async fn read_json<T: DeserializeOwned>(client: &Client, route: &str) -> Option<
     if response.headers().contains_key(reqwest::header::LINK)
         || response
             .content_length()
-            .is_some_and(|size| size > MAX_BYTES as u64)
+            .is_some_and(|size| size > limit as u64)
     {
         return None;
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.ok()? {
-        if bytes.len() + chunk.len() > MAX_BYTES {
+        if bytes.len() + chunk.len() > limit {
             return None;
         }
         bytes.extend_from_slice(&chunk);
@@ -181,72 +188,152 @@ async fn read_json<T: DeserializeOwned>(client: &Client, route: &str) -> Option<
     serde_json::from_slice(&bytes).ok()
 }
 
-async fn fetch_releases(cache: &mut HashMap<String, Tag>) -> Option<Releases> {
+struct Candidate {
+    name: String,
+    id: String,
+    version: Version,
+    object: Object,
+}
+
+impl Candidate {
+    fn from_ref(item: Reference) -> Option<Self> {
+        let name = item.name.strip_prefix("refs/tags/")?;
+        let (id, version) = name.strip_prefix(TAG_PREFIX)?.rsplit_once("/v")?;
+        let version = Version::parse(version).ok()?;
+        (valid_id(id) && valid_sha(&item.object.sha)).then(|| Self {
+            name: name.into(),
+            id: id.into(),
+            version,
+            object: item.object,
+        })
+    }
+
+    fn release(self, tag: Option<&Tag>) -> Release {
+        let tag = tag.filter(|tag| {
+            tag.sha == self.object.sha
+                && tag.tag == self.name
+                && tag.object.kind == "commit"
+                && valid_sha(&tag.object.sha)
+        });
+        let verified = tag.filter(|tag| tag.verification.verified);
+        Release {
+            revision: verified.map(|tag| tag.object.sha.clone()),
+            unresolved: self.object.kind == "tag" && tag.is_none(),
+            compatibility: verified
+                .and_then(|tag| declaration(&tag.message, &self.id, &self.version)),
+            version: self.version,
+        }
+    }
+}
+
+fn tag_requests<'a>(
+    candidates: &'a [Candidate],
+    cached: &HashMap<String, Tag>,
+    installed: &[Installed],
+    limit: usize,
+) -> Vec<&'a str> {
+    let mut by_component: std::collections::BTreeMap<&str, Vec<&Candidate>> = Default::default();
+    for candidate in candidates {
+        if candidate.object.kind == "tag" && !cached.contains_key(&candidate.object.sha) {
+            by_component
+                .entry(&candidate.id)
+                .or_default()
+                .push(candidate);
+        }
+    }
+    let mut groups: Vec<_> = by_component.into_iter().collect();
+    groups.sort_by_key(|(id, _)| {
+        !installed
+            .iter()
+            .any(|pin| pin.id == *id && reviewed_source(&pin.source_repository))
+    });
+    for (_, group) in &mut groups {
+        group.sort_by(|a, b| b.version.cmp_precedence(&a.version));
+    }
+    // Visit each component before spending another request on older history.
+    let mut shas = Vec::new();
+    for round in 0..limit {
+        for (_, group) in &groups {
+            if let Some(candidate) = group.get(round) {
+                let sha = candidate.object.sha.as_str();
+                if !shas.contains(&sha) {
+                    shas.push(sha);
+                }
+                if shas.len() == limit {
+                    return shas;
+                }
+            }
+        }
+    }
+    shas
+}
+
+fn remaining_requests(requests: &mut VecDeque<Instant>, now: Instant) -> usize {
+    requests.retain(|time| now.saturating_duration_since(*time) < REQUEST_WINDOW);
+    MAX_REQUESTS_PER_HOUR.saturating_sub(requests.len())
+}
+
+async fn fetch_releases(cache: &mut CacheEntry, installed: &[Installed]) -> Option<Releases> {
+    let budget = remaining_requests(&mut cache.requests, Instant::now());
+    if budget == 0 {
+        return None;
+    }
     let client = Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(8))
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
         .user_agent("azd-gui-component-metadata")
         .build()
         .ok()?;
-    let refs: Vec<Reference> = read_json(&client, "matching-refs/tags/component/").await?;
-    if refs.len() > MAX_TAGS {
-        return None;
-    }
-    // Reuse verified and unsigned tag objects while their refs remain in the feed.
-    cache.retain(|sha, _| refs.iter().any(|item| item.object.sha == *sha));
-    let mut releases = Releases::new();
-    for item in refs {
-        let Some(name) = item.name.strip_prefix("refs/tags/") else {
-            continue;
-        };
-        let Some((id, version)) = name
-            .strip_prefix(TAG_PREFIX)
-            .and_then(|name| name.rsplit_once("/v"))
-        else {
-            continue;
-        };
-        let Ok(version) = Version::parse(version) else {
-            continue;
-        };
-        if !valid_id(id) || !valid_sha(&item.object.sha) {
-            continue;
-        }
-        let history = releases.entry(id.into()).or_default();
-        if item.object.kind != "tag" {
-            history.push(Release {
-                version,
-                revision: None,
-                compatibility: None,
+    cache.requests.push_back(Instant::now());
+    let refs: Vec<Reference> =
+        read_json(&client, "matching-refs/tags/component/", MAX_REF_BYTES).await?;
+    let candidates: Vec<_> = refs.into_iter().filter_map(Candidate::from_ref).collect();
+    let present: std::collections::HashSet<_> = candidates
+        .iter()
+        .map(|candidate| &candidate.object.sha)
+        .collect();
+    cache.tags.retain(|sha, _| present.contains(sha));
+    let checks = tag_requests(
+        &candidates,
+        &cache.tags,
+        installed,
+        (budget - 1).min(MAX_TAG_REQUESTS),
+    );
+    let mut transient_tags = HashMap::new();
+    for batch in checks.chunks(TAG_CONCURRENCY) {
+        let mut jobs = tokio::task::JoinSet::new();
+        for &sha in batch {
+            let client = client.clone();
+            let sha = sha.to_owned();
+            cache.requests.push_back(Instant::now());
+            jobs.spawn(async move {
+                let tag: Option<Tag> =
+                    read_json(&client, &format!("tags/{sha}"), MAX_TAG_BYTES).await;
+                tag.filter(|tag| tag.sha == sha).map(|tag| (sha, tag))
             });
-            continue;
         }
-        let tag = if let Some(tag) = cache.get(&item.object.sha) {
-            tag.clone()
-        } else {
-            let tag: Tag = read_json(&client, &format!("tags/{}", item.object.sha)).await?;
-            if tag.sha != item.object.sha {
-                return None;
+        while let Some(result) = jobs.join_next().await {
+            if let Ok(Some((sha, tag))) = result {
+                if tag.verification.verified || tag.verification.reason == "unsigned" {
+                    cache.tags.insert(sha, tag);
+                } else {
+                    transient_tags.insert(sha, tag);
+                }
             }
-            if tag.verification.verified || tag.verification.reason == "unsigned" {
-                cache.insert(item.object.sha, tag.clone());
-            }
-            tag
-        };
-        let verified = tag.verification.verified
-            && tag.tag == name
-            && tag.object.kind == "commit"
-            && valid_sha(&tag.object.sha);
-        history.push(Release {
-            revision: verified.then_some(tag.object.sha),
-            compatibility: if verified {
-                declaration(&tag.message, id, &version)
-            } else {
-                None
-            },
-            version,
-        });
+        }
+    }
+    let mut releases = Releases::new();
+    for candidate in candidates {
+        let tag = cache
+            .tags
+            .get(&candidate.object.sha)
+            .or_else(|| transient_tags.get(&candidate.object.sha));
+        releases
+            .entry(candidate.id.clone())
+            .or_default()
+            .push(candidate.release(tag));
     }
     Some(releases)
 }
@@ -258,6 +345,7 @@ fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
         version: None,
         compatibility: "unknown",
         complete: false,
+        history_incomplete: false,
         breaking_versions: Vec::new(),
         migration_notes: Vec::new(),
     };
@@ -267,12 +355,19 @@ fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
     let Some(history) = releases.and_then(|releases| releases.get(&installed.id)) else {
         return result;
     };
-    if !history.iter().any(|release| release.revision.is_some()) {
-        return result;
-    }
+
     let Ok(current) = Version::parse(&installed.version) else {
         return result;
     };
+    let eligible = |release: &Release| !current.pre.is_empty() || release.version.pre.is_empty();
+    result.history_incomplete = history.iter().any(|release| {
+        release.unresolved
+            && (release.version == current
+                || (eligible(release) && release.version.cmp_precedence(&current).is_gt()))
+    });
+    if !history.iter().any(|release| release.revision.is_some()) {
+        return result;
+    }
     let mut newer: Vec<_> = history
         .iter()
         .filter(|release| release.version.cmp_precedence(&current).is_gt())
@@ -280,10 +375,14 @@ fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
     newer.sort_by(|a, b| a.version.cmp_precedence(&b.version));
     // A stable installation is only offered a stable update. Include intermediate
     // pre-release declarations in the interval for prerelease installations.
-    let Some(latest) = newer.iter().rev().find(|release| {
-        release.revision.is_some() && (!current.pre.is_empty() || release.version.pre.is_empty())
-    }) else {
-        result.state = "noNewer";
+    let Some(latest) = newer
+        .iter()
+        .rev()
+        .find(|release| release.revision.is_some() && eligible(release))
+    else {
+        if !result.history_incomplete {
+            result.state = "noNewer";
+        }
         return result;
     };
     result.state = "updateAvailable";
@@ -297,8 +396,7 @@ fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
                 .is_some_and(|revision| revision.eq_ignore_ascii_case(&installed.source_revision))
     });
     for release in newer.iter().filter(|release| {
-        !release.version.cmp_precedence(&latest.version).is_gt()
-            && (!current.pre.is_empty() || release.version.pre.is_empty())
+        !release.version.cmp_precedence(&latest.version).is_gt() && eligible(release)
     }) {
         match &release.compatibility {
             Some(declaration) if declaration.breaking => {
@@ -330,9 +428,7 @@ pub async fn check_component_updates(
     let requested = Instant::now();
     let mut cache = cache.0.lock().await;
     if should_fetch(cache.last_attempt, requested, force) {
-        let fetch =
-            tokio::time::timeout(Duration::from_secs(18), fetch_releases(&mut cache.tags)).await;
-        let success = if let Ok(Some(releases)) = fetch {
+        let success = if let Some(releases) = fetch_releases(&mut cache, &installed).await {
             cache.snapshot = Some((crate::timestamp::now(), releases));
             true
         } else {
@@ -396,10 +492,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires anonymous network access to the reviewed Reference repository"]
     async fn reads_the_reviewed_reference_release_over_https() {
-        let mut tags = HashMap::new();
-        let releases = tokio::time::timeout(Duration::from_secs(18), fetch_releases(&mut tags))
+        let releases = fetch_releases(&mut CacheEntry::default(), &[])
             .await
-            .expect("the approved source exceeded its deadline")
             .expect("the approved source was unavailable");
         let pin = installed(SOURCE);
         assert!(releases[&pin.id]
@@ -420,6 +514,7 @@ mod tests {
         Release {
             version,
             revision: Some(installed(SOURCE).source_revision),
+            unresolved: false,
             compatibility,
         }
     }
@@ -445,6 +540,30 @@ mod tests {
     }
 
     #[test]
+    fn stable_upgrade_uses_the_stable_declaration_after_a_release_candidate() {
+        let fixture = include_str!("../tests/fixtures/deployment-validation-component-update.json")
+            .replace('\n', "");
+        let prerelease = fixture.replace("2.0.0", "2.0.0-rc.1");
+        let pin = installed(SOURCE);
+        let mut releases = Releases::from([(
+            pin.id.clone(),
+            vec![
+                release("1.1.1", None),
+                release("2.0.0-rc.1", Some(&prerelease)),
+                release("2.0.0", None),
+            ],
+        )]);
+        let unknown = update(&pin, Some(&releases));
+        assert_eq!(unknown.version.as_deref(), Some("2.0.0"));
+        assert_eq!(unknown.compatibility, "unknown");
+        releases.get_mut(&pin.id).unwrap()[2] = release("2.0.0", Some(&fixture));
+        let known = update(&pin, Some(&releases));
+        assert_eq!(known.compatibility, "breaking");
+        assert_eq!(known.breaking_versions, ["2.0.0"]);
+        assert!(known.migration_notes[0].contains("PowerShell 7.6"));
+    }
+
+    #[test]
     fn distinguishes_missing_metadata_and_untrusted_sources_from_explicit_declarations() {
         let unchanged =
             r#"{"componentId":"deployment-validation","version":"1.1.2","breaking":false}"#;
@@ -467,6 +586,74 @@ mod tests {
         installed.source_repository = "https://github.com/private/example".into();
         assert_eq!(update(&installed, Some(&releases)).state, "unavailable");
         assert!(release("1.1.3", Some(unchanged)).compatibility.is_none());
+    }
+
+    fn candidate(id: &str, number: u32) -> Candidate {
+        Candidate::from_ref(Reference {
+            name: format!("refs/tags/component/{id}/v{number}.0.0"),
+            object: Object {
+                sha: format!("{number:040x}"),
+                kind: "tag".into(),
+            },
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn large_tag_histories_share_budget_across_components_and_prioritize_installed_pins() {
+        let mut candidates: Vec<_> = (1..=60)
+            .map(|version| candidate("large-history", version))
+            .collect();
+        candidates.push(candidate("deployment-validation", 61));
+        candidates.push(candidate("small-history", 62));
+        let selected = tag_requests(&candidates, &HashMap::new(), &[installed(SOURCE)], 3);
+        assert_eq!(
+            selected,
+            [
+                format!("{:040x}", 61),
+                format!("{:040x}", 60),
+                format!("{:040x}", 62)
+            ]
+        );
+        assert!(tag_requests(&candidates, &HashMap::new(), &[], 0).is_empty());
+        let now = Instant::now();
+        let mut requests = VecDeque::from(vec![now; MAX_REQUESTS_PER_HOUR]);
+        assert_eq!(remaining_requests(&mut requests, now), 0);
+        assert_eq!(
+            remaining_requests(&mut requests, now + REQUEST_WINDOW),
+            MAX_REQUESTS_PER_HOUR
+        );
+    }
+
+    #[test]
+    fn unreadable_tags_leave_only_the_affected_component_incomplete() {
+        let unresolved = candidate("deployment-validation", 3).release(None);
+        let mut other = installed(SOURCE);
+        other.id = "small-history".into();
+        let mut releases = Releases::from([
+            (
+                "deployment-validation".into(),
+                vec![release("1.1.1", None), unresolved],
+            ),
+            (
+                other.id.clone(),
+                vec![release("1.1.1", None), release("2.0.0", None)],
+            ),
+        ]);
+        let limited = update(&installed(SOURCE), Some(&releases));
+        assert_eq!(limited.state, "unavailable");
+        assert!(limited.history_incomplete);
+        let unaffected = update(&other, Some(&releases));
+        assert_eq!(unaffected.version.as_deref(), Some("2.0.0"));
+        assert!(!unaffected.history_incomplete);
+
+        releases
+            .get_mut("deployment-validation")
+            .unwrap()
+            .push(release("2.0.0", None));
+        let known = update(&installed(SOURCE), Some(&releases));
+        assert_eq!(known.version.as_deref(), Some("2.0.0"));
+        assert!(known.history_incomplete);
     }
 
     #[test]

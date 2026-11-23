@@ -7,6 +7,7 @@ export interface ComponentUpdate {
   version: string | null;
   compatibility: "unknown" | "breaking" | "noBreakingDeclared";
   complete: boolean;
+  historyIncomplete: boolean;
   breakingVersions: string[];
   migrationNotes: string[];
 }

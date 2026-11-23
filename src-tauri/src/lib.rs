@@ -2186,6 +2186,22 @@ async fn get_project_component_provenance(
         .map_err(|_| AppError::Invalid("Component provenance is unavailable.".into()))
 }
 
+#[tauri::command]
+async fn get_template_component_provenance(
+    source_binding: models::LocalSourceBinding,
+) -> AppResult<component_provenance::ComponentProvenanceRead> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(&source_binding.source_path);
+        let _local_root = component_provenance::Root::open(&root).map_err(|_| {
+            AppError::Invalid("Template component provenance requires a safe local folder.".into())
+        })?;
+        local_source::verify_for_path(&source_binding, &root)?;
+        Ok(component_provenance::read(&root))
+    })
+    .await
+    .map_err(|_| AppError::Invalid("Template component provenance is unavailable.".into()))?
+}
+
 struct PreparedArtifactRead {
     root: PathBuf,
     contract: report_artifacts::ArtifactContract,
@@ -2848,6 +2864,7 @@ pub fn run() {
             get_project_validation_report,
             get_project_deployment_receipt,
             get_project_component_provenance,
+            get_template_component_provenance,
             component_updates::check_component_updates,
             get_project_report_artifacts,
             list_project_environments,

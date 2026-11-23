@@ -64,7 +64,7 @@ describe("local component provenance", () => {
     await act(() => finish({
       state: "stale", checkedAt: "2026-11-23T10:00:00Z",
       updates: [{ id: "deployment-validation", state: "updateAvailable", version: "2.0.1",
-        compatibility: "breaking", complete: false, breakingVersions: ["2.0.0"],
+        compatibility: "breaking", complete: false, historyIncomplete: true, breakingVersions: ["2.0.0"],
         migrationNotes: ["Upgrade to PowerShell 7.6."] }]
     }));
     expect(screen.getByText(/Update information is stale/)).toBeInTheDocument();

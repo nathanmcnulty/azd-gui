@@ -15,7 +15,9 @@ declaration to the annotation of the next new release:
 1. Write JSON matching [the provisional schema](../schemas/azd-component-update.schema.json).
    Copy the component ID and exact version from the tag. Set `breaking` to
    `true` or `false` for that release. If it breaks existing use, include a
-   short reason or migration step in `migrationNotes`.
+   short reason or migration step in `migrationNotes`. For a stable tag,
+   compare with the previous stable release and carry forward any breaking
+   changes introduced in its release candidates.
 2. Validate the declaration in PowerShell 7.6 and generate the annotation line.
    Keep the existing release annotation and include this line in the same
    annotation before creating the signed tag.

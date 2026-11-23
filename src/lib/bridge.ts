@@ -37,6 +37,7 @@ import type {
   ProjectTemplateSnapshot,
   PrepareDeploymentRequest,
   TemplateInspection,
+  LocalSourceBinding,
   ToolInstallApprovalGrant,
   ToolInstallPlan,
   ToolStatus,
@@ -534,6 +535,11 @@ export async function getProjectState(
 export async function getProjectValidationReport(projectPath: string): Promise<ValidationReportRead> {
   if (!isTauri()) return { state: "notFound" };
   return invoke<ValidationReportRead>("get_project_validation_report", { projectPath });
+}
+
+export async function getTemplateComponentProvenance(sourceBinding: LocalSourceBinding): Promise<ComponentProvenanceRead> {
+  if (!isTauri()) return { state: "notFound", unknownMetadata: false, components: [] };
+  return invoke<ComponentProvenanceRead>("get_template_component_provenance", { sourceBinding });
 }
 
 export async function getProjectComponentProvenance(projectPath: string): Promise<ComponentProvenanceRead> {

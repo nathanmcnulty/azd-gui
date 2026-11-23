@@ -22,7 +22,7 @@ it('reopens saved PIM recovery from Home without invoking azd, Graph or old appr
  await screen.findByText('Partial or uncertain; investigate and recheck');
  expect(screen.getByLabelText('Environment')).toHaveValue('recovery');
  expect(native.invoke).toHaveBeenCalledWith('inspect_pim_pilot',{projectPath:'C:/private-pilot',environment:'recovery',reveal:false});
- expect(native.invoke.mock.calls.every(([name])=>['inspect_pim_pilot','dispose_graph_session','check_component_updates'].includes(name))).toBe(true);
+ expect(native.invoke.mock.calls.every(([name])=>['inspect_pim_pilot','dispose_graph_session','check_component_updates','get_project_component_provenance'].includes(name))).toBe(true);
  expect(screen.queryByText('Approve application / resume')).toBeNull();
 });
 

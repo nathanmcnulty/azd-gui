@@ -324,7 +324,44 @@ describe("desktop experience", () => {
     expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeEnabled();
   });
 
-  it("checks updates at startup and on template load without delaying the wizard", async () => {
+  it("compares exact pins and shows a publisher breaking warning inside the open local template wizard", async () => {
+    const path = "C:\\Deployments\\component-smoke";
+    const sourceBinding = { sourcePath: path, contentDigest: "a".repeat(64) };
+    const inspection = await bridge.inspectLocalTemplate(path);
+    vi.spyOn(bridge, "chooseFolder").mockResolvedValue(path);
+    vi.spyOn(bridge, "inspectLocalTemplate").mockResolvedValue({ ...inspection, sourceBinding });
+    const components = [{
+      id: "deployment-validation", version: "1.1.1", sourceRepository: "https://github.com/nathanmcnulty/azd-reference",
+      sourceRevision: "0c96cc89c554ffc3b3ca82ceda12da6591e816c1", status: "verified", unknownMetadata: false, files: []
+    }] as const;
+    const provenance = vi.spyOn(bridge, "getTemplateComponentProvenance")
+      .mockResolvedValue({ state: "available", unknownMetadata: false, components: [{ ...components[0], files: [] }] });
+    let finish!: (value: componentUpdates.ComponentUpdates) => void;
+    const updates = vi.spyOn(componentUpdates, "checkComponentUpdates")
+      .mockResolvedValueOnce({ state: "unavailable", checkedAt: null, updates: [] })
+      .mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+
+    render(App);
+    await fireEvent.click(await screen.findByRole("button", { name: /^open project$/i }));
+    expect(await screen.findByRole("heading", { name: "Choose source" })).toBeVisible();
+    await waitFor(() => expect(updates).toHaveBeenLastCalledWith(components, false));
+    expect(provenance).toHaveBeenCalledExactlyOnceWith(sourceBinding);
+    const next = screen.getByRole("button", { name: /^continue$/i });
+    expect(next).toBeEnabled();
+    await fireEvent.click(next);
+    expect(await screen.findByRole("heading", { name: "Review template" })).toBeVisible();
+
+    await act(() => finish({
+      state: "fresh", checkedAt: new Date().toISOString(),
+      updates: [{ id: components[0].id, state: "updateAvailable", version: "2.0.1", compatibility: "breaking",
+        complete: false, historyIncomplete: false, breakingVersions: ["2.0.0"], migrationNotes: ["Upgrade to PowerShell 7.6."] }]
+    }));
+    const panel = screen.getByRole("region", { name: "Shared component provenance" });
+    expect(within(panel).getByText("Breaking changes declared in 2.0.0.")).toBeVisible();
+    expect(within(panel).getByText("Upgrade to PowerShell 7.6.")).toBeVisible();
+  });
+
+  it("warms the update feed at startup without delaying a catalog wizard", async () => {
     const updates = vi.spyOn(componentUpdates, "checkComponentUpdates").mockImplementation(() => new Promise(() => {}));
     render(App);
     expect(updates).toHaveBeenCalledTimes(1);
@@ -334,7 +371,7 @@ describe("desktop experience", () => {
       screen.getAllByRole("button", { name: /configure deployment/i })[2]
     );
 
-    expect(updates).toHaveBeenCalledTimes(2);
+    expect(updates).toHaveBeenCalledExactlyOnceWith();
     expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
     expect(screen.getByText(/STEP 1 OF 9/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reviewed catalog/i })).toHaveAttribute(

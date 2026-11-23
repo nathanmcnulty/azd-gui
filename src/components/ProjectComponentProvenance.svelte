@@ -2,17 +2,18 @@
   import { onDestroy } from "svelte";
   import Icon from "./Icon.svelte";
   import StatusPill from "./StatusPill.svelte";
-  import { getProjectComponentProvenance } from "../lib/bridge";
+  import { getProjectComponentProvenance, getTemplateComponentProvenance } from "../lib/bridge";
   import { checkComponentUpdates, type ComponentUpdates } from "../lib/component-updates";
   import { componentReasonText, componentStatusLabels, type ComponentProvenanceRead } from "../lib/component-provenance";
-  import type { ProjectSummary } from "../lib/types";
+  import type { LocalSourceBinding, ProjectSummary } from "../lib/types";
 
-  export let project: ProjectSummary;
+  export let project: ProjectSummary | undefined = undefined;
+  export let template: LocalSourceBinding | undefined = undefined;
   const absent: ComponentProvenanceRead = { state: "notFound", unknownMetadata: false, components: [] };
   let result = absent;
   let loading = false;
   let request = 0;
-  let currentPath = "";
+  let currentSource = "";
   let updates: ComponentUpdates | null = null;
   let checking = false;
   let updateRequest = 0;
@@ -35,19 +36,25 @@
     }
   }
 
-  async function refresh(path = project.path) {
+  async function refresh(source: string, path: string, binding?: LocalSourceBinding) {
     const requestId = ++request;
     ++updateRequest;
     clearTimeout(expiry);
     checking = false;
     updates = null;
-    if (path !== currentPath) result = absent;
-    currentPath = path;
+    if (source !== currentSource) result = absent;
+    currentSource = source;
+    if (!path && !binding) {
+      loading = false;
+      return;
+    }
     loading = true;
     try {
-      const next = await getProjectComponentProvenance(path);
+      const next = binding
+        ? await getTemplateComponentProvenance(binding)
+        : await getProjectComponentProvenance(path);
       if (requestId === request) {
-        result = next;
+        result = next ?? absent;
         void refreshUpdates();
       }
     } catch {
@@ -57,7 +64,8 @@
     }
   }
 
-  $: void refresh(project.path);
+  $: sourceKey = template ? template.sourcePath + "|" + template.contentDigest : project?.path ?? "";
+  $: if (sourceKey !== currentSource) void refresh(sourceKey, project?.path ?? "", template);
   onDestroy(() => { request += 1; updateRequest += 1; clearTimeout(expiry); });
 </script>
 
@@ -98,6 +106,9 @@
             <div><dt>Source repository (declared)</dt><dd>{component.sourceRepository}</dd></div>
             <div><dt>Source revision (declared)</dt><dd><code>{component.sourceRevision}</code></dd></div>
           </dl>
+          {#if update?.historyIncomplete}
+            <p class="callout warning">Release history is incomplete. Some versions could not be checked.</p>
+          {/if}
           {#if update?.state === "updateAvailable"}
             <p>Available version: <strong>{update.version}</strong></p>
             {#if update.compatibility === "breaking"}
@@ -136,7 +147,7 @@
       {#if result.state === "available" && result.components.length}
         <button class="secondary compact" disabled={checking || loading} on:click={() => refreshUpdates(true)}><Icon name="refresh" size={14} /> Check for updates</button>
       {/if}
-      <button class="secondary compact" disabled={loading} on:click={() => refresh()}><Icon name="refresh" size={14} /> Refresh components</button>
+      <button class="secondary compact" disabled={loading} on:click={() => refresh(sourceKey, project?.path ?? "", template)}><Icon name="refresh" size={14} /> Refresh components</button>
     </div>
   </section>
 {/if}
