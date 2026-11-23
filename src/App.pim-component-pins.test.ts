@@ -51,6 +51,23 @@ it.each([null, undefined])("shows the reviewed source template's PIM pins before
   expect(provenance).not.toHaveBeenCalled();
 });
 
+it("opens only the pinned producer guide on explicit action", async () => {
+  const open = vi.spyOn(bridge, "openExternalUrl").mockResolvedValue(undefined);
+  const connect = vi.spyOn(pimPlan, "connectPimPlan");
+  const refreshRoles = vi.spyOn(pimRoles, "refreshPimRoles");
+
+  await openPilot(pilot);
+  const guideButton = screen.getByRole("button", { name: "Open update guide" });
+  expect(open).not.toHaveBeenCalled();
+
+  await fireEvent.click(guideButton);
+  expect(open).toHaveBeenCalledExactlyOnceWith(
+    "https://github.com/nathanmcnulty/azd-pim/blob/9fd616afe7b278df7a91faa015b6cb6bb32d57dc/docs/component-updates.md"
+  );
+  expect(connect).not.toHaveBeenCalled();
+  expect(refreshRoles).not.toHaveBeenCalled();
+});
+
 it("withholds the declaration when the catalog and native PIM pins differ", async () => {
   nativeSource.commitOverride = "0".repeat(40);
   await openPilot(pilot);

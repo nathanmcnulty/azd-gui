@@ -52,6 +52,8 @@ match their respective source locks byte for byte.
   `azd-components.lock.json` in azd-pim at
   `48bdbadb6a02c06fb4144e616ed9562b905b36ec`. Its standalone planner shows
   these declarations when the catalog pin matches the bundled native source.
+  **Open update guide** opens the azd-pim project guide in your browser. The
+  guide has its own reviewed documentation revision alongside the template pin.
 
 Each snapshot applies only to its catalog entry, repository, revision and path.
 When refreshing a pin, review the new source lock before updating the snapshot

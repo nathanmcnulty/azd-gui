@@ -24,14 +24,16 @@ const reviewedLocks = [
     repository: "https://github.com/nathanmcnulty/azd-pim",
     commit: "48bdbadb6a02c06fb4144e616ed9562b905b36ec",
     subdirectory: undefined,
-    lock: pimPilotLock
+    lock: pimPilotLock,
+    // The producer guide was reviewed and landed separately from the template pin.
+    updateGuideUrl: "https://github.com/nathanmcnulty/azd-pim/blob/9fd616afe7b278df7a91faa015b6cb6bb32d57dc/docs/component-updates.md"
   }
 ];
 
-export function catalogComponentPins(entry: CatalogEntry) {
+export function reviewedCatalogComponentSnapshot(entry: CatalogEntry) {
   if (entry.source !== "bundled" || entry.trusted !== true) return undefined;
   return reviewedLocks.find((snapshot) =>
     snapshot.id === entry.id && snapshot.repository === entry.repository &&
     snapshot.commit === entry.commit && snapshot.subdirectory === (entry.subdirectory ?? undefined)
-  )?.lock.components;
+  );
 }

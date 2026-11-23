@@ -1,12 +1,13 @@
-import { cleanup, render, screen, within } from "@testing-library/svelte";
-import { afterEach, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { afterEach, expect, it, vi } from "vitest";
 import CatalogComponentPins from "./CatalogComponentPins.svelte";
+import * as bridge from "../lib/bridge";
 import { bundledCatalog } from "../lib/mock-data";
 import type { CatalogEntry } from "../lib/types";
 
 const deploymentCheck = bundledCatalog.entries.find(({ id }) => id === "deployment-check")!;
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 it("shows the bundled lock declaration for the exact reviewed template", () => {
   render(CatalogComponentPins, { entry: deploymentCheck });
@@ -39,6 +40,33 @@ it("switches to Maester's exact lock and clears it for a different template path
 
   await rerender({ entry: { ...maester, subdirectory: "container-app-job" } });
   expect(screen.queryByRole("region", { name: "Declared template components" })).not.toBeInTheDocument();
+});
+
+it("withholds the PIM guide when the selected source is no longer the reviewed artifact", async () => {
+  const pilot = bundledCatalog.entries.find(({ id }) => id === "pim-pilot")!;
+  const { rerender } = render(CatalogComponentPins, { entry: pilot });
+  expect(screen.getByRole("button", { name: "Open update guide" })).toBeInTheDocument();
+
+  for (const entry of [
+    { ...pilot, source: "external" as const },
+    { ...pilot, trusted: false },
+    { ...pilot, commit: "0".repeat(40) },
+    { ...pilot, subdirectory: "another-solution" },
+    deploymentCheck
+  ]) {
+    await rerender({ entry });
+    expect(screen.queryByRole("button", { name: "Open update guide" })).not.toBeInTheDocument();
+  }
+});
+
+it("reports a browser opening failure in the current guide panel", async () => {
+  const pilot = bundledCatalog.entries.find(({ id }) => id === "pim-pilot")!;
+  vi.spyOn(bridge, "openExternalUrl").mockRejectedValue(new Error("Browser unavailable"));
+  render(CatalogComponentPins, { entry: pilot });
+
+  await fireEvent.click(screen.getByRole("button", { name: "Open update guide" }));
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("Could not open the update guide.");
 });
 
 const mismatches: [string, Partial<CatalogEntry>][] = [
