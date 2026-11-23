@@ -325,13 +325,14 @@ fn valid_endpoint_host(host: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum Unknown {
     Unavailable,
+    ProviderUnavailable,
     AccessDenied,
     Incomplete,
     Cancelled,
 }
 
 trait Transport {
-    fn identity(&self) -> Option<Identity>;
+    fn identity(&self) -> Result<Identity, Unknown>;
 
     // Native evidence for this exact saved target, independent of the application response.
     fn reviewed_endpoint_host(&self, target: &Target) -> Option<&str>;
@@ -343,8 +344,10 @@ trait Transport {
 
 struct OfflineTransport;
 impl Transport for OfflineTransport {
-    fn identity(&self) -> Option<Identity> {
-        None
+    fn identity(&self) -> Result<Identity, Unknown> {
+        // Production has no no-refresh application credential or independently
+        // verified workflow hostname for this target.
+        Err(Unknown::ProviderUnavailable)
     }
     fn reviewed_endpoint_host(&self, _: &Target) -> Option<&str> {
         None
@@ -516,10 +519,9 @@ impl Reviews {
             .map_err(|_| invalid("Application review is unavailable."))?;
         state.pending = None;
         let target = resolve(state.revision)?;
-        let Some(identity) = transport.identity() else {
-            return Ok(Verification::Unknown {
-                reason: Unknown::Unavailable,
-            });
+        let identity = match transport.identity() {
+            Ok(identity) => identity,
+            Err(reason) => return Ok(Verification::Unknown { reason }),
         };
         if identity.tenant != target.tenant_id {
             return Ok(Verification::Foreign {
@@ -646,7 +648,7 @@ impl Reviews {
         if pending.issued.elapsed() >= REVIEW_LIFETIME
             || pending.target != target
             || expected_digest != pending.digest
-            || transport.identity().as_ref() != Some(&pending.identity)
+            || transport.identity().ok().as_ref() != Some(&pending.identity)
             || transport.reviewed_endpoint_host(&target) != Some(pending.endpoint_host.as_str())
         {
             return Err(invalid(
@@ -774,7 +776,7 @@ fn confirm_saved_project(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::models::{CatalogEntry, ProjectSummary, ProjectTemplateSnapshot};
     use std::{cell::Cell, collections::HashMap, fs, sync::Arc};
@@ -858,7 +860,7 @@ mod tests {
 
     const WORKFLOW_HOST: &str = "example.logic.azure.com";
 
-    fn application_body() -> Value {
+    pub(crate) fn application_body() -> Value {
         json!({
             "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#applications(id,appId,signInAudience,identifierUris,api)/$entity",
             "id": OBJECT,
@@ -896,8 +898,8 @@ mod tests {
     }
 
     impl Transport for Scripted {
-        fn identity(&self) -> Option<Identity> {
-            self.identity.clone()
+        fn identity(&self) -> Result<Identity, Unknown> {
+            self.identity.clone().ok_or(Unknown::Unavailable)
         }
         fn reviewed_endpoint_host(&self, target: &Target) -> Option<&str> {
             assert_eq!(target.tenant_id, uuid(TENANT).unwrap());
@@ -935,6 +937,60 @@ mod tests {
             self.read_count.set(self.read_count.get() + 1);
             self.response.clone()
         }
+    }
+
+    pub(crate) fn verify_worker_response(
+        tenant: Uuid,
+        operator: String,
+        status: u16,
+        body: Option<String>,
+        expected_unknown: Option<Unknown>,
+    ) {
+        let fixture = Fixture::new();
+        let request = fixture.request();
+        let identity = Identity { tenant, operator };
+        let transport = Scripted {
+            identity: Some(identity.clone()),
+            reviewed_host: Some(WORKFLOW_HOST),
+            response: Ok(ApplicationRead {
+                identity,
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                body: body.unwrap_or_default().into_bytes(),
+            }),
+            read_count: Cell::new(0),
+        };
+        let result = fixture.verify_saved(&request, &transport).unwrap();
+        match (result, expected_unknown) {
+            (
+                Verification::Verified {
+                    verification_digest,
+                    ..
+                },
+                None,
+            ) => {
+                let receipt = fixture
+                    .confirm_saved(&request, &transport, &verification_digest)
+                    .unwrap();
+                let receipt = serde_json::to_value(receipt).unwrap();
+                assert_eq!(receipt["binding"]["objectId"], OBJECT);
+                assert_eq!(receipt["applicationId"], APPLICATION);
+                assert!(receipt.get("body").is_none());
+                assert!(fixture
+                    .confirm_saved(&request, &transport, &verification_digest)
+                    .is_err());
+            }
+            (Verification::Unknown { reason }, Some(expected)) => {
+                assert_eq!(
+                    serde_json::to_value(reason).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+                assert!(fixture
+                    .confirm_saved(&request, &transport, &"a".repeat(64))
+                    .is_err());
+            }
+            _ => panic!("Unexpected application verification state"),
+        }
+        assert_eq!(transport.read_count.get(), 1);
     }
 
     fn verify(reviews: &Reviews, target: Target, transport: &Scripted) -> String {
@@ -1049,7 +1105,7 @@ mod tests {
                 .verify_saved(&fixture.request(), &OfflineTransport)
                 .unwrap(),
             Verification::Unknown {
-                reason: Unknown::Unavailable
+                reason: Unknown::ProviderUnavailable
             }
         ));
         assert_eq!(fs::read_to_string(path).unwrap(), text);
@@ -1595,7 +1651,7 @@ mod tests {
         assert!(matches!(
             reviews.verify(|_| Ok(target), &OfflineTransport).unwrap(),
             Verification::Unknown {
-                reason: Unknown::Unavailable
+                reason: Unknown::ProviderUnavailable
             }
         ));
     }

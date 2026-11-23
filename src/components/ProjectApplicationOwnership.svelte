@@ -13,6 +13,7 @@
 
   const explanations = {
     unavailable: "A verified application read is unavailable.",
+    providerUnavailable: "Application verification requires a verified Graph session that can read without refreshing credentials and an independently verified workflow hostname.",
     accessDenied: "The application read was denied.",
     incomplete: "The application response was incomplete.",
     cancelled: "The application read was cancelled.",

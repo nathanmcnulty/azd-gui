@@ -46,6 +46,14 @@ internal interface IMsalSession
     Task<AuthenticationResult> RefreshAsync(string[] scopes, IAccount account, CancellationToken cancellation);
 }
 
+// A provider can supply an already-held credential only. This contract cannot
+// run MSAL, inspect a shared cache, refresh or request scopes. The production
+// MSAL session has no such capability; only the offline substitute implements it.
+internal interface IExistingGraphCredential
+{
+    AuthenticationResult? Current { get; }
+}
+
 internal sealed class MsalSession : IMsalSession
 {
     private readonly IPublicClientApplication application;
@@ -79,6 +87,7 @@ public sealed class OwnedGraphSession : IDisposable
     private string[]? approvedGrants;
     private GraphObservation? observation;
     private bool disposed;
+    private bool verified;
     private readonly Dictionary<string, string> pimContinuations = new(StringComparer.Ordinal);
     private int pimReads;
     private int pimBytes;
@@ -425,7 +434,51 @@ public sealed class OwnedGraphSession : IDisposable
         RequireReadSuccess(response);
         Validate(result);
         Progress("verificationCompleted", grants);
+        verified = true;
     });
+
+    public string ReadApplicationJson(string tenantId, string operatorFingerprint, string objectId)
+    {
+        const string scope = "Application.Read.All";
+        // Keep even a maximally JSON-escaped UTF-8 body within the 64 KiB RPC frame.
+        const int bodyLimit = 8192;
+        string? reply = null;
+        Guard(() =>
+        {
+            if (!verified || observation is null || options.Purpose is not null ||
+                !string.Equals(tenantId, options.TenantId, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(operatorFingerprint, observation.PrincipalFingerprint, StringComparison.Ordinal) ||
+                !Guid.TryParseExact(objectId, "D", out var id) || id == Guid.Empty)
+                throw new GraphBoundaryException("GraphIdentityMismatch");
+            if (!options.Scopes.Contains(scope, StringComparer.OrdinalIgnoreCase))
+                throw new GraphBoundaryException("GraphDelegatedScopeMissing");
+            if (credential is not IExistingGraphCredential source || source.Current is not { } result)
+                throw new GraphBoundaryException("ApplicationReadUnavailable");
+            Validate(result); // Rechecks expiry, account, tenant, principal and exact grants.
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"https://graph.microsoft.com/v1.0/applications/{id:D}?$select=id,appId,signInAudience,identifierUris,api");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", result.AccessToken);
+            request.Headers.CacheControl = new CacheControlHeaderValue { NoCache = true };
+            using var response = http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).GetAwaiter().GetResult();
+            string? body = null;
+            if ((int)response.StatusCode == 200 && response.Content.Headers.ContentLength.GetValueOrDefault() <= bodyLimit)
+            {
+                using var stream = response.Content.ReadAsStreamAsync(timeout.Token).GetAwaiter().GetResult();
+                var buffer = new byte[bodyLimit + 1];
+                int length = stream.ReadAtLeastAsync(buffer, buffer.Length, false, timeout.Token).AsTask().GetAwaiter().GetResult();
+                if (length <= bodyLimit)
+                {
+                    try { body = new UTF8Encoding(false, true).GetString(buffer, 0, length); }
+                    catch (DecoderFallbackException) { /* Missing body maps to incomplete. */ }
+                }
+            }
+            Validate(result);
+            reply = JsonSerializer.Serialize(new { status = (int)response.StatusCode, body }, Bootstrap.JsonOptions);
+        });
+        return reply!;
+    }
 
     // Authentication evidence contains whitelist-only metadata. PIM collection
     // JSON stays inside the worker until transformed by the pinned planner.
