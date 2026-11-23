@@ -1,4 +1,15 @@
+#Requires -Version 7.6
+
 BeforeAll {
+    # Non-Windows hosts need only a mock target, never an Authenticode fallback.
+    # Leave the real Windows command intact; an unmocked call must fail closed.
+    if (-not (Get-Command Get-AuthenticodeSignature -ErrorAction SilentlyContinue)) {
+        function Get-AuthenticodeSignature {
+            param([string] $LiteralPath)
+            throw 'Offline test shim must be mocked; no Authenticode verification occurred.'
+        }
+    }
+
     $signer = Join-Path $PSScriptRoot '../sign-windows-artifact.ps1'
     # Signing is mocked: these tests never request Azure credentials or signatures.
     function Invoke-ArtifactSigning {

@@ -16,7 +16,7 @@
       "id": "pwsh",
       "name": "PowerShell",
       "kind": "tool",
-      "minimumVersion": "7.4.0",
+      "minimumVersion": "7.6.0",
       "required": true,
       "installProvider": "manual",
       "documentationUrl": "https://learn.microsoft.com/powershell/scripting/install/installing-powershell"

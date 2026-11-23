@@ -40,6 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Assert PowerShell 7.6 minimum
+        shell: pwsh
+        run: ./scripts/assert-powershell-version.ps1
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
@@ -73,6 +77,13 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$packageVersion") {
             throw "Release tag '$env:GITHUB_REF_NAME' must equal 'v$packageVersion'."
           }
+
+      - name: Install pinned Pester
+        shell: pwsh
+        run: Install-Module Pester -RequiredVersion 6.2.0 -Scope CurrentUser -Force -Repository PSGallery
+
+      - name: Test offline PowerShell signing and verification
+        run: npm run test:powershell
 
       - name: Install frontend dependencies
         run: npm ci

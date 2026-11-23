@@ -13,6 +13,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:powershell": "pwsh -NoLogo -NoProfile -NonInteractive -File scripts/test-powershell.ps1",
     "test:native": "cargo test --manifest-path src-tauri/Cargo.toml",
     "format:native": "cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check",
     "lint:native": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
@@ -20,7 +21,7 @@
     "audit:cargo": "cargo audit --file src-tauri/Cargo.lock --deny warnings",
     "audit:dependencies": "npm run audit:npm && npm run audit:cargo",
     "ci": "npm run check && npm test && npm run build",
-    "verify": "npm run ci && npm run format:native && npm run lint:native && npm run test:native",
+    "verify": "npm run ci && npm run test:powershell && npm run format:native && npm run lint:native && npm run test:native",
     "tauri": "tauri"
   },
   "dependencies": {
