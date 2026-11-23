@@ -33,7 +33,7 @@ $info.RedirectStandardError = $true
 $info.Environment.Clear()
 $info.Environment['SystemRoot'] = $env:SystemRoot
 $info.Environment['SystemDrive'] = $env:SystemDrive
-$info.Environment['PATH'] = @($system, $gitDir, $pwshDir) -join ';'
+$info.Environment['PATH'] = @($system, (Join-Path $system 'WindowsPowerShell\v1.0'), $gitDir, $pwshDir) -join ';'
 $info.Environment['TEMP'] = $temp
 $info.Environment['TMP'] = $temp
 $info.Environment['USERPROFILE'] = $profile
