@@ -243,38 +243,70 @@ fn installed_version(installed: &Installed) -> Option<Version> {
     Version::parse(&installed.version).ok()
 }
 
+fn eligible_for_update(current: &Version, candidate: &Version) -> bool {
+    !current.pre.is_empty() || candidate.pre.is_empty()
+}
+
 fn tag_requests<'a>(
     candidates: &'a [Candidate],
     missing: &HashSet<String>,
     installed: &[Installed],
     limit: usize,
 ) -> Vec<&'a str> {
-    let ids: HashSet<&str> = installed
-        .iter()
-        .take(MAX_INSTALLED)
-        .filter(|pin| installed_version(pin).is_some())
-        .map(|pin| pin.id.as_str())
-        .collect();
+    let mut pins: HashMap<&str, Vec<Version>> = HashMap::new();
+    for pin in installed.iter().take(MAX_INSTALLED) {
+        if let Some(version) = installed_version(pin) {
+            pins.entry(&pin.id).or_default().push(version);
+        }
+    }
     let mut groups: BTreeMap<&str, Vec<&Candidate>> = BTreeMap::new();
     for candidate in candidates {
-        if ids.contains(candidate.id.as_str()) && missing.contains(&candidate.object.sha) {
+        if pins.contains_key(candidate.id.as_str()) && missing.contains(&candidate.object.sha) {
             groups.entry(&candidate.id).or_default().push(candidate);
         }
     }
-    for group in groups.values_mut() {
+    let mut preferred = Vec::new();
+    for (id, group) in &mut groups {
         group.sort_by(|a, b| b.version.cmp_precedence(&a.version));
+        let mut ranks = HashMap::<&str, usize>::new();
+        for current in &pins[id] {
+            let anchor = group.iter().copied().find(|tag| tag.version == *current);
+            let later = group.iter().copied().filter(|tag| {
+                eligible_for_update(current, &tag.version)
+                    && tag.version.cmp_precedence(current).is_gt()
+            });
+            for (rank, tag) in anchor.into_iter().chain(later).take(limit).enumerate() {
+                ranks
+                    .entry(&tag.object.sha)
+                    .and_modify(|best| *best = (*best).min(rank))
+                    .or_insert(rank);
+            }
+        }
+        let mut ranked: Vec<_> = group
+            .iter()
+            .filter_map(|tag| ranks.get(tag.object.sha.as_str()).map(|rank| (*rank, *tag)))
+            .collect();
+        // A shared component can have both stable and prerelease consumers.
+        // Keep each pin's highest-ranked tags near the front of the union.
+        ranked.sort_by_key(|(rank, _)| *rank);
+        preferred.push(ranked.into_iter().map(|(_, tag)| tag).collect::<Vec<_>>());
     }
-    // Give each selected component a turn before checking older releases.
+
+    let fallback: Vec<_> = groups.into_values().collect();
     let mut shas = Vec::new();
-    for round in 0..limit {
-        for group in groups.values() {
-            if let Some(candidate) = group.get(round) {
-                let sha = candidate.object.sha.as_str();
-                if !shas.contains(&sha) {
-                    shas.push(sha);
-                }
-                if shas.len() == limit {
-                    return shas;
+    // Give each selected component a turn. Use other history only after all
+    // prioritized work, so an older or ineligible tag cannot displace it.
+    for tier in [&preferred, &fallback] {
+        for round in 0..limit {
+            for group in tier {
+                if let Some(candidate) = group.get(round) {
+                    let sha = candidate.object.sha.as_str();
+                    if !shas.contains(&sha) {
+                        shas.push(sha);
+                    }
+                    if shas.len() == limit {
+                        return shas;
+                    }
                 }
             }
         }
@@ -344,7 +376,7 @@ fn update(installed: &Installed, releases: Option<&Releases>) -> Update {
     let Some(history) = releases.and_then(|releases| releases.get(&installed.id)) else {
         return result;
     };
-    let eligible = |release: &Release| !current.pre.is_empty() || release.version.pre.is_empty();
+    let eligible = |release: &Release| eligible_for_update(&current, &release.version);
     result.history_incomplete = history.iter().any(|release| {
         release.unresolved
             && (release.version == current
@@ -695,7 +727,7 @@ mod tests {
         let lower = tag_ref("deployment-validation", "1.1.1", 30);
         let upper = tag_ref("deployment-validation", "2.0.0", 31);
         let later = tag_ref("zulu-component", "2.1.0", 32);
-        let expected = [upper.object.sha.clone(), lower.object.sha.clone()];
+        let expected = [lower.object.sha.clone(), upper.object.sha.clone()];
         let later_sha = later.object.sha.clone();
         refs.extend([lower, upper, later]);
 
@@ -712,8 +744,8 @@ mod tests {
         let fixture = include_str!("../tests/fixtures/deployment-validation-component-update.json")
             .replace('\n', "");
         for (sha, version, message) in [
-            (&expected[0], "2.0.0", format!("{DECLARATION}{fixture}")),
-            (&expected[1], "1.1.1", String::new()),
+            (&expected[1], "2.0.0", format!("{DECLARATION}{fixture}")),
+            (&expected[0], "1.1.1", String::new()),
         ] {
             cache.tags.insert(
                 sha.clone(),
@@ -753,6 +785,87 @@ mod tests {
         );
         other.source_repository = "https://github.com/private/example".into();
         assert!(cache.pending_tags(&[other], now).is_empty());
+    }
+
+    #[test]
+    fn prerelease_flood_cannot_hide_a_stable_breaking_update() {
+        let now = Instant::now();
+        for with_prerelease_pin in [false, true] {
+            let mut cache = CacheEntry::default();
+            let stable = installed(SOURCE);
+            let mut pins = vec![stable];
+            if with_prerelease_pin {
+                pins.push(Installed {
+                    version: "3.0.0-rc.1".into(),
+                    ..installed(SOURCE)
+                });
+            }
+            let id = pins[0].id.as_str();
+            let anchor = tag_ref(id, "1.1.1", 100);
+            let breaking = tag_ref(id, "2.0.0", 101);
+            let anchor_sha = anchor.object.sha.clone();
+            let breaking_sha = breaking.object.sha.clone();
+            let mut refs = vec![anchor, breaking];
+            refs.extend((1..=25).map(|rc| tag_ref(id, &format!("3.0.0-rc.{rc}"), rc)));
+            cache.finish_ref_check(Some(refs), now);
+
+            let selected = cache.pending_tags(&pins, now);
+            assert_eq!(selected.len(), MAX_TAG_REQUESTS);
+            if with_prerelease_pin {
+                assert!(selected[..4].contains(&anchor_sha));
+                assert!(selected[..4].contains(&breaking_sha));
+                assert!(selected[..4].contains(&format!("{:040x}", 1)));
+                assert!(selected[..4].contains(&format!("{:040x}", 25)));
+            } else {
+                assert_eq!(selected[..2], [anchor_sha, breaking_sha.clone()]);
+            }
+
+            let fixture =
+                include_str!("../tests/fixtures/deployment-validation-component-update.json")
+                    .replace('\n', "");
+            let snapshot = cache.snapshot.as_mut().unwrap();
+            for candidate in &snapshot.candidates {
+                let sha = &candidate.object.sha;
+                if selected.contains(sha) {
+                    let message = if *sha == breaking_sha {
+                        format!("{DECLARATION}{fixture}")
+                    } else {
+                        String::new()
+                    };
+                    cache.tags.insert(
+                        sha.clone(),
+                        Tag {
+                            tag: candidate.name.clone(),
+                            sha: sha.clone(),
+                            object: Object {
+                                sha: pins[0].source_revision.clone(),
+                                kind: "commit".into(),
+                            },
+                            message,
+                            verification: Verification {
+                                verified: true,
+                                reason: "valid".into(),
+                            },
+                        },
+                    );
+                    snapshot.attempted.insert(sha.clone());
+                }
+            }
+            for _ in 0..2 {
+                assert!(cache.pending_tags(&pins, now).is_empty());
+                let result = cache.results(&pins);
+                let stable = &result.updates[0];
+                assert_eq!(stable.version.as_deref(), Some("2.0.0"));
+                assert_eq!(stable.compatibility, "breaking");
+                assert_eq!(stable.breaking_versions, ["2.0.0"]);
+                assert!(stable.migration_notes[0].contains("PowerShell 7.6"));
+                assert!(stable.complete);
+                assert!(!stable.history_incomplete);
+                if with_prerelease_pin {
+                    assert_eq!(result.updates[1].version.as_deref(), Some("3.0.0-rc.25"));
+                }
+            }
+        }
     }
 
     #[test]

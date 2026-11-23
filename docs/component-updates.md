@@ -42,7 +42,9 @@ The app currently queries only the reviewed first-party Reference repository.
 It reads GitHub-verified annotated tags for availability. Startup caches the
 release references. Opening a template or saved project checks the tag
 details relevant to its installed pins from that cached list, within the
-shared request budget. Repeated checks reuse results until the feed refreshes. Declarations for
+shared request budget. Exact installed tags and eligible upgrades take
+priority over other release history. Repeated checks reuse results until
+the feed refreshes. Declarations for
 skipped releases can contribute warnings. Missing or unsupported declarations
 leave coverage incomplete. Schema validation describes the JSON shape. Source
 review, catalog inclusion, release attestation, and execution approval each
