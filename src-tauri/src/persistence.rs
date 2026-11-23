@@ -686,6 +686,28 @@ impl Database {
         Ok(())
     }
 
+    pub(crate) fn is_current_workflow_operation(
+        &self,
+        project_path: &str,
+        operation_id: &str,
+    ) -> AppResult<bool> {
+        // Row order is native admission order. Completing a reserved operation
+        // updates its original row, and failed or pending successors also supersede it.
+        Ok(self
+            .lock()?
+            .query_row(
+                "SELECT id = ?2 AND state = 'succeeded' AND interrupted = 0
+                 FROM operation_history
+                 WHERE project_path = ?1
+                   AND kind IN ('up','provision','deploy','down','preview','refresh','terminalHandoff')
+                 ORDER BY rowid DESC LIMIT 1",
+                params![project_path, operation_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+    }
+
     pub fn evidence_operations(
         &self,
         project_path: &str,

@@ -24,6 +24,8 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod workflow_capture;
+
 const MAX_CAPTURE_BYTES_PER_STREAM: usize = 4 * 1024 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 64 * 1024;
 const OUTPUT_TRUNCATED_MARKER: &str = "\n[output truncated]\n";
@@ -386,6 +388,7 @@ pub struct OperationManager {
 #[derive(Default)]
 struct OperationRegistry {
     cancellations: HashMap<String, Option<oneshot::Sender<()>>>,
+    capturing_workflow: bool,
     exclusive_work: bool,
     clearing: bool,
 }
@@ -446,7 +449,7 @@ impl OperationPersistence {
         self
     }
 
-    fn record(&self, event: &OperationEvent) {
+    fn record(&self, event: &OperationEvent) -> bool {
         if let Err(error) = self.database.record_operation_with_context(
             event,
             &self.project_path,
@@ -456,7 +459,9 @@ impl OperationPersistence {
                 "Could not persist operation {}: {error}",
                 event.operation_id
             );
+            return false;
         }
+        true
     }
 
     fn begin(&self, operation_id: &str, kind: &str) -> AppResult<()> {
@@ -554,7 +559,11 @@ impl OperationManager {
             .unwrap_or(false)
     }
 
-    fn reserve(&self, operation_id: &str) -> AppResult<oneshot::Receiver<()>> {
+    fn reserve(
+        &self,
+        operation_id: &str,
+        capture_workflow: bool,
+    ) -> AppResult<oneshot::Receiver<()>> {
         let (sender, receiver) = oneshot::channel();
         let mut registry = self
             .registry
@@ -562,23 +571,32 @@ impl OperationManager {
             .map_err(|_| AppError::Invalid("Operation registry is unavailable.".into()))?;
         if registry.exclusive_work
             || registry.clearing
+            || registry.capturing_workflow
+            || (capture_workflow && !registry.cancellations.is_empty())
             || registry.cancellations.contains_key(operation_id)
         {
             return Err(AppError::Invalid(
                 "Wait for the active operation to finish before continuing.".into(),
             ));
         }
+        registry.capturing_workflow = capture_workflow;
         registry
             .cancellations
             .insert(operation_id.to_string(), Some(sender));
         Ok(receiver)
     }
 
-    fn remove(&self, operation_id: &str) {
-        let _ = self
-            .registry
-            .lock()
-            .map(|mut registry| registry.cancellations.remove(operation_id));
+    // Return whether the reservation finished without an accepted cancellation.
+    // cancel() takes the sender under the same lock before waking the child.
+    fn remove(&self, operation_id: &str) -> bool {
+        let Ok(mut registry) = self.registry.lock() else {
+            return false;
+        };
+        let cancellation = registry.cancellations.remove(operation_id);
+        if cancellation.is_some() {
+            registry.capturing_workflow = false;
+        }
+        cancellation.flatten().is_some()
     }
 }
 
@@ -692,10 +710,12 @@ pub async fn capture(spec: CommandSpec, timeout: Duration) -> AppResult<Captured
     })
 }
 
+type OperationEvents = Arc<dyn Fn(OperationEvent) + Send + Sync>;
+
 #[allow(clippy::too_many_arguments)]
 async fn stream_output(
     mut reader: impl AsyncRead + Unpin,
-    app: &AppHandle,
+    events: &OperationEvents,
     operation_id: &str,
     kind: &str,
     stream: &str,
@@ -718,7 +738,7 @@ async fn stream_output(
                 inferred
             });
             emit_event(
-                app,
+                events,
                 operation_id,
                 kind,
                 "running",
@@ -732,7 +752,7 @@ async fn stream_output(
     }
     if let Some(line) = lines.finish() {
         emit_event(
-            app,
+            events,
             operation_id,
             kind,
             "running",
@@ -747,7 +767,7 @@ async fn stream_output(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_event(
-    app: &AppHandle,
+    events: &OperationEvents,
     operation_id: &str,
     kind: &str,
     state: &str,
@@ -770,7 +790,7 @@ fn emit_event(
         environment_binding: None,
         exit_code,
     };
-    let _ = app.emit("operation-event", event.clone());
+    events(event.clone());
     event
 }
 
@@ -878,20 +898,52 @@ fn inferred_progress(message: &str) -> Option<u8> {
     }
 }
 
+enum OperationLaunch {
+    Command(CommandSpec),
+    // The upstream producer has no eligible structured-output route yet.
+    #[cfg_attr(not(all(test, windows)), allow(dead_code))]
+    ReviewedWorkflow(workflow_capture::Capture),
+}
+
 pub fn spawn_operation(
     app: AppHandle,
     operations: OperationManager,
     kind: impl Into<String>,
-    mut spec: CommandSpec,
+    spec: CommandSpec,
+    persistence: Option<OperationPersistence>,
+) -> AppResult<String> {
+    spawn_native_operation(
+        Arc::new(move |event| {
+            let _ = app.emit("operation-event", event);
+        }),
+        operations,
+        kind.into(),
+        OperationLaunch::Command(spec),
+        persistence,
+    )
+}
+
+fn spawn_native_operation(
+    events: OperationEvents,
+    operations: OperationManager,
+    kind: String,
+    launch: OperationLaunch,
     persistence: Option<OperationPersistence>,
 ) -> AppResult<String> {
     let operation_id = Uuid::new_v4().to_string();
-    let kind = kind.into();
+    let (mut spec, workflow) = match launch {
+        OperationLaunch::Command(spec) => (spec, None),
+        OperationLaunch::ReviewedWorkflow(capture) => {
+            let (spec, generation) = capture.prepare(&kind, persistence.as_ref())?;
+            (spec, Some((capture, generation)))
+        }
+    };
+    let captures_workflow = workflow.is_some();
     if let Some(persistence) = persistence.as_ref() {
         persistence.apply_environment(&mut spec, &operation_id, &kind);
     }
     spec.validate()?;
-    let mut cancel_receiver = operations.reserve(&operation_id)?;
+    let mut cancel_receiver = operations.reserve(&operation_id, captures_workflow)?;
     if let Some(persistence) = persistence.as_ref() {
         if let Err(error) = persistence.begin(&operation_id, &kind) {
             operations.remove(&operation_id);
@@ -899,7 +951,7 @@ pub fn spawn_operation(
         }
     }
     emit_event(
-        &app,
+        &events,
         &operation_id,
         &kind,
         "queued",
@@ -918,7 +970,7 @@ pub fn spawn_operation(
             Ok(command) => command,
             Err(error) => {
                 let event = emit_event(
-                    &app,
+                    &events,
                     &operation_id,
                     &kind,
                     "failed",
@@ -948,7 +1000,7 @@ pub fn spawn_operation(
                     error.to_string()
                 };
                 let event = emit_event(
-                    &app,
+                    &events,
                     &operation_id,
                     &kind,
                     "failed",
@@ -970,7 +1022,7 @@ pub fn spawn_operation(
             Err(error) => {
                 let _ = child.kill().await;
                 let event = emit_event(
-                    &app,
+                    &events,
                     &operation_id,
                     &kind,
                     "failed",
@@ -989,7 +1041,7 @@ pub fn spawn_operation(
         };
 
         emit_event(
-            &app,
+            &events,
             &operation_id,
             &kind,
             "running",
@@ -1003,15 +1055,18 @@ pub fn spawn_operation(
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let last_progress = Arc::new(AtomicU8::new(2));
-        let stdout_app = app.clone();
+        let stdout_events = events.clone();
         let stdout_id = operation_id.clone();
         let stdout_kind = kind.clone();
         let stdout_progress = last_progress.clone();
         let mut stdout_task = tauri::async_runtime::spawn(async move {
             if let Some(stdout) = stdout {
+                if captures_workflow {
+                    return workflow_capture::read_observation(stdout).await;
+                }
                 stream_output(
                     stdout,
-                    &stdout_app,
+                    &stdout_events,
                     &stdout_id,
                     &stdout_kind,
                     "stdout",
@@ -1020,15 +1075,21 @@ pub fn spawn_operation(
                 )
                 .await;
             }
+            None
         });
-        let stderr_app = app.clone();
+        let stderr_events = events.clone();
         let stderr_id = operation_id.clone();
         let stderr_kind = kind.clone();
         let mut stderr_task = tauri::async_runtime::spawn(async move {
-            if let Some(stderr) = stderr {
+            if let Some(mut stderr) = stderr {
+                if captures_workflow {
+                    return tokio::io::copy(&mut stderr, &mut tokio::io::sink())
+                        .await
+                        .is_ok();
+                }
                 stream_output(
                     stderr,
-                    &stderr_app,
+                    &stderr_events,
                     &stderr_id,
                     &stderr_kind,
                     "stderr",
@@ -1036,7 +1097,9 @@ pub fn spawn_operation(
                     None,
                 )
                 .await;
+                return true;
             }
+            false
         });
 
         let mut cancelled = false;
@@ -1062,22 +1125,31 @@ pub fn spawn_operation(
                 child.wait().await
             }
         };
-        if tokio::time::timeout(Duration::from_secs(5), async {
-            let _ = (&mut stdout_task).await;
-            let _ = (&mut stderr_task).await;
+        let observation = match tokio::time::timeout(Duration::from_secs(5), async {
+            let (stdout, stderr) = tokio::join!(&mut stdout_task, &mut stderr_task);
+            if stderr.unwrap_or(false) {
+                stdout.ok().flatten()
+            } else {
+                None
+            }
         })
         .await
-        .is_err()
         {
-            stdout_task.abort();
-            stderr_task.abort();
+            Ok(observation) => observation,
+            Err(_) => {
+                stdout_task.abort();
+                stderr_task.abort();
+                None
+            }
+        };
+        if !captures_workflow {
+            operations.remove(&operation_id);
         }
-        operations.remove(&operation_id);
         let terminal_progress = last_progress.load(Ordering::Relaxed);
 
         let event = if cancelled {
             emit_event(
-                &app,
+                &events,
                 &operation_id,
                 &kind,
                 "cancelled",
@@ -1089,7 +1161,7 @@ pub fn spawn_operation(
             )
         } else if timed_out {
             emit_event(
-                &app,
+                &events,
                 &operation_id,
                 &kind,
                 "failed",
@@ -1118,7 +1190,7 @@ pub fn spawn_operation(
                         )
                     };
                     emit_event(
-                        &app,
+                        &events,
                         &operation_id,
                         &kind,
                         state,
@@ -1130,7 +1202,7 @@ pub fn spawn_operation(
                     )
                 }
                 Err(error) => emit_event(
-                    &app,
+                    &events,
                     &operation_id,
                     &kind,
                     "failed",
@@ -1143,7 +1215,12 @@ pub fn spawn_operation(
             }
         };
         if let Some(persistence) = persistence {
-            persistence.record(&event);
+            let saved = persistence.record(&event);
+            if let Some((capture, generation)) = workflow {
+                if operations.remove(&operation_id) && saved {
+                    capture.complete(&event, &persistence, generation, observation);
+                }
+            }
         }
     });
 
@@ -1236,7 +1313,7 @@ mod tests {
     #[tokio::test]
     async fn immediate_cancellation_reaches_a_reserved_operation() {
         let operations = OperationManager::default();
-        let receiver = operations.reserve("operation-pending").unwrap();
+        let receiver = operations.reserve("operation-pending", false).unwrap();
 
         assert!(operations.cancel("operation-pending").await);
         assert!(receiver.await.is_ok());
@@ -1252,7 +1329,7 @@ mod tests {
         assert!(!operations.is_idle().await);
         assert!(operations.begin_preparation().is_err());
         assert!(operations.begin_clear().is_err());
-        assert!(operations.reserve("during-preparation").is_err());
+        assert!(operations.reserve("during-preparation", false).is_err());
         assert!(operations.begin_environment_change().is_err());
         drop(preparation);
 
@@ -1260,17 +1337,19 @@ mod tests {
         assert!(!operations.is_idle().await);
         assert!(operations.begin_preparation().is_err());
         assert!(operations.begin_clear().is_err());
-        assert!(operations.reserve("during-clear").is_err());
+        assert!(operations.reserve("during-clear", false).is_err());
         assert!(operations.begin_environment_change().is_err());
         drop(clearing);
 
         let environment_change = operations.begin_environment_change().unwrap();
         assert!(operations.begin_clear().is_err());
         assert!(operations.begin_preparation().is_err());
-        assert!(operations.reserve("during-environment-change").is_err());
+        assert!(operations
+            .reserve("during-environment-change", false)
+            .is_err());
         drop(environment_change);
 
-        let _receiver = operations.reserve("after-clear").unwrap();
+        let _receiver = operations.reserve("after-clear", false).unwrap();
         assert!(operations.begin_preparation().is_err());
         assert!(operations.begin_clear().is_err());
         assert!(operations.begin_environment_change().is_err());

@@ -83,31 +83,44 @@ operation history does not capture any of these output bytes.
 The provisional [observation schema](../schemas/internal/azd-pim-workflow-host-observation.schema.json)
 specifies the two values the producer would emit. Take the lowercase ARM
 resource ID from the exact workflow output and the hostname from the ARM
-callback the hook already obtained for that resource. Emit the pair after
-the optional workflow step succeeds. The hostname uses lowercase ASCII DNS
+callback the hook already obtained for that resource. Keep the candidate pair
+in memory until the optional session-revocation stage, role linking, and the
+complete deployment finish successfully. The current hook can write a partial
+report after observing the host and then fail. A partial report supplies no
+evidence, even when it contains matching fields. Emit the pair only on
+success. Reuse the existing callback observation without another ARM
+request or a substitution from `accessEndpoint`. The hostname uses lowercase ASCII DNS
 labels of 1–63 characters and a final label of 2–63 ASCII letters, with at
 most 253 characters in total. Keep the callback URL, path, port, query,
 signature and Graph ID URI out of the payload. The
 [fixture](../src-tauri/tests/fixtures/azd-pim-workflow-host-observation.json)
 uses synthetic values in the shape of the Bicep output and callback hostname.
 
-The GUI must capture the pair through a native-owned operation that runs
-verified producer bytes from the reviewed source. Match the full workflow ID
-against the deployment output captured independently for that same operation.
-The native record must bind the pair to the registered project, environment
-generation, cloud, tenant, subscription, resource group, reviewed source
-revision and contract digest, producer digest, and successful operation ID.
-Project files, producer-echoed bindings, hostname suffixes, and process exit
-status alone cannot establish this provenance. The current GUI has no such
-capture boundary for the azd-pim hook.
+The native operation runner has a separate opt-in for a registered producer.
+It checks the reviewed revision and the digest of the producer bytes it
+executes. The native caller must supply the independently resolved workflow ID
+for that exact deployment. The child receives a private output pipe reserved
+for one UTF-8 JSON observation of at most 1 KiB. Ordinary azd stdout, deployment
+reports and environment output files never enter that pipe. The capture checks
+the full resource ID, public cloud, tenant, subscription, resource group,
+registered project, environment generation and reviewed source contract.
+It issues a process-local receipt only after the matching operation succeeds
+and that terminal result is persisted. A changed saved environment during
+capture, a failure, cancellation or incomplete output leaves the capture
+unavailable.
 
-Verify and Confirm must require the same current project, environment and
-source generation and exact workflow ID. Invalidate on mismatch, incomplete
-capture, or any later operation that may have changed the resource, including
-failure or cleanup. Returning to previous values after invalidation requires
-fresh evidence. Verification uses the captured hostname locally and has no
-workflow lookup fallback. Graph application properties provide no hostname
-evidence. The schema is internal and does not enable a producer or consumer.
+The native read checks the captured context and the latest relevant operation
+again. Observing a mismatch revokes the receipt, even if the prior values
+return. A later operation that could have affected resources, including a
+pending or failed operation, supersedes the receipt. Graph application
+properties supply no hostname evidence.
+
+The registered capture is exercised with a synthetic child on Windows. The
+remaining integration is an azd-pim producer that delivers the two fields
+through this reviewed, native-owned route and supplies the exact workflow ID
+from its deployment output to the coordinator. The current hook writes
+editable files and has no such handoff. No production launch or verifier is
+enrolled, and the internal schema stays provisional.
 
 ## Ownership receipt
 

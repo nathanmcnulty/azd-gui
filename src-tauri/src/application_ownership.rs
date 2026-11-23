@@ -304,7 +304,7 @@ impl ApplicationRead {
     }
 }
 
-fn valid_endpoint_host(host: &str) -> bool {
+pub(crate) fn valid_endpoint_host(host: &str) -> bool {
     // The pinned producer uses the canonical DNS host of the workflow. It
     // never uses a path, query, port or the identifier URI from Graph as input.
     let Some((_, suffix)) = host.rsplit_once('.') else {

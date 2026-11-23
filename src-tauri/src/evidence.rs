@@ -101,7 +101,9 @@ pub fn read_target_values(project_root: &Path, environment: &str) -> TargetEvide
     {
         return TargetEvidenceValues::default();
     }
-    read_target_values_inner(project_root, environment).unwrap_or_default()
+    read_target_snapshot(project_root, environment)
+        .map(|(values, _)| values)
+        .unwrap_or_default()
 }
 
 pub(crate) fn read_environment_values(
@@ -192,10 +194,10 @@ pub(crate) fn read_environment_snapshot(
     Some(EnvironmentSnapshot { values, modified })
 }
 
-fn read_target_values_inner(
+pub(crate) fn read_target_snapshot(
     project_root: &Path,
     environment: &str,
-) -> Option<TargetEvidenceValues> {
+) -> Option<(TargetEvidenceValues, Option<std::time::SystemTime>)> {
     let wanted = [
         "AZD_GUI_AZURE_CLOUD",
         "AZURE_TENANT_ID",
@@ -203,11 +205,14 @@ fn read_target_values_inner(
         "AZURE_LOCATION",
         "AZURE_RESOURCE_GROUP",
     ];
-    let mut values = read_environment_values(project_root, environment, &wanted)?;
+    let EnvironmentSnapshot {
+        mut values,
+        modified,
+    } = read_environment_snapshot(project_root, environment, &wanted)?;
     if values.values().any(|value| value.len() > 256) {
         return None;
     }
-    Some(TargetEvidenceValues {
+    let target = TargetEvidenceValues {
         azure_cloud: values.remove("AZD_GUI_AZURE_CLOUD"),
         tenant_id: values
             .remove("AZURE_TENANT_ID")
@@ -221,7 +226,8 @@ fn read_target_values_inner(
         resource_group: values
             .remove("AZURE_RESOURCE_GROUP")
             .filter(|value| bounded(value)),
-    })
+    };
+    Some((target, modified))
 }
 
 fn dotenv_value(raw: &str) -> Option<String> {
