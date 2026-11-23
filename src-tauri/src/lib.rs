@@ -658,12 +658,6 @@ where
             let snapshot = resolve_project_template(&state.database, project)?;
             ensure_registered_project_lifecycle_contract(&action, snapshot.as_ref())?;
             if let Some(snapshot) = &snapshot {
-                command_runner::reject_unadapted_workflow_producer(
-                    &action,
-                    snapshot,
-                    &canonical,
-                    environment,
-                )?;
                 graph_session::reject_unadapted_execution(snapshot)?;
                 ensure_project_lifecycle_route(&action, snapshot)?;
             }

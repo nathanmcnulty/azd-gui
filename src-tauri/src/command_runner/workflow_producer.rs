@@ -1,21 +1,17 @@
-//! Source registry for the opt-in azd-pim workflow observation lane.
+//! Reviewed azd-pim source pin for offline qualification.
 use crate::{
     component_provenance::{bounded_bytes, Root},
     error::{AppError, AppResult},
-    evidence::read_environment_values,
-    models::ProjectTemplateSnapshot,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
-pub(super) const REPOSITORY: &str = "https://github.com/nathanmcnulty/azd-pim";
 pub(super) const REVISION: &str = "5d22767595740d5e3d1aafccecf3435bf0e9b9fc";
 pub(super) const ENTRYPOINT: &str = "scripts/Post-Provision.Native.ps1";
 
 // Raw Git bytes for the revocation-only producer, including the azd hook
 // declaration and both files of the vendored Graph authentication module.
 // The optional polling deployment and external Graph SDK/CLI are not enrolled.
-#[cfg_attr(not(all(test, windows)), allow(dead_code))]
 pub(super) const ASSETS: &[(&str, u64, &str)] = &[
     (
         "azure.yaml",
@@ -64,46 +60,7 @@ pub(super) const ASSETS: &[(&str, u64, &str)] = &[
     ),
 ];
 
-pub(crate) fn reject_unadapted_workflow_producer(
-    action: &str,
-    snapshot: &ProjectTemplateSnapshot,
-    project: &Path,
-    environment: &str,
-) -> AppResult<()> {
-    let entry = &snapshot.entry;
-    if matches!(action, "up" | "provision")
-        && entry.repository == REPOSITORY
-        && entry.commit == REVISION
-        && entry.subdirectory.is_none()
-        && entry
-            .manifest
-            .as_ref()
-            .is_some_and(|manifest| manifest.application_ownership.is_some())
-    {
-        const MODE: &str = "AZD_PIM_MODE";
-        const REVOCATION: &str = "AZD_PIM_ENABLE_SESSION_REVOCATION";
-        const NOTIFICATIONS: &str = "AZD_PIM_NOTIFICATION_MODE";
-        if let Some(values) =
-            read_environment_values(project, environment, &[MODE, REVOCATION, NOTIFICATIONS])
-        {
-            let choice = |key| {
-                values
-                    .get(key)
-                    .map_or_else(String::new, |value| value.trim().to_ascii_lowercase())
-            };
-            if choice(MODE) == "enforced"
-                && matches!(choice(REVOCATION).as_str(), "1" | "true" | "yes")
-                && matches!(choice(NOTIFICATIONS).as_str(), "" | "none")
-            {
-                return Err(AppError::Invalid("This pinned azd-pim producer requires an owned deployment handoff for the independently observed workflow ID and post-provision stage.".into()));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Return the entry point only after verifying every source file in the pin.
-#[cfg_attr(not(all(test, windows)), allow(dead_code))]
 pub(super) fn verify_source(root: &Path) -> AppResult<Vec<u8>> {
     let invalid =
         || AppError::Invalid("The pinned workflow producer files could not be verified.".into());

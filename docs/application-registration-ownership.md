@@ -123,12 +123,11 @@ source cannot restore a prior receipt. A later operation that could have
 affected resources, including a pending or failed operation, supersedes it.
 Graph application properties supply no hostname evidence.
 
-The native registry pins azd-pim revision
-`5d22767595740d5e3d1aafccecf3435bf0e9b9fc` at the repository root with a saved
-application ownership opt-in. The lane requires enforced session revocation
-with notifications disabled. It records the raw hashes of the hook declaration,
-entry point, post-provision modules, and vendored Graph authentication manifest
-and module. The pin covers the revocation-only source lane. The polling package,
+The offline registry pins the root of azd-pim revision
+`5d22767595740d5e3d1aafccecf3435bf0e9b9fc` for the synthetic ownership fixture
+with enforced session revocation and no notifications. It records the raw
+hashes of the hook declaration, entry point, post-provision modules, and
+vendored Graph authentication manifest and module. The polling package,
 externally resolved Microsoft.Graph.Authentication module (minimum 2.30), Azure
 CLI, and azd are outside this qualification.
 
@@ -140,9 +139,11 @@ working directory, and isolated PowerShell module search. It exercises
 successful and partial outcomes, source drift, and independent workflow ID
 mismatch. It runs no production hook, Azure CLI, or Graph module.
 
-Production verification stays unavailable. The ordinary azd lifecycle still
-launches its own post-provision hook, which can authenticate interactively and
-uses ambient CLI and module resolution. The remaining adapter is the
+Production verification stays unavailable. Production launches use the
+existing azd lifecycle policy. The offline pin has no production dispatch
+role. The ordinary azd lifecycle can launch its own post-provision hook,
+which can authenticate interactively and uses ambient CLI and module
+resolution. The remaining adapter is the
 native-owned deployment handoff that executes the reviewed stage once under
 the admitted target and supplies the independently observed workflow ID from
 that same deployment. A second hook run or a saved output file cannot supply

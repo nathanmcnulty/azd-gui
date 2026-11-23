@@ -25,9 +25,8 @@ use tokio::{
 use uuid::Uuid;
 
 mod workflow_capture;
+#[cfg(all(test, windows))]
 mod workflow_producer;
-
-pub(crate) use workflow_producer::reject_unadapted_workflow_producer;
 
 const MAX_CAPTURE_BYTES_PER_STREAM: usize = 4 * 1024 * 1024;
 const MAX_STREAM_LINE_BYTES: usize = 64 * 1024;

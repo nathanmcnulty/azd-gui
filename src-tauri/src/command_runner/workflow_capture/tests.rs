@@ -473,50 +473,102 @@ async fn observation_requires_one_bounded_record_without_urls_or_bindings() {
     }
 }
 
-#[test]
-fn only_the_exact_opted_in_producer_pin_requires_the_owned_handoff() {
-    use crate::command_runner::{reject_unadapted_workflow_producer, workflow_producer};
-
-    let fixture = Fixture::with_revision(workflow_producer::REVISION);
-    let root = Path::new(&fixture.project.path);
-    let check = |action: &str, snapshot: &ProjectTemplateSnapshot| {
-        reject_unadapted_workflow_producer(action, snapshot, root, "dev")
+#[tokio::test]
+async fn offline_producer_pin_preserves_ordinary_azd_dispatch() {
+    use crate::{
+        bind_approval_requirements, command_runner::workflow_producer, lifecycle_execution_target,
+        models::ExecutionApprovalRequest, start_azd_operation_with_probe,
     };
-    assert!(check("up", &fixture.snapshot).is_ok());
-    let eligible =
-        format!("{SAVED_TARGET}AZD_PIM_MODE=enforced\nAZD_PIM_ENABLE_SESSION_REVOCATION=true\n");
-    fs::write(
-        fixture.saved(),
-        format!("{eligible}AZD_PIM_NOTIFICATION_MODE=polling\n"),
-    )
-    .unwrap();
-    assert!(check("up", &fixture.snapshot).is_ok());
-    fs::write(fixture.saved(), eligible).unwrap();
-    let snapshot = fixture.snapshot;
-    for action in ["up", "provision"] {
-        assert!(check(action, &snapshot).is_err());
-    }
-    assert!(check("down", &snapshot).is_ok());
-    let mut different_revision = snapshot.clone();
-    different_revision.entry.commit = REVISION.into();
-    let mut different_repository = snapshot.clone();
-    different_repository.entry.repository = "https://github.com/example/azd-pim".into();
-    let mut different_root = snapshot.clone();
-    different_root.entry.subdirectory = Some("samples".into());
-    let mut without_opt_in = snapshot;
-    without_opt_in
-        .entry
-        .manifest
-        .as_mut()
-        .unwrap()
-        .application_ownership = None;
-    for unrelated in [
-        different_revision,
-        different_repository,
-        different_root,
-        without_opt_in,
+
+    for (scenario, revision, action, expected_error) in [
+        ("explicit", workflow_producer::REVISION, "up", None),
+        ("implicit", workflow_producer::REVISION, "provision", None),
+        ("different-revision", REVISION, "up", None),
+        (
+            "missing",
+            workflow_producer::REVISION,
+            "up",
+            Some("exact saved environment"),
+        ),
+        (
+            "unreadable",
+            workflow_producer::REVISION,
+            "provision",
+            Some("exact saved environment"),
+        ),
+        (
+            "late-target-drift",
+            workflow_producer::REVISION,
+            "up",
+            Some("saved execution context changed"),
+        ),
     ] {
-        assert!(check("up", &unrelated).is_ok());
+        let fixture = Fixture::with_revision(revision);
+        let state = fixture.app_state();
+        let path = &fixture.project.path;
+        let root = Path::new(path);
+        fs::write(root.join("azure.yaml"), "name: synthetic-target\n").unwrap();
+        if scenario != "implicit" {
+            fs::write(
+                fixture.saved(),
+                format!(
+                    "{SAVED_TARGET}AZD_PIM_MODE=enforced\nAZD_PIM_ENABLE_SESSION_REVOCATION=true\n"
+                ),
+            )
+            .unwrap();
+        }
+        let mut request = ExecutionApprovalRequest {
+            requirements: None,
+            action: action.into(),
+            project_path: path.clone(),
+            environment: "dev".into(),
+            template_id: fixture.snapshot.entry.id.clone(),
+            revision: Some(revision.into()),
+            snapshot_digest: Some(fixture.snapshot.digest.clone()),
+            source_binding: None,
+            target: Some(lifecycle_execution_target(root, "dev").unwrap()),
+            acknowledgement_proofs: Vec::new(),
+            acknowledgement_values: Default::default(),
+        };
+        bind_approval_requirements(&state, &mut request).unwrap();
+        let grant = state.execution_approvals.issue(request).unwrap();
+        let saved = fixture.saved();
+        if matches!(scenario, "missing" | "unreadable") {
+            fs::remove_file(&saved).unwrap();
+        }
+        if scenario == "unreadable" {
+            fs::create_dir(&saved).unwrap();
+        }
+        let dispatch = start_azd_operation_with_probe(
+            &state,
+            action.into(),
+            path.clone(),
+            Some("dev".into()),
+            Some(grant.token),
+            |_| async {
+                assert!(!matches!(scenario, "missing" | "unreadable"));
+                if scenario == "late-target-drift" {
+                    fs::write(&saved, SAVED_TARGET.replace("rg-fixture", "rg-other")).unwrap();
+                }
+                Ok(())
+            },
+            |kind, spec, _| {
+                assert!(expected_error.is_none(), "{scenario}");
+                assert_eq!(kind, action);
+                assert!(matches!(spec.executable, Executable::Azd));
+                assert_eq!(spec.args, [action, "--no-prompt", "--environment", "dev"]);
+                assert_eq!(spec.cwd.as_deref(), Some(root));
+                assert!(spec.environment.is_empty() && spec.assets.is_none());
+                Ok("ordinary-command".into())
+            },
+        )
+        .await;
+        if let Some(expected) = expected_error {
+            let error = dispatch.unwrap_err().to_string();
+            assert!(error.contains(expected), "{scenario}: {error}");
+        } else {
+            assert_eq!(dispatch.unwrap(), "ordinary-command", "{scenario}");
+        }
     }
 }
 
@@ -525,6 +577,11 @@ fn only_the_exact_opted_in_producer_pin_requires_the_owned_handoff() {
 async fn exact_pinned_wrapper_uses_the_native_capture_with_only_a_synthetic_nested_hook() {
     use crate::command_runner::{display_executable, resolve_system_executable, workflow_producer};
 
+    assert_eq!(std::env::var("AZD_PIM_MODE").as_deref(), Ok("enforced"));
+    assert_eq!(
+        std::env::var("AZD_PIM_ENABLE_SESSION_REVOCATION").as_deref(),
+        Ok("true")
+    );
     let source = PathBuf::from(std::env::var_os("AZD_GUI_WORKFLOW_PIN_FIXTURE").unwrap());
     let entry = workflow_producer::verify_source(&source).unwrap();
     let altered = tempfile::tempdir().unwrap();
@@ -623,6 +680,7 @@ if ([Environment]::ProcessPath -ine '{}' -or
     $PSVersionTable.PSVersion -lt [version]'7.6' -or
     (Test-Path -LiteralPath 'azure.yaml') -or $env:PATH -or $env:AZURE_CONFIG_DIR -or
     $env:AZURE_TENANT_ID -or $env:AZD_GUI_WORKFLOW_TEST_AMBIENT -or
+    $env:AZD_PIM_MODE -or $env:AZD_PIM_ENABLE_SESSION_REVOCATION -or
     (Get-Module Microsoft.Graph.Authentication) -or
     $env:PSModulePath -ine [IO.Path]::Combine($PSHOME, 'Modules') -or
     (Get-Command ConvertTo-Json).ImplementingType.Assembly.Location -ine [IO.Path]::Combine($PSHOME, 'Microsoft.PowerShell.Commands.Utility.dll') -or

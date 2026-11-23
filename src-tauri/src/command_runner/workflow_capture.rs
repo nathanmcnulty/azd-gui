@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, path::Path, sync::Arc, time::SystemTime};
 use tokio::{io::AsyncRead, sync::oneshot};
 use uuid::Uuid;
 
-use super::workflow_producer::REPOSITORY;
+const REPOSITORY: &str = "https://github.com/nathanmcnulty/azd-pim";
 
 const LIMIT: usize = 1024;
 const WORKFLOW_ID: &str = "AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID";
