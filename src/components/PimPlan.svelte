@@ -4,6 +4,9 @@
   export let sourceContext: unknown = null;
   export let selectedProject: { path: string; environment?: string | null } | null = null;
   import pimSource from '../../src-tauri/pim-template/source.json';
+  import CatalogComponentPins from './CatalogComponentPins.svelte';
+  import type { CatalogEntry } from '../lib/types';
+  export let catalogEntry: CatalogEntry | undefined = undefined;
   import PimPilot from './PimPilot.svelte';
   export let projects: { path: string; name: string; templateId?: string | null; environment?: string | null }[] = [];
   const pilotReviewId = crypto.randomUUID();
@@ -379,6 +382,11 @@
       <details><summary>Complete plan JSON</summary><pre>{JSON.stringify(artifact, null, 2)}</pre></details>
     </section>
   {/if}
+  {#if !selectedProject && catalogEntry &&
+    catalogEntry.repository === pimSource.repository && catalogEntry.commit === pimSource.commit}
+    <CatalogComponentPins entry={catalogEntry} />
+  {/if}
+
   <PimPilot {selectedProject} {sourceContext} on:environment={(event) => dispatch('environment', event.detail)} on:registered={(event) => dispatch('registered', event.detail)} {projects} input={{ reviewId: pilotReviewId, account, tenantId, clientId, configuration: {
     privilegedRoleIds: roleIds(privilegedIds), lessPrivilegedRoleIds: roleIds(lessPrivilegedIds),
     privilegedAuthenticationProfile: privilegedProfile, lessPrivilegedAuthenticationProfile: lessPrivilegedProfile,

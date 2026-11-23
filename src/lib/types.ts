@@ -29,7 +29,7 @@ export interface CatalogEntry {
   description: string;
   repository: string;
   commit: string;
-  subdirectory?: string;
+  subdirectory?: string | null;
   tags: string[];
   platforms: Platform[];
   manifest?: TemplateManifest;
