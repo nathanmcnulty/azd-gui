@@ -10,6 +10,12 @@ const REVISION: &str = "97054a7c8bb67c4a4de52caccb68442c1e1ce769";
 const SAVED_TARGET: &str = "AZD_GUI_AZURE_CLOUD=AzureCloud\nAZURE_TENANT_ID=11111111-1111-4111-8111-111111111111\nAZURE_SUBSCRIPTION_ID=22222222-2222-4222-8222-222222222222\nAZURE_RESOURCE_GROUP=rg-fixture\n";
 const OUTPUT: &str = include_str!("../../../tests/fixtures/azd-pim-workflow-host-observation.json");
 const WORKFLOW: &str = "/subscriptions/22222222-2222-4222-8222-222222222222/resourceGroups/rg-fixture/providers/Microsoft.Logic/workflows/pim-revoke-sessions-example";
+const APP_OBJECT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const APP_CLIENT: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+fn saved_outputs() -> String {
+    format!("{WORKFLOW_ID}={WORKFLOW}\n{APPLICATION_OBJECT_ID}={APP_OBJECT}\n{APPLICATION_CLIENT_ID}={APP_CLIENT}\n")
+}
 const EMIT: &str = concat!(
     "[Console]::Out.WriteLine('",
     include_str!("../../../tests/fixtures/azd-pim-workflow-host-observation.json"),
@@ -39,7 +45,7 @@ impl Fixture {
         fs::create_dir_all(project_path.join(".azure/other")).unwrap();
         fs::write(
             saved.join(".env"),
-            format!("{SAVED_TARGET}{WORKFLOW_ID}={WORKFLOW}\n"),
+            format!("{SAVED_TARGET}{}", saved_outputs()),
         )
         .unwrap();
         let path = fs::canonicalize(project_path)
@@ -230,7 +236,8 @@ async fn rejects_another_resource_in_the_same_group_and_changed_environment() {
             candidate,
             Arc::new(move |event| {
                 if event.state == "running" && event.stream == "system" {
-                    fs::write(&saved, SAVED_TARGET.replace("rg-fixture", "rg-drift")).unwrap();
+                    let changed_target = SAVED_TARGET.replace("rg-fixture", "rg-drift");
+                    fs::write(&saved, format!("{changed_target}{}", saved_outputs())).unwrap();
                 }
             }),
         )
@@ -254,7 +261,8 @@ async fn reviewed_output_writes_are_allowed_and_unrelated_saved_edits_are_reject
     let path = fixture.saved();
     fs::write(&path, SAVED_TARGET).unwrap();
     let final_body = format!(
-        "{SAVED_TARGET}{WORKFLOW_ID}={WORKFLOW}\nAZD_PIM_REVOCATION_LOGIC_APP_NAME=fixture\n"
+        "{SAVED_TARGET}{}AZD_PIM_REVOCATION_LOGIC_APP_NAME=fixture\n",
+        saved_outputs()
     );
     let (candidate, receiver) = capture(writes_output(&path, &final_body));
     let id = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
@@ -282,6 +290,64 @@ async fn reviewed_output_writes_are_allowed_and_unrelated_saved_edits_are_reject
     let id = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
     assert!(result(receiver).await.is_none());
     fixture.assert_operation(&id, "succeeded");
+}
+
+#[tokio::test]
+async fn existing_application_selectors_cannot_be_replaced_when_the_hook_writes_ids() {
+    let fixture = Fixture::new();
+    let path = fixture.saved();
+    let complete = format!("{SAVED_TARGET}{}", saved_outputs());
+    let replacement = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    for (key, id) in [
+        (APPLICATION_OBJECT_ID, APP_OBJECT),
+        (APPLICATION_CLIENT_ID, APP_CLIENT),
+    ] {
+        // The pinned producer supports either legacy selector on its own.
+        // Filling the other ID is allowed only while preserving this selection.
+        let admitted = format!("{SAVED_TARGET}{key}={id}\n");
+        fs::write(&path, &admitted).unwrap();
+        let (candidate, receiver) = capture(writes_output(&path, &complete));
+        let operation = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+        assert!(result(receiver).await.is_some());
+        fixture.assert_operation(&operation, "succeeded");
+
+        fs::write(&path, &admitted).unwrap();
+        let (candidate, receiver) =
+            capture(writes_output(&path, &complete.replace(id, replacement)));
+        let operation = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+        assert!(result(receiver).await.is_none(), "{key} was replaced");
+        fixture.assert_operation(&operation, "succeeded");
+    }
+
+    // A selected app is also bound when both selectors were preexisting.
+    for id in [APP_OBJECT, APP_CLIENT] {
+        fs::write(&path, &complete).unwrap();
+        let (candidate, receiver) =
+            capture(writes_output(&path, &complete.replace(id, replacement)));
+        let operation = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+        assert!(result(receiver).await.is_none());
+        fixture.assert_operation(&operation, "succeeded");
+    }
+}
+
+#[tokio::test]
+async fn freshly_written_application_outputs_must_be_a_complete_pair_of_valid_ids() {
+    let fixture = Fixture::new();
+    let path = fixture.saved();
+    for final_body in [
+        format!("{SAVED_TARGET}{WORKFLOW_ID}={WORKFLOW}\n{APPLICATION_OBJECT_ID}={APP_OBJECT}\n"),
+        format!(
+            "{SAVED_TARGET}{}",
+            saved_outputs().replace(APP_CLIENT, "not-an-app-id")
+        ),
+    ] {
+        fs::write(&path, SAVED_TARGET).unwrap();
+        let (candidate, receiver) = capture(writes_output(&path, &final_body));
+        let operation = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
+        assert!(result(receiver).await.is_none());
+        fixture.assert_operation(&operation, "succeeded");
+    }
 }
 
 #[tokio::test]
@@ -369,7 +435,15 @@ async fn edited_project_outputs_cannot_supply_a_missing_producer_observation() {
     fs::create_dir(&reports).unwrap();
     fs::write(reports.join("azd-pim-applied.json"), OUTPUT).unwrap();
     let output: Observation = serde_json::from_str(OUTPUT).unwrap();
-    fs::write(fixture.saved(), format!("{SAVED_TARGET}AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID={}\nAZD_PIM_REVOCATION_WORKFLOW_HOST={}\n", output.workflow_resource_id, output.hostname)).unwrap();
+    fs::write(
+        fixture.saved(),
+        format!(
+            "{SAVED_TARGET}{}AZD_PIM_REVOCATION_WORKFLOW_HOST={}\n",
+            saved_outputs(),
+            output.hostname
+        ),
+    )
+    .unwrap();
     let (candidate, receiver) = capture("exit 0");
     let id = fixture.launch(candidate, Arc::new(|_| {})).unwrap();
     assert!(result(receiver).await.is_none());

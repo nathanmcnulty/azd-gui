@@ -17,6 +17,8 @@ use uuid::Uuid;
 const REPOSITORY: &str = "https://github.com/nathanmcnulty/azd-pim";
 const LIMIT: usize = 1024;
 const WORKFLOW_ID: &str = "AZD_PIM_REVOCATION_LOGIC_APP_RESOURCE_ID";
+const APPLICATION_OBJECT_ID: &str = "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID";
+const APPLICATION_CLIENT_ID: &str = "AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID";
 // Outputs of the reviewed PIM ARM deployment and post-provision producer.
 // Keep AZD_PIM_NOTIFICATION_MODE bound because it is also an input.
 const OUTPUTS: &[&str] = &[
@@ -30,8 +32,6 @@ const OUTPUTS: &[&str] = &[
     WORKFLOW_ID,
     "AZD_PIM_REVOCATION_LOGIC_APP_PRINCIPAL_ID",
     "AZD_PIM_REVOCATION_ALERT_RESOURCE_ID",
-    "AZD_PIM_REVOCATION_APPLICATION_OBJECT_ID",
-    "AZD_PIM_REVOCATION_APPLICATION_CLIENT_ID",
     "AZD_PIM_REVOCATION_CUSTOM_EXTENSION_ID",
     "AZD_PIM_REVOCATION_PRE_APPROVAL_CUSTOM_EXTENSION_ID",
     "AZD_PIM_REVOCATION_POST_APPROVAL_CUSTOM_EXTENSION_ID",
@@ -41,6 +41,30 @@ const OUTPUTS: &[&str] = &[
 pub(super) struct CaptureInputs {
     selection_revision: i64,
     digest: [u8; 32],
+    #[serde(skip)]
+    application_object_id: Option<Uuid>,
+    #[serde(skip)]
+    application_client_id: Option<Uuid>,
+}
+
+impl CaptureInputs {
+    fn matches_final(&self, final_inputs: &Self) -> bool {
+        // Both IDs are written by the successful hook, but a nonempty
+        // admitted value was also a legacy selector and must survive.
+        let preserves = |admitted: Option<Uuid>, actual: Option<Uuid>| {
+            actual.is_some() && (admitted.is_none() || admitted == actual)
+        };
+        self.selection_revision == final_inputs.selection_revision
+            && self.digest == final_inputs.digest
+            && preserves(
+                self.application_object_id,
+                final_inputs.application_object_id,
+            )
+            && preserves(
+                self.application_client_id,
+                final_inputs.application_client_id,
+            )
+    }
 }
 
 #[derive(PartialEq, Eq, Serialize)]
@@ -159,12 +183,29 @@ fn saved_environment(
     let entries: BTreeMap<_, _> = saved.values.iter().collect();
     let inputs: BTreeMap<_, _> = entries
         .iter()
-        .filter(|(key, _)| !OUTPUTS.contains(&key.as_str()))
+        .filter(|(key, _)| {
+            !OUTPUTS.contains(&key.as_str())
+                && !matches!(key.as_str(), APPLICATION_OBJECT_ID | APPLICATION_CLIENT_ID)
+        })
         .collect();
+    let application_id = |name| {
+        let value = saved_value(name)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match value {
+            Some(value) => {
+                let id = Uuid::parse_str(value).ok().filter(|id| !id.is_nil())?;
+                Some(Some(id))
+            }
+            None => Some(None),
+        }
+    };
     Some(SavedEnvironment {
         inputs: CaptureInputs {
             selection_revision,
             digest: Sha256::digest(serde_json::to_vec(&inputs).ok()?).into(),
+            application_object_id: application_id(APPLICATION_OBJECT_ID)?,
+            application_client_id: application_id(APPLICATION_CLIENT_ID)?,
         },
         modified: saved.modified?,
         digest: Sha256::digest(serde_json::to_vec(&entries).ok()?).into(),
@@ -236,7 +277,7 @@ impl Capture {
         };
         // Saved output is only a consistency check against the independently
         // supplied ID and the reviewed child's observation.
-        if saved_environment.inputs != prepared_inputs
+        if !prepared_inputs.matches_final(&saved_environment.inputs)
             || saved_environment.workflow_resource_id.as_deref()
                 != Some(self.workflow_resource_id.as_str())
         {

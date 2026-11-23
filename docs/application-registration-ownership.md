@@ -107,7 +107,10 @@ registered project, environment generation and reviewed source contract.
 It issues a process-local receipt only after the matching operation succeeds
 and that terminal result is persisted. The capture permits writes to the pinned
 producer's known deployment outputs. Every other saved value must match the
-admitted inputs. The final saved workflow ID must match both the independent
+admitted inputs. The application object and client IDs are also legacy selectors.
+Each nonempty admitted ID must remain the same. A missing ID may be filled by a
+successful producer, which must write a complete pair of valid IDs. The final
+saved workflow ID must match both the independent
 native ID and the child observation. The saved file corroborates that match
 without supplying hostname provenance. Failure, cancellation or incomplete
 output leaves the capture unavailable.
