@@ -248,3 +248,21 @@ describe("catalog contracts", () => {
     expect(validateManifest(manifest)).toBe(false);
   });
 });
+
+describe("provisional component update declaration", () => {
+  it("validates the publisher example for the component pinned by the solution", () => {
+    const schema = json("schemas/azd-component-update.schema.json");
+    const publisher = json("src-tauri/tests/fixtures/deployment-validation-component-update.json");
+    const consumer = json("src-tauri/tests/fixtures/deployment-validation-consumer-lock.json");
+    const validate = new Ajv2020().compile(schema);
+
+    expect(publisher.componentId).toBe(consumer.components[0].id);
+    expect(publisher.version).toBe("2.0.0");
+    expect(consumer.components[0].version).toBe("1.1.1");
+    expect(validate(publisher)).toBe(true);
+    expect(validate({ componentId: publisher.componentId, version: "2.0.1", breaking: false })).toBe(true);
+    expect(validate({ ...publisher, version: "next" })).toBe(false);
+    expect(validate({ ...publisher, breaking: undefined })).toBe(false);
+    expect(validate({ ...publisher, executable: "setup.ps1" })).toBe(false);
+  });
+});

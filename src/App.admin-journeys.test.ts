@@ -14,7 +14,7 @@ it('discovers PIM in catalog through native route without generic preparation or
  const card=(await screen.findByRole('heading',{name:'Selected-role PIM pilot'})).closest('article')!;
  await fireEvent.click(card.querySelector('button')!);
  await screen.findByRole('heading',{name:'Selected-role PIM pilot'});
- expect(native.invoke.mock.calls.every(([name])=>name==='dispose_graph_session')).toBe(true);
+ expect(native.invoke.mock.calls.every(([name])=>['dispose_graph_session','check_component_updates'].includes(name))).toBe(true);
 });
 it('reopens saved PIM recovery from Home without invoking azd, Graph or old approval',async()=>{
  native.invoke.mockImplementation(async(command)=> command === 'inspect_pim_pilot' ? {hasDraft:true,hasState:true,pendingWrites:2,attemptCount:3,lastStatus:'partialOrUncertain'} : null);
@@ -22,7 +22,7 @@ it('reopens saved PIM recovery from Home without invoking azd, Graph or old appr
  await screen.findByText('Partial or uncertain; investigate and recheck');
  expect(screen.getByLabelText('Environment')).toHaveValue('recovery');
  expect(native.invoke).toHaveBeenCalledWith('inspect_pim_pilot',{projectPath:'C:/private-pilot',environment:'recovery',reveal:false});
- expect(native.invoke.mock.calls.every(([name])=>['inspect_pim_pilot','dispose_graph_session'].includes(name))).toBe(true);
+ expect(native.invoke.mock.calls.every(([name])=>['inspect_pim_pilot','dispose_graph_session','check_component_updates'].includes(name))).toBe(true);
  expect(screen.queryByText('Approve application / resume')).toBeNull();
 });
 

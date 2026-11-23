@@ -1,0 +1,6 @@
+{
+  "componentId": "deployment-validation",
+  "version": "2.0.0",
+  "breaking": true,
+  "migrationNotes": "Upgrade the host to PowerShell 7.6 before adopting this version."
+}

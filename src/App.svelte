@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import AppSidebar from "./components/AppSidebar.svelte";
+  import { checkComponentUpdates } from "./lib/component-updates";
   import PimPlan from "./components/PimPlan.svelte";
   import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
@@ -571,7 +572,10 @@
     activeStepReady = stepBlockingReason === "";
   }
 
+  $: if (selectedEntry) void checkComponentUpdates();
+
   onMount(() => {
+    void checkComponentUpdates();
     document.addEventListener("keydown", handleGlobalKeydown);
     window.addEventListener("resize", constrainOutputHeight);
     let unlisten: () => void = () => {};

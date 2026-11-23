@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as bridge from "./lib/bridge";
 import App from "./App.svelte";
+import * as componentUpdates from "./lib/component-updates";
 
 async function useNoninteractiveProjectFixture() {
   const snapshot = await bridge.getProjectTemplate("C:\\Deployments\\maester-lab");
@@ -323,14 +324,17 @@ describe("desktop experience", () => {
     expect(screen.getByRole("button", { name: /run infrastructure preview/i })).toBeEnabled();
   });
 
-  it("opens a catalog template as a calculated deployment wizard", async () => {
+  it("checks updates at startup and on template load without delaying the wizard", async () => {
+    const updates = vi.spyOn(componentUpdates, "checkComponentUpdates").mockImplementation(() => new Promise(() => {}));
     render(App);
+    expect(updates).toHaveBeenCalledTimes(1);
 
     await fireEvent.click(screen.getByRole("button", { name: /browse catalog/i }));
     await fireEvent.click(
       screen.getAllByRole("button", { name: /configure deployment/i })[2]
     );
 
+    expect(updates).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("heading", { name: "Choose source" })).toBeInTheDocument();
     expect(screen.getByText(/STEP 1 OF 9/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /reviewed catalog/i })).toHaveAttribute(

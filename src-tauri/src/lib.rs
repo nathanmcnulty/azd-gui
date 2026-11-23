@@ -4,6 +4,7 @@ mod azure;
 mod catalog;
 mod command_runner;
 mod component_provenance;
+mod component_updates;
 mod connection_profiles;
 mod connections;
 mod deployment;
@@ -2769,6 +2770,7 @@ fn load_wizard_draft(
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(component_updates::Cache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -2846,6 +2848,7 @@ pub fn run() {
             get_project_validation_report,
             get_project_deployment_receipt,
             get_project_component_provenance,
+            component_updates::check_component_updates,
             get_project_report_artifacts,
             list_project_environments,
             create_project_environment,
