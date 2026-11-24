@@ -1,0 +1,83 @@
+name: Regex and timestamp Windows native validation
+on:
+  pull_request:
+    types: [ready_for_review]
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native:
+    if: >-
+      github.repository == 'nathanmcnulty/azd-gui' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'codex/gui-215-regex-time-native-smoke'
+    runs-on: windows-2025
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 1c81b81e5c20617d39d908579b68f8dd8755a558
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.23.4
+          package-manager-cache: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '8.0.4xx'
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Build frontend assets and run the default Windows native suite
+        shell: pwsh
+        working-directory: source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $head = '1c81b81e5c20617d39d908579b68f8dd8755a558'
+          if ((git rev-parse HEAD) -ne $head -or (git status --porcelain)) { throw 'Unexpected regex and timestamp candidate' }
+          ./scripts/assert-powershell-version.ps1
+          node --version
+          rustc --version
+          dotnet --version
+          npm ci --no-audit --no-fund
+          npm run build
+          $target = 'x86_64-pc-windows-msvc'
+          $manifest = 'src-tauri/Cargo.toml'
+          $lockHash = (Get-FileHash src-tauri/Cargo.lock).Hash
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'azd-gui-215-regex-time-target'
+          $env:CARGO_INCREMENTAL = '0'
+          $env:CARGO_PROFILE_TEST_DEBUG = '0'
+          cargo fetch --manifest-path $manifest --locked --target $target
+          cargo fmt --manifest-path $manifest --all -- --check
+          cargo tree --manifest-path $manifest --target $target --locked --offline -e features -i regex@1.13.2
+          cargo tree --manifest-path $manifest --target $target --locked --offline -e features -i time@0.3.55
+          $runner = Join-Path $env:GITHUB_WORKSPACE 'tools/Invoke-NativeTestWithoutAccounts.ps1'
+          $shell = (Get-Process -Id $PID).Path
+          $argsToml = ConvertTo-Json -InputObject @($shell, '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $runner) -Compress
+          $config = Join-Path $env:RUNNER_TEMP 'azd-gui-215-test-runner.toml'
+          "[target.$target]", "runner = $argsToml" | Set-Content -LiteralPath $config
+          $log = Join-Path $env:RUNNER_TEMP 'azd-gui-215-cargo-test.log'
+          cargo --config $config test --manifest-path $manifest --target $target --locked --offline 2>&1 |
+            Tee-Object -FilePath $log
+          $expected = @(
+            'redaction::tests::removes_credentials_from_url_query_parameters'
+            'redaction::tests::removes_terminal_formatting_without_removing_text'
+            'redaction::tests::removes_tokens_and_secrets'
+            'timestamp::tests::compares_instants_across_offsets_and_leap_seconds'
+            'timestamp::tests::file_times_preserve_fractional_precision_on_either_side_of_epoch'
+            'timestamp::tests::keeps_offset_and_fraction_spelling_from_previous_versions'
+            'persistence::tests::old_and_new_timestamps_sort_within_one_second'
+          )
+          foreach ($name in $expected) {
+            if (-not (Select-String -LiteralPath $log -SimpleMatch "test $name ... ok" -Quiet)) {
+              throw "Missing passing regression: $name"
+            }
+          }
+          if ((Get-FileHash src-tauri/Cargo.lock).Hash -ne $lockHash) { throw 'Locked tests changed Cargo.lock' }
