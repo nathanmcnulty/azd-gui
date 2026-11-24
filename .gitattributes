@@ -3,3 +3,4 @@
 *.icns binary
 *.ico binary
 *.png binary
+tauri-utils-2.10.4/** -text linguist-vendored

@@ -1,0 +1,7 @@
+version = 4
+
+[[package]]
+name = "tauri-utils"
+version = "2.10.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d1d33d4453c5df0bf1672dbc7ada69d8ed74f56a4316d964a4aa73d4ecd3ad"
