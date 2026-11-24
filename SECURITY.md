@@ -2,10 +2,9 @@
 
 ## Reporting a vulnerability
 
-Use [GitHub Security Advisories](https://github.com/nathanmcnulty/azd-gui/security)
-to report suspected vulnerabilities privately when the reporting option is
-available. Otherwise, contact the [repository owner](https://github.com/nathanmcnulty)
-privately with only enough detail to arrange a secure reporting channel.
+Use [Report a vulnerability](https://github.com/nathanmcnulty/azd-gui/security/advisories/new)
+to report suspected vulnerabilities privately. You need a GitHub account to
+submit a report.
 
 Include the affected platform and version, reproducible behavior, expected
 security boundary, and suggested mitigation when available. Treat exposed
