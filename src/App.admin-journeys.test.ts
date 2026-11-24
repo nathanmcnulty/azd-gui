@@ -14,7 +14,7 @@ it('discovers PIM in catalog through native route without generic preparation or
  const card=(await screen.findByRole('heading',{name:'Selected-role PIM pilot'})).closest('article')!;
  await fireEvent.click(card.querySelector('button')!);
  await screen.findByRole('heading',{name:'Selected-role PIM pilot'});
- expect(native.invoke.mock.calls.every(([name])=>['dispose_graph_session','check_component_updates'].includes(name))).toBe(true);
+ expect(native.invoke.mock.calls.every(([name])=>['dispose_graph_session','check_component_updates','get_project_component_provenance'].includes(name))).toBe(true);
 });
 it('reopens saved PIM recovery from Home without invoking azd, Graph or old approval',async()=>{
  native.invoke.mockImplementation(async(command)=> command === 'inspect_pim_pilot' ? {hasDraft:true,hasState:true,pendingWrites:2,attemptCount:3,lastStatus:'partialOrUncertain'} : null);

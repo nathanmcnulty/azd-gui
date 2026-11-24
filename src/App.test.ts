@@ -509,6 +509,36 @@ describe("desktop experience", () => {
     expect(within(panel).getByText("Upgrade to PowerShell 7.6.")).toBeVisible();
   });
 
+  it("checks the installed locks of saved projects and shows breaking updates on open", async () => {
+    const data = await bridge.bootstrap();
+    const project = data.projects[0];
+    const component = {
+      id: "deployment-validation", version: "1.1.1",
+      sourceRepository: "https://github.com/nathanmcnulty/azd-reference",
+      sourceRevision: "0c96cc89c554ffc3b3ca82ceda12da6591e816c1",
+      status: "verified", unknownMetadata: false, files: []
+    } as const;
+    vi.stubGlobal("isTauri", true);
+    vi.spyOn(bridge, "bootstrap").mockResolvedValue({ ...data, projects: [project] });
+    vi.spyOn(bridge, "onOperationEvent").mockResolvedValue(() => {});
+    const readLock = vi.spyOn(bridge, "getProjectComponentProvenance")
+      .mockResolvedValue({ state: "available", unknownMetadata: false, components: [{ ...component, files: [] }] });
+    const updates = vi.spyOn(componentUpdates, "checkComponentUpdates")
+      .mockResolvedValueOnce({ state: "fresh", checkedAt: null, updates: [] })
+      .mockResolvedValueOnce({
+        state: "fresh", checkedAt: new Date().toISOString(),
+        updates: [{ id: component.id, state: "updateAvailable", version: "2.0.0", compatibility: "breaking",
+          complete: true, historyIncomplete: false, breakingVersions: ["2.0.0"], migrationNotes: [] }]
+      });
+
+    render(App);
+
+    await waitFor(() => expect(updates).toHaveBeenLastCalledWith([component]));
+    expect(readLock).toHaveBeenCalledExactlyOnceWith(project.path);
+    const card = screen.getByRole("button", { name: new RegExp(project.name, "i") });
+    await waitFor(() => expect(card).toHaveTextContent("deployment-validation 2.0.0 available · ⚠️ Breaking changes declared"));
+  });
+
   it("warms the update feed at startup without delaying a catalog wizard", async () => {
     const updates = vi.spyOn(componentUpdates, "checkComponentUpdates").mockImplementation(() => new Promise(() => {}));
     render(App);
