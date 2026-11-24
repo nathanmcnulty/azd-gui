@@ -31,7 +31,7 @@ Manual validation runs are capped at 45 minutes and duplicate runs for the same 
 
 ## Releases
 
-Creating a `v*` tag is the only automatic Actions trigger in the repository. It starts one Windows job that:
+Creating a `v*` tag is the only automatic Actions trigger in the repository. For a version tag in this repository, the Windows job verifies the protected annotated tag, the pinned SSH signer, and the exact commit on main before proceeding. The Windows job then:
 
 1. Audits the npm and Cargo lockfiles for known vulnerabilities using pinned `cargo-audit` 0.22.2.
 2. Runs frontend checks and tests.
@@ -40,9 +40,17 @@ Creating a `v*` tag is the only automatic Actions trigger in the repository. It 
 5. Authenticates to Azure using GitHub OIDC after the build succeeds.
 6. Uses Tauri's signing hook with pinned ArtifactSigning 0.1.8 to sign the patched NSIS payload, uninstaller, and installer, then signs the restored portable executable. Signing uses only the OIDC-authenticated Azure CLI session.
 7. Generates SHA-256 checksums, installs the package in a disposable runner directory, verifies the installed executable's signature, signer, timestamp, and exact version, and uninstalls it before uploading the files and verification evidence as a 14-day workflow artifact. This packaging check does not replace clean-VM standard-user or visual acceptance.
-8. For an actual `v*` tag, stages the same verified files in a draft GitHub Release.
+8. For a version tag, adds the exact source bundle to that run's workflow artifact.
 
-The release workflow can be dispatched manually only after selecting its explicit cost and signing confirmation. It is capped at 45 minutes, and a duplicate run for the same ref cancels the older run.
+For a version tag, an Ubuntu job validates the immutable artifact from the
+Windows job and attests its source bundle, signed portable executable, and
+signed NSIS installer. A separate Ubuntu job stages the existing release
+assets as a draft only after successful attestation. It validates the same
+artifact and refuses an already public release. Only the attestation job has
+attestation write access. Rotating the release-tag signing key requires a
+reviewed update to the public key in scripts/release-tag-allowed-signers.
+
+The release workflow can be dispatched manually only after selecting its explicit cost and signing confirmation. The Windows job is capped at 45 minutes, and each tag-only Ubuntu job is capped at 15 minutes. A duplicate run for the same ref cancels the older run.
 
 The draft is a publication boundary, not a finished release. A maintainer must complete [Windows beta acceptance](windows-beta-acceptance.md), retain its evidence, and explicitly publish the draft. Failed or incomplete acceptance leaves the release private.
 
