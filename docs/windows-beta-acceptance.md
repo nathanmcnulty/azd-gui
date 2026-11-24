@@ -29,6 +29,22 @@ pwsh -File .\scripts\verify-release-artifacts.ps1 `
 
 Retain the generated `artifact-verification.json` in the private release record. The verifier fails unless the directory contains the expected portable executable and one x64 installer with no unlisted executables, both hashes match the published checksum file, both Authenticode signatures and timestamps are trusted, both signer subjects match the independently obtained profile identity, and the portable executable reports the requested version.
 
+On the clean Windows machine, verify the attestations for the downloaded
+portable executable, installer, and exact source archive. Download the source
+archive from the same successful tag run's workflow artifact. Set
+`$releaseTag` and `$releaseCommit` from the verified annotated tag and run
+this for each of the three files, using its exact path as `$file`.
+
+```powershell
+gh attestation verify $file --repo nathanmcnulty/azd-gui `
+  --signer-workflow nathanmcnulty/azd-gui/.github/workflows/release.yml `
+  --source-ref "refs/tags/$releaseTag" --source-digest $releaseCommit `
+  --deny-self-hosted-runners --format json
+if ($LASTEXITCODE -ne 0) { throw "Attestation verification failed for $file." }
+```
+
+Retain the three verification results in the private release record.
+
 ## Clean-VM smoke test
 
 Begin from a new snapshot with no repository checkout, Node.js, Rust, Azure credentials, azd project, or application data.
@@ -43,6 +59,16 @@ Begin from a new snapshot with no repository checkout, Node.js, Rust, Azure cred
 - Cancel preparation once and confirm the partial project remains visible with inspect, resume, and remove guidance.
 - Confirm a manifest-declared interactive template opens the validated external-terminal handoff.
 - Close and reopen the app. Confirm non-sensitive navigation/project state persists and sensitive wizard values do not.
+
+For component update acceptance, open and register a disposable copy of a real
+template that still pins the older signed component release. Record the
+installed lock and managed file hashes. Restart the installed app and check
+the project's Home card for the publisher-declared breaking update. Open the
+template and compare the installed pin, offered version, breaking warning, and
+migration note. Use **Check for updates** and confirm the same result. Verify
+that the lock and managed file hashes still match the baseline. Use the exact
+two signed publisher tags when checking the release declaration against the
+provisional update schema.
 
 On a disposable snapshot where WebView2 can be removed safely, also launch the portable executable without the runtime. The app must stop at the Windows/Tauri runtime bootstrap error; it must not expose simulated browser-preview operations. Restore the snapshot afterward rather than altering the acceptance VM in place.
 

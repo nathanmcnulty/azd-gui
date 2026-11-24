@@ -59,6 +59,14 @@ it("checks the inspected template's exact pins through Tauri and refreshes from 
     ["check_component_updates", { installed: [installed], force: false }]
   ]);
 
+  await fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  expect(await screen.findByText("Breaking changes declared in 2.0.0.")).toBeInTheDocument();
+  expect(screen.getByText(installed.version)).toBeInTheDocument();
+  expect(invoke.mock.calls.slice(2)).toEqual([
+    ["get_template_component_provenance", { sourceBinding: template }],
+    ["check_component_updates", { installed: [installed], force: true }]
+  ]);
+
   pin = upgraded;
   sourceUnavailable = true;
   await fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
@@ -66,9 +74,7 @@ it("checks the inspected template's exact pins through Tauri and refreshes from 
   expect(await screen.findByText("Update information is unavailable for this component.")).toBeInTheDocument();
   expect(screen.getByText("2.0.0")).toBeInTheDocument();
   expect(screen.queryByText(/Breaking changes declared|fixture source unavailable/)).not.toBeInTheDocument();
-  expect(invoke.mock.calls).toEqual([
-    ["get_template_component_provenance", { sourceBinding: template }],
-    ["check_component_updates", { installed: [installed], force: false }],
+  expect(invoke.mock.calls.slice(4)).toEqual([
     ["get_template_component_provenance", { sourceBinding: template }],
     ["check_component_updates", { installed: [upgraded], force: true }]
   ]);

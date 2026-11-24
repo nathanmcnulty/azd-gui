@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { isTauri } from "@tauri-apps/api/core";
   import AppSidebar from "./components/AppSidebar.svelte";
-  import { checkComponentUpdates } from "./lib/component-updates";
+  import { checkComponentUpdates, type ComponentUpdate } from "./lib/component-updates";
   import PimPlan from "./components/PimPlan.svelte";
   import CatalogSourceDialog from "./components/CatalogSourceDialog.svelte";
   import CommandPalette from "./components/CommandPalette.svelte";
@@ -52,6 +52,7 @@
     loadWizardDraft,
     saveWizardDraft,
     getProjectState,
+    getProjectComponentProvenance,
     getProjectTemplate,
     refreshProjectTemplate,
     getProjectEnvironmentValues,
@@ -167,6 +168,7 @@
   const nativeRuntime = isTauri();
 
   let data: BootstrapData = structuredClone(mockBootstrap);
+  let startupUpdates: Record<string, ComponentUpdate[]> = {};
   $: cliTools = data.tools.filter((tool) => tool.kind === "tool");
   let loading = true;
   let bootstrapFailure = "";
@@ -635,8 +637,33 @@
     }
   }
 
+  async function checkStartupUpdates(projects: ProjectSummary[], isMounted: () => boolean) {
+    const locks = await Promise.all(projects.slice(0, 20).map(async ({ path }) => {
+      try {
+        const lock = await getProjectComponentProvenance(path);
+        return lock?.state === "available" ? lock.components.map((component) => ({ path, component })) : [];
+      } catch {
+        return [];
+      }
+    }));
+    if (!isMounted()) return;
+    const pins = locks.flat().slice(0, 128);
+    if (!pins.length) return;
+    const result = await checkComponentUpdates(pins.map(({ component }) => component));
+    if (!isMounted() || result.state !== "fresh") return;
+    const byProject: Record<string, ComponentUpdate[]> = Object.create(null);
+    result.updates.forEach((update, index) => {
+      const pin = pins[index];
+      if (pin && update.id === pin.component.id && update.state === "updateAvailable") {
+        (byProject[pin.path] ??= []).push(update);
+      }
+    });
+    startupUpdates = byProject;
+  }
+
   onMount(() => {
     void checkComponentUpdates();
+    let mounted = true;
     document.addEventListener("keydown", handleGlobalKeydown);
     window.addEventListener("resize", constrainOutputHeight);
     let unlisten: () => void = () => {};
@@ -644,6 +671,7 @@
       try {
         unlisten = await onOperationEvent(handleOperationEvent);
         data = await bootstrap();
+        if (nativeRuntime && mounted) void checkStartupUpdates(data.projects, () => mounted);
         theme = data.settings.theme;
         navigationExpanded = data.settings.navigationExpanded;
         applyTheme(theme);
@@ -654,6 +682,7 @@
       }
     })();
     return () => {
+      mounted = false;
       clearInterval(providerPoll);
       providerRequest += 1;
       document.removeEventListener("keydown", handleGlobalKeydown);
@@ -3419,7 +3448,12 @@
             {#each data.projects as project}
               <button class="project-card" on:click={() => openProjectWorkspace(project)}>
                 <div class="project-icon"><Icon name="cloud" size={21} /></div>
-                <div><strong>{project.name}</strong><span>{project.environment} · {project.path}</span><small>{project.lastOperation}</small></div>
+                <div>
+                  <strong>{project.name}</strong><span>{project.environment} · {project.path}</span><small>{project.lastOperation}</small>
+                  {#each startupUpdates[project.path] ?? [] as update}
+                    <small>{update.id} {update.version} available{update.compatibility === "breaking" ? " · ⚠️ Breaking changes declared" : ""} (checked on open)</small>
+                  {/each}
+                </div>
                 <StatusPill tone={project.state === "ready" ? "success" : "warning"} label={project.state === "prepared" ? "Prepared, deployment not observed" : project.state} />
               </button>
             {/each}

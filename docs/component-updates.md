@@ -61,8 +61,10 @@ binding. Local file integrity and update comparisons use the prepared project's
 lock.
 
 The app currently queries only the reviewed first-party Reference repository.
-It reads GitHub-verified annotated tags for availability. Startup caches the
-release references. Opening a template or saved project checks the tag
+It reads GitHub-verified annotated tags for availability. On startup, the app
+checks installed locks for recent saved projects and shows available updates
+on their Home cards. This check is read-only and uses the local installed
+versions and revisions. Opening a template or saved project checks the tag
 details relevant to its installed pins from that cached list, within the
 shared request budget. After preparation registers a destination, the wizard
 shows the installed pins and file integrity for that project, including for

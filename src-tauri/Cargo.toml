@@ -41,3 +41,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[patch.crates-io]
+tauri-utils = { path = "../tauri-utils-2.10.4" }
