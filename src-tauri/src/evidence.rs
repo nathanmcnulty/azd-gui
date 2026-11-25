@@ -287,17 +287,14 @@ fn dotenv_value(raw: &str) -> Option<String> {
 
 fn is_link_or_reparse(path: &Path) -> std::io::Result<bool> {
     let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() {
-        return Ok(true);
-    }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        Ok(metadata.file_attributes() & 0x400 != 0)
+        Ok(metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0)
     }
     #[cfg(not(windows))]
     {
-        Ok(false)
+        Ok(metadata.file_type().is_symlink())
     }
 }
 
