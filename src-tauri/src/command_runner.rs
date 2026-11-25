@@ -222,17 +222,14 @@ fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };
-    if !metadata.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(windows)]
     {
-        true
+        metadata.is_file()
     }
 }
 
@@ -1250,6 +1247,24 @@ fn spawn_native_operation(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn executable_check_rejects_directories_and_missing_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("candidate.exe");
+        assert!(!super::is_executable_file(directory.path()));
+        assert!(!super::is_executable_file(&file));
+        std::fs::write(&file, b"").unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(!super::is_executable_file(&file));
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert!(super::is_executable_file(&file));
+    }
+
     #[tokio::test]
     async fn git_pins_transport_and_rejects_redirects() {
         use tokio::io::AsyncReadExt;
