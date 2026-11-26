@@ -19,16 +19,16 @@ export interface ComponentUpdates {
 }
 
 export async function checkComponentUpdates(
-  components: ComponentProvenance[] = [],
+  components: ReadonlyArray<Pick<ComponentProvenance, "id" | "version" | "sourceRepository" | "sourceRevision">> = [],
   force = false
 ): Promise<ComponentUpdates> {
   const unavailable: ComponentUpdates = { state: "unavailable", checkedAt: null, updates: [] };
   try {
     if (!isTauri()) return unavailable;
-    return await invoke<ComponentUpdates>("check_component_updates", {
+    return (await invoke<ComponentUpdates>("check_component_updates", {
       installed: components.map(({ id, version, sourceRepository, sourceRevision }) => ({ id, version, sourceRepository, sourceRevision })),
       force
-    });
+    })) ?? unavailable;
   } catch {
     return unavailable;
   }

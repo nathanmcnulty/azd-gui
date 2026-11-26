@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/svelte";
 import { afterEach, expect, it, vi } from "vitest";
 import CatalogComponentPins from "./CatalogComponentPins.svelte";
 import * as bridge from "../lib/bridge";
+import * as componentUpdates from "../lib/component-updates";
 import { bundledCatalog } from "../lib/mock-data";
 import type { CatalogEntry } from "../lib/types";
 
@@ -81,4 +82,50 @@ const mismatches: [string, Partial<CatalogEntry>][] = [
 it.each(mismatches)("withholds the declaration for %s", (_scenario, fields) => {
   render(CatalogComponentPins, { entry: { ...deploymentCheck, ...fields } });
   expect(screen.queryByRole("region", { name: "Declared template components" })).not.toBeInTheDocument();
+});
+
+it("checks the exact Maester pins on open and supports a live breaking-update refresh", async () => {
+  const maester = bundledCatalog.entries.find(({ id }) => id === "maester-automation")!;
+  const fresh: componentUpdates.ComponentUpdates = {
+    state: "fresh",
+    checkedAt: new Date().toISOString(),
+    updates: [
+      { id: "deployment-receipt", state: "noNewer", version: null, compatibility: "unknown",
+        complete: true, historyIncomplete: false, breakingVersions: [], migrationNotes: [] },
+      { id: "deployment-validation", state: "updateAvailable", version: "2.0.0", compatibility: "breaking",
+        complete: true, historyIncomplete: false, breakingVersions: ["2.0.0"],
+        migrationNotes: ["Upgrade the host to PowerShell 7.6 before adopting this version."] }
+    ]
+  };
+  const check = vi.spyOn(componentUpdates, "checkComponentUpdates").mockResolvedValue(fresh);
+  const { rerender } = render(CatalogComponentPins, { entry: maester });
+  expect(await screen.findByText("Breaking changes declared in 2.0.0.")).toBeInTheDocument();
+  expect(screen.getByText("Upgrade the host to PowerShell 7.6 before adopting this version.")).toBeInTheDocument();
+  expect(check).toHaveBeenNthCalledWith(1, expect.arrayContaining([
+    expect.objectContaining({ id: "deployment-validation", version: "1.1.1",
+      sourceRevision: "0c96cc89c554ffc3b3ca82ceda12da6591e816c1" })
+  ]), false);
+  await fireEvent.click(screen.getByRole("button", { name: "Check for updates" }));
+  await waitFor(() => expect(check).toHaveBeenNthCalledWith(2, expect.any(Array), true));
+  await rerender({ entry: { ...maester, trusted: false } });
+  expect(screen.queryByText("Breaking changes declared in 2.0.0.")).not.toBeInTheDocument();
+  expect(check).toHaveBeenCalledTimes(2);
+});
+it("ignores an update result after leaving the reviewed template", async () => {
+  const maester = bundledCatalog.entries.find(({ id }) => id === "maester-automation")!;
+  let resolve!: (value: componentUpdates.ComponentUpdates) => void;
+  vi.spyOn(componentUpdates, "checkComponentUpdates").mockReturnValueOnce(
+    new Promise((done) => { resolve = done; })
+  ).mockResolvedValue({ state: "unavailable", checkedAt: null, updates: [] });
+  const { rerender } = render(CatalogComponentPins, { entry: maester });
+  await rerender({ entry: deploymentCheck });
+  resolve({
+    state: "fresh", checkedAt: new Date().toISOString(), updates: [{
+      id: "deployment-validation", state: "updateAvailable", version: "99.0.0",
+      compatibility: "breaking", complete: true, historyIncomplete: false,
+      breakingVersions: ["99.0.0"], migrationNotes: []
+    }]
+  });
+  await waitFor(() => expect(screen.getByText("Update information is unavailable.")).toBeInTheDocument());
+  expect(screen.queryByText("99.0.0")).not.toBeInTheDocument();
 });
