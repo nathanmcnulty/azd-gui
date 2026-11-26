@@ -139,6 +139,7 @@ describe("prepared wizard component discovery", () => {
     }));
     const updates = vi.spyOn(componentUpdates, "checkComponentUpdates")
       .mockResolvedValueOnce({ state: "unavailable", checkedAt: null, updates: [] })
+      .mockResolvedValueOnce({ state: "unavailable", checkedAt: null, updates: [] })
       .mockResolvedValue({
         state: "fresh", checkedAt: new Date().toISOString(), updates: [{
           id: publisherUpdate.componentId, version: publisherUpdate.version, state: "updateAvailable",
@@ -166,7 +167,11 @@ describe("prepared wizard component discovery", () => {
     await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
     expect(prepare.mock.calls[0][0].destination).not.toBe(canonicalPath);
     expect(provenance).not.toHaveBeenCalled();
-    expect(updates).toHaveBeenCalledExactlyOnceWith();
+    expect(updates).toHaveBeenCalledTimes(2);
+    expect(updates).toHaveBeenNthCalledWith(1);
+    expect(updates).toHaveBeenNthCalledWith(2, [
+      expect.objectContaining({ id: "deployment-validation", version: "0.3.2" })
+    ], false);
 
     await act(() => completePrepare({
       id: "prepared-exact-project", name: "Prepared project", path: canonicalPath,
@@ -175,7 +180,7 @@ describe("prepared wizard component discovery", () => {
     await waitFor(() => expect(starts).toHaveBeenCalledWith("preview", canonicalPath, "dev", expect.any(String)));
     await waitFor(() => expect(provenance).toHaveBeenCalledExactlyOnceWith(canonicalPath));
     expect(declarations).not.toBeInTheDocument();
-    expect(updates).toHaveBeenCalledExactlyOnceWith();
+    expect(updates).toHaveBeenCalledTimes(2);
 
     await act(() => finishProvenance({
       state: "available", manifestVersion: "1.0", unknownMetadata: false, components
